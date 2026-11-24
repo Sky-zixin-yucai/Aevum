@@ -6,24 +6,36 @@ Open Source Project Code of Conduct
 ## 1. 价值观声明 / Statement of Values
 
 ### 中文
-本社区致力于培养高创造力的个体，为其提供锐利的工具与优质的协作生态。我们相信，个体的创造性贡献最终将回馈于更广泛的技术与社会共同体。
+本社区首先记得自己从哪里来。我们不把“从零开始”当成荣耀；我们从已有的代码、错误和人那里分支，承认来处，再谈创造。
 
-我们的系统构建遵循三条核心心法：
+技术的目的不是让所有人更忙。技术带来的生产力，应先保证人的生存，让人有时间坐下来，互相讨论文学，讨论那些不能直接换钱的东西。如果技术只让一部分人省下时间、让另一部分人更忙，它就没有达到这个目的。
+
+我们对自己有一个顺序：先齐家，再谈贡献。先把离自己最近的人担起来；最近的责任都躲，远处的贡献多半是表演。自由不是无所顾忌，是知道应该做什么，并且一直去做。
+
+我们仍然遵循三条工作心法：
 1.  **命名，而非形容**：追求精准、具象的表达，减少模糊性。
 2.  **呈现，而非解释**：优先展示可验证的事实、代码与数据，让成果自己说话。
 3.  **指认，而非概括**：关注可操作的具体细节和微观改进，避免空泛讨论。
 
-在这里，我们树立的旗帜是：**“创造高于消费，心法高于功能，自由高于归属。”**
+我们树立的旗帜是：**“创造高于消费，心法高于功能，自由高于归属。”**
+
+这份价值观声明不是行为准则的全部。具体可接受与不可接受的行为见下文；规则可以执行，来处不必统一。你可以不认我的来处，仍然做一个好的贡献者。
 
 ### English
-This community is dedicated to nurturing highly creative individuals by providing them with sharp tools and a high-quality collaborative ecosystem. We believe that individual creative contributions will ultimately benefit the broader technology and social commons.
+This community first remembers where it comes from. We do not take pride in “starting from zero”; we branch from existing code, mistakes, and people, acknowledge that lineage, and then talk about creation.
 
-Our system of construction follows three core principles:
+The purpose of technology is not to make everyone busier. Productivity should first guarantee people’s survival, so that people have time to sit down and discuss literature and the things that cannot be converted directly into money. If technology only saves time for some while making others busier, it has not achieved this purpose.
+
+We hold an order for ourselves: care for those closest first, then talk about contribution. If we avoid the nearest responsibility, distant contribution is mostly performance. Freedom is not doing whatever one wants; it is knowing what should be done and doing it consistently.
+
+We still follow three working principles:
 1.  **Name, Do Not Describe**: Strive for precise, concrete expression, reducing ambiguity.
 2.  **Present, Do Not Explain**: Prioritize showing verifiable facts, code, and data—let the work speak for itself.
 3.  **Identify, Do Not Generalize**: Focus on actionable specifics and microscopic improvements, avoiding vague discussions.
 
-The banner we raise here is: **"Creation over consumption, methodology over features, freedom over affiliation."**
+The banner we raise is: **"Creation over consumption, methodology over features, freedom over affiliation."**
+
+This statement of values is not the whole Code of Conduct. Specific acceptable and unacceptable behavior is defined below. Rules can be enforced; origins need not be shared. You may not share my origins and still be a good contributor.
 
 ---
 
@@ -196,7 +208,7 @@ Therefore, when applying this Code, the maintainer team will fully consider this
 
 ---
 
-**最后更新 / Last Updated**: 2026年1月21日 / January 21, 2026
+**最后更新 / Last Updated**: 2026年11月24日 / November 24, 2026
 
 ---
 *本准则受 [贡献者公约](https://www.contributor-covenant.org) (v2.1) 启发，并根据“命名-呈现-指认”的核心心法和开源学习社区的需求进行了大幅调整与扩充。*
