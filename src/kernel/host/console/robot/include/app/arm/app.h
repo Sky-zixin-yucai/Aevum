@@ -13,6 +13,8 @@ const char *arm_app_start_duel(void);
 u32 arm_app_kthread_tid(void);
 u32 arm_app_kthread_status(void);
 u32 arm_app_kthread_ok(void);
+u32 arm_app_kthread_auto(void);
+u32 arm_app_kthread_orphan_tid(void);
 u32 arm_app_kthread_steps(void);
 u32 arm_app_kthread_stack_before(void);
 u32 arm_app_kthread_stack_after(void);

@@ -55,7 +55,7 @@ static volatile int idle_pid;
 static volatile u32 idle_block_req;
 static volatile u32 idle_blocked;
 
-/* P8 动态内核线程自测：control 启动时创建 kping，再 join 收尸。 */
+/* P8 动态内核线程自测：先 join 一个 kping，再故意不 join 一个 korph。 */
 static int kthread_demo_started;
 static u32 kthread_demo_tid;
 static u32 kthread_demo_status;
@@ -63,6 +63,9 @@ static u32 kthread_demo_ok;
 static u32 kthread_demo_steps;
 static u32 kthread_demo_stack_before;
 static u32 kthread_demo_stack_after;
+static u32 kthread_demo_auto_reaped;
+static u32 kthread_demo_orphan_tid;
+static u32 kthread_demo_orphan_steps;
 
 static const struct aevum_error app_dep_template = {
     "arm_app", "task_create", "dependency", "arm app task assembly failed", 0
@@ -108,11 +111,25 @@ static void kthread_demo_entry(void *arg)
     kthread_exit(5u);
 }
 
+/* 故意不 join：退出后由调度器在 grace tick 后兜底回收。 */
+static void kthread_orphan_entry(void *arg)
+{
+    volatile u32 *steps = (volatile u32 *)arg;
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        (*steps)++;
+        if (task_yield()) kthread_exit(6u);
+    }
+    kthread_exit(6u);
+}
+
 static void kthread_demo_run_once(void)
 {
     struct kthread_stats stats;
     u32 status = 0;
-    int tid;
+    u32 start_tick;
+    int tid, orphan_tid;
 
     if (kthread_demo_started) return;
     kthread_demo_started = 1;
@@ -131,11 +148,34 @@ static void kthread_demo_run_once(void)
         return;
     }
     kthread_demo_status = status;
+
+    /*
+     * P9：故意不 join 的 kthread。它退出后先留 ZOMBIE，等过 grace
+     * 由调度器回收；这里等 140 tick，确保兜底路径真的跑过一次。
+     */
+    orphan_tid = kthread_create("korph", kthread_orphan_entry,
+                                (void *)&kthread_demo_orphan_steps, 0);
+    if (orphan_tid < 0) {
+        kthread_demo_ok = 0;
+        return;
+    }
+    kthread_demo_orphan_tid = (u32)orphan_tid;
+
+    start_tick = task_tick_total();
+    while ((u32)(task_tick_total() - start_tick) < 140u) {
+        if (task_yield()) {
+            kthread_demo_ok = 0;
+            return;
+        }
+    }
+
     kthread_demo_stack_after = (u32)kernel_stack_used();
     kthread_stats(&stats);
+    kthread_demo_auto_reaped = stats.auto_reaped;
     kthread_demo_ok = (status == 5u &&
                        kthread_demo_stack_after == kthread_demo_stack_before &&
-                       stats.join_blocks > 0 && stats.reaped == 1) ? 1u : 0u;
+                       stats.join_blocks > 0 && stats.reaped == 2u &&
+                       stats.auto_reaped == 1u && stats.live == 0u) ? 1u : 0u;
 }
 
 static void proc_control(void)
@@ -685,6 +725,8 @@ void arm_app_start(void)
 u32 arm_app_kthread_tid(void) { return kthread_demo_tid; }
 u32 arm_app_kthread_status(void) { return kthread_demo_status; }
 u32 arm_app_kthread_ok(void) { return kthread_demo_ok; }
+u32 arm_app_kthread_auto(void) { return kthread_demo_auto_reaped; }
+u32 arm_app_kthread_orphan_tid(void) { return kthread_demo_orphan_tid; }
 u32 arm_app_kthread_steps(void) { return kthread_demo_steps; }
 u32 arm_app_kthread_stack_before(void) { return kthread_demo_stack_before; }
 u32 arm_app_kthread_stack_after(void) { return kthread_demo_stack_after; }

@@ -8,6 +8,7 @@
 
 ### Added
 
+- 内核 P9：未 join 的 kthread ZOMBIE 在 100 tick grace 后由调度器兜底回收 4KB 动态栈、TID 和任务槽；`kthread_stats` 增加 `auto_reaped`，页面底栏显示 `kt <tid> s<status> a<auto> OK`。有人在 `kthread_wait_tid` 上等待时跳过回收，正常 join 仍先拿退出码。
 - `apps/console/monitor/api/visitor.py`：访客入口、公开社区概览与隔离数据作用域；访客 Cookie 由服务端签发，前端传入的 `user_id` 不再作为身份依据。
 - `/api/visitor/bootstrap` 与 `/api/community/overview`：返回访客角色、权限说明、每日额度、社区注册/在线/房间统计和角色文化；不返回任何服务器路径。
 - 访客 AI 对话：`/api/chat/stream_token` 未登录也可用，按访客作用域落盘；每日 30 条，额度用尽提示登录；文件分析仍要求登录。

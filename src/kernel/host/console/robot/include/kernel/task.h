@@ -55,6 +55,8 @@ void task_set_kthread_wait(int tid);
 /* 调度器在 kthread 真正转 ZOMBIE 后调用：唤醒 kthread_join 等待者。 */
 void task_wake_kthread_waiters(int tid);
 int task_reap_kthread(int tid);
+/* 超过 grace tick 且没有 joiner 等待的 kthread ZOMBIE；返回回收数量。 */
+int task_reap_unjoined_kthread(u32 now, u32 grace);
 
 /* 用户任务：进程表先保留 PID，任务模块只负责把该 PID 变成可调度的 ring3 任务。 */
 const char *task_create_user_with_pid(int priority, const char *name, u32 user_eip,

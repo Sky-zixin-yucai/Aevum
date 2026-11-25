@@ -90,11 +90,12 @@ P7.5 clean 构建 `kernel.bin=73,992`，V 页 ADDRESS 在 `EXEC` 行显示 `THR 
 - `wait_wakes` / `join_wakes` 均非零；`blk OK` 只有在 `WBLK` 与四个计数全部成立时才显示。
 - P7.4 的 `grp OK` 在新构建下仍通过，说明把轮询替换为阻塞没有破坏整组回收。该页仍是功能验收，不是延迟测量；单次阻塞/唤醒的周期成本尚未用 TSC 测量。
 
-## 9. P8 动态内核线程观测
+## 9. P8/P9 动态内核线程观测
 
-P8 clean 构建 `kernel.bin=75,336`，主页面右下显示 `kthr 4 s5 OK`，`TASK SCHED P3/31`：
+P9 clean 构建 `kernel.bin=77,160`，主页面右下显示 `kt 4 s5 a1 OK`，`TASK SCHED P3/31`：
 
 - `kping` 在 control 启动时动态创建，拿到 TID 4 和 1 个 4KB 动态栈槽；它 yield 192 次后退出 5，control 在 `kthread_join` 上实际进入 BLOCKED 一次（`join_blocks=1`），被唤醒一次（`join_wakes=1`）。
-- join 前/后 `kernel_stack_used()` 都为 0，说明动态栈槽已经归还；tasks dump 中 slot 3 全零，TID 4 不在 `pid_map`，`created=1 exited=1 reaped=1 failed=0`。
-- 页面右侧常驻 `P3/31` 只统计 control/render/idle；kping 存活期间会占用第 4 个 PID/任务槽，join 后回到 3。该页是生命周期验收，不测 kthread 创建/销毁延迟；192 次 yield 在一次启动后 2 秒内完成，未做 TSC 或高频压力测量。
-- P7.5 的 `V` 页路径没有新增用户态演示，ring3 代码仍为 4,063B；P8 的改动只发生在 ring0 任务/栈池和主页面底栏。
+- P9 另创建不 join 的 `korph`，它 yield 8 次后退出 6；超过 100 tick grace 后由调度器自动回收。页面 `a1` 是 `auto_reaped=1`，`s5` 是正常 join 读到的退出码。
+- `kthread_demo_ok` 要求 status 5、join 前/后 `kernel_stack_used()` 相等、`join_blocks>0`、`reaped=2`、`auto_reaped=1`、`live=0`；页面 `OK` 是这组断言的结果。P8 clean 构建 75,336B，对应旧页面 `kthr 4 s5 OK`。
+- 页面右侧常驻 `P3/31` 只统计 control/render/idle；kping/korph 存活期间会占用额外 PID/任务槽，回收后回到 3。该页是生命周期验收，不测 kthread 创建/销毁延迟；192+8 次 yield 在一次启动后 2 秒内完成，未做 TSC 或高频压力测量。
+- P7.5 的 `V` 页路径没有新增用户态演示，ring3 代码仍为 4,063B；P9 的改动只发生在 ring0 任务/栈池、调度器回收路径和主页面底栏。`kthread_reap_unjoined()` 每轮调度扫 16 个任务槽，未做单独延迟测量。

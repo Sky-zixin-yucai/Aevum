@@ -1,10 +1,10 @@
 # 进程上下文完整化路线
 
-本文主体讨论 ring3 用户进程，不把 `control/render/idle` 这三个静态内核任务当成完整进程；P8 的动态内核线程单独列为 ring0 调度实体，它没有 PCB/线程组，生命周期由 `kthread_create/exit/join` 管理。
+本文主体讨论 ring3 用户进程，不把 `control/render/idle` 这三个静态内核任务当成完整进程；P8/P9 的动态内核线程单独列为 ring0 调度实体，它没有 PCB/线程组，生命周期由 `kthread_create/exit/join` 和 grace 兜底回收管理。
 
-P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/reap` 闭环。P2.1 把地址空间推进到“255 页物理池 + 6 个 VMA + brk + guard + copyin/copyout”。P2.2 完成 COW fork 与物理页引用计数。P3.1 完成用户同步异常的默认终止、信号 pending/SIGCHLD、wait status 编码和 V 页信号视图；P3.2 在默认终止之上加入每进程 handler 表、用户栈 signal frame、`sigreturn`，并修复第二次 fork 时已有 COW 页丢失 COW 位的问题；P4.1 加入内嵌 flat 镜像 `exec`，保留 PID/任务槽，替换用户 AS、入口、栈和信号状态；P4.2 给 `exec` 增加 `argv/envp` 解析、字符串迁移和 SysV 初始栈；P4.3 增加每进程 fd 表、匿名 pipe、`pipe/read/write/close`，并证明 exec 后 fd 表继续有效；P4.4 把 fd 0/1 接到 console 字符设备，验证键盘输入、VGA/COM1 输出、fork 继承和 close 边界。P7.0 增加 `spawn(image_id,argv,envp)`：不经过 fork，直接为当前进程创建独立 AS/PCB/内核栈/用户栈的子进程，D lane 用 image 1 子进程和 wait(10) 做闭环。P7.1 增加最小线程组：`clone` 只共享 VM/FILES/SIGHAND/THREAD，`task` 拥有独立 TID/内核栈/用户栈/FPU，`thread_exit` 只结束当前任务，`thread_join` 回收同组任务，最后一个活线程退出才让进程进入 ZOMBIE。P7.2 增加 `thread_detach`：detached 线程退出后由调度器延后回收任务槽/内核栈，之后 `thread_join` 返回 -1。P7.3 验证主线程先退、worker 继续并 join 主线程，同时把所有非法 join/detach 参数压回 -1。P7.4 验证主线程不 join、以 ZOMBIE 留在组内，worker A 退出后 worker B 作为最后活线程退出，由父 `wait` 的 `process_reap()` 一次性回收整组任务槽。P7.5 把 `wait` / `thread_join` 从 `task_yield_wait()` 轮询改成真正的 `BLOCKED -> WAKE`：在 `cli` 窗口内重查条件后写 `TASK_BLOCKED` 并进门，调度器只在任务已实际转 ZOMBIE 后唤醒同组 join 等待者和父进程组，避免 lost wake。P8 把同样的阻塞/唤醒语义用到 ring0 动态内核线程：`kthread_create` 运行时申请任务槽、TID 和栈池 4KB 栈，`kthread_exit` 只结束当前任务，`kthread_join` 等到目标真正 ZOMBIE 后读退出码并释放动态栈/TID/任务槽；`task_reap()` 跳过 kthread，静态 control/render/idle 仍使用固定栈。
+P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/reap` 闭环。P2.1 把地址空间推进到“255 页物理池 + 6 个 VMA + brk + guard + copyin/copyout”。P2.2 完成 COW fork 与物理页引用计数。P3.1 完成用户同步异常的默认终止、信号 pending/SIGCHLD、wait status 编码和 V 页信号视图；P3.2 在默认终止之上加入每进程 handler 表、用户栈 signal frame、`sigreturn`，并修复第二次 fork 时已有 COW 页丢失 COW 位的问题；P4.1 加入内嵌 flat 镜像 `exec`，保留 PID/任务槽，替换用户 AS、入口、栈和信号状态；P4.2 给 `exec` 增加 `argv/envp` 解析、字符串迁移和 SysV 初始栈；P4.3 增加每进程 fd 表、匿名 pipe、`pipe/read/write/close`，并证明 exec 后 fd 表继续有效；P4.4 把 fd 0/1 接到 console 字符设备，验证键盘输入、VGA/COM1 输出、fork 继承和 close 边界。P7.0 增加 `spawn(image_id,argv,envp)`：不经过 fork，直接为当前进程创建独立 AS/PCB/内核栈/用户栈的子进程，D lane 用 image 1 子进程和 wait(10) 做闭环。P7.1 增加最小线程组：`clone` 只共享 VM/FILES/SIGHAND/THREAD，`task` 拥有独立 TID/内核栈/用户栈/FPU，`thread_exit` 只结束当前任务，`thread_join` 回收同组任务，最后一个活线程退出才让进程进入 ZOMBIE。P7.2 增加 `thread_detach`：detached 线程退出后由调度器延后回收任务槽/内核栈，之后 `thread_join` 返回 -1。P7.3 验证主线程先退、worker 继续并 join 主线程，同时把所有非法 join/detach 参数压回 -1。P7.4 验证主线程不 join、以 ZOMBIE 留在组内，worker A 退出后 worker B 作为最后活线程退出，由父 `wait` 的 `process_reap()` 一次性回收整组任务槽。P7.5 把 `wait` / `thread_join` 从 `task_yield_wait()` 轮询改成真正的 `BLOCKED -> WAKE`：在 `cli` 窗口内重查条件后写 `TASK_BLOCKED` 并进门，调度器只在任务已实际转 ZOMBIE 后唤醒同组 join 等待者和父进程组，避免 lost wake。P8 把同样的阻塞/唤醒语义用到 ring0 动态内核线程：`kthread_create` 运行时申请任务槽、TID 和栈池 4KB 栈，`kthread_exit` 只结束当前任务，`kthread_join` 等到目标真正 ZOMBIE 后读退出码并释放动态栈/TID/任务槽；`task_reap()` 跳过 kthread，静态 control/render/idle 仍使用固定栈。P9 补上未 join kthread 的泄漏兜底：ZOMBIE 后记录 `zombie_ticks`，过 100 tick grace 且没有任何任务在 `kthread_wait_tid` 上等它时，由调度器回收动态栈/TID/任务槽。
 
-## 一、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8 现在的实现
+## 一、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9 现在的实现
 
 | 能力 | 当前实现 | 位置 |
 | --- | --- | --- |
@@ -38,6 +38,7 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 | P7.4 group reclamation | 主线程创建两个 worker 后不 join 直接 `thread_exit(0)`，主任务以 ZOMBIE 留在组内；A 退出 5，B join A 得到 status 5 后作为最后活线程 `thread_exit(7)`，触发 `process_exit_current()`；父 `wait` 得到 7 后 `process_reap()` 调 `task_release_process_threads()` 一次性释放组内所有任务槽/内核栈，包括未 join 的主 ZOMBIE | `kernel/proc/process.c`、`kernel/task/task.c`、`user/ring3/ring3.asm` |
 | P7.5 block/wake | `task_block_until(ready,ctx)` 在 `pushf; cli` 后重查 `ready(ctx)`：已满足则恢复 flags 返回 0；否则写 `TASK_BLOCKED`、`SCHED_BLOCK` 后 `int $0x40`，唤醒返回 1，状态/调度失败 -1。`process_wait()` 与 `process_thread_join_current()` 使用各自的 `proc_wait_ready/proc_join_ready` 在外层继续扫描；调度器在 `prev->state == TASK_ZOMBIE` 后调 `process_notify_task_zombie()`，先 `task_wake_process(proc)`，进程整体 ZOMBIE 时再唤醒父进程组。全局 `wait_block_total/wait_wake_total/join_block_total/join_wake_total` 只统计 wait/join 的实际阻塞与唤醒 | `kernel/task/task.c`、`kernel/proc/process.c`、`include/kernel/task.h`、`include/kernel/proc.h` |
 | P8 dynamic kthread | `kthread_create()` 从 `kernel_stack_alloc()` 取 4KB 动态栈，经 `task_create_kernel_arg()` 建带 `kthread=1` 的 ring0 任务并保存 fn/arg；`kthread_exit(code)` 置退出码后 `task_exit()`。`task_reap()` 跳过 kthread ZOMBIE，`kthread_join(tid,&status)` 先登记 `kthread_wait_tid`，再用 `task_block_until()` 等目标 ZOMBIE；调度器在 `prev->kthread` 转 ZOMBIE 后按 TID 唤醒 joiner。join 读出 status 后由 `task_reap_kthread()` 释放动态栈、PID 和任务槽。kthread 不创建 PCB，不进入 process 线程组 | `kernel/task/kthread/kthread.c`、`kernel/task/task.c`、`include/kernel/kthread.h` |
+| P9 kthread 泄漏兜底 | 任务转 ZOMBIE 时记录 `zombie_ticks`；调度器每轮调 `kthread_reap_unjoined()`，`task_reap_unjoined_kthread(now,100)` 跳过 current、未满 grace 和有 `kthread_wait_tid` 等待者的目标，其余释放 4KB 动态栈、TID、任务槽。`kthread_stats` 增加 `auto_reaped`，`reaped` 是 join+兜底总回收数，`live=created-reaped`。唤醒 joiner 时保留 `wait_tid`，`kthread_join` 在 reap 成功后才清 | `kernel/task/task.c`、`kernel/task/kthread/kthread.c`、`include/kernel/kthread.h`、`include/kernel/task.h` |
 | wait status | 正常退出保留原退出码（`exit(7) -> 7`）；信号终止为 `0x80000000` 按位或 `sig`（`#DE -> 0x80000008`） | `PROC_WAIT_STATUS()` |
 | PCB 信号字段 | `pending/last_sig/term_sig/sig_count/sigchld_count`；`process_info` 同步暴露 | `kernel/proc/process.c` |
 | pending 位图 | `pending |= 1u << (sig - 1)`；只记录 1..31 号信号，不在这里改进程状态 | `proc_signal_pending()` |
@@ -314,6 +315,7 @@ P5.3 不新增页面：`S`（`0x1F`）复用 P5.1 的池页外壳，`pool_demo_s
 - P7.4 已完成主线程不 join 的整组回收：子进程主线程创建 A/B 两个 worker 后只写退出标记并 `thread_exit(0)`，A 退出 5，B join A 得到 status 5 后作为最后线程 `exit(7)`；父 wait 得到 7，`process_reap()` 回收整组任务槽。页面显示 `grp OK`。clean `kernel.bin=72,744`，`__bss_end=0x95B3C`。
 - P7.5 已完成阻塞 wait/join：父在子进程仍 LIVE 时 `wait` 进入 BLOCKED；子主线程 `thread_join` 先于 worker 退出阻塞；worker 退出 4、子写 `BLK5` 后退出 9；父被唤醒得到 status 9 并写 `WBLK`。页面显示 `blk OK`、`blk 7 /1`，`TEST` 全部 OK。clean `kernel.bin=73,992`，`__bss_start=0x92120`、`__bss_end=0x9601C`，`AEVUM_KERNEL_END=0x97000`。
 - P8 已完成动态内核线程：control 启动时创建 `kping`，它拿到 TID 4 和栈池槽，yield 192 次后退出 5；control 在 join 上阻塞并被唤醒。页面显示 `kthr 4 s5 OK`，tasks dump 中 slot 3 与 TID 4 已归还，计数 `created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1`。clean `kernel.bin=75,336`，`__bss_start=0x92660`、`__bss_end=0x9669C`，`AEVUM_KERNEL_END=0x97000`。
+- P9 已完成未 join kthread 的 grace 兜底：`kping` 仍正常 join，另创建不 join 的 `korph`，它退出 6 后超过 100 tick 被调度器回收；页面 `kt 4 s5 a1 OK`，`reaped=2`、`auto_reaped=1`、`live=0`，动态栈水位回到创建前。clean `kernel.bin=77,160`，`__bss_start=0x92D80`、`__bss_end=0x96DFC`，`AEVUM_KERNEL_END=0x97000`。
 
 ### P7.1 最小线程组（Linux 风格资源共享）
 
@@ -415,7 +417,7 @@ P8 的“动态”不是换一个任务名字，而是把静态内核任务没�
 
 - 任务槽和 TID 在 `kthread_create()` 时从 `TASK_MAX/PID_MAX` 池分配，不是启动时 `task_create()` 固定占位。
 - 内核栈从 `kernel_stack_alloc()` 的 12 槽 4KB 池取得；静态 control/render/idle 继续使用 `AEVUM_STACK_P1/P2/IDLE` 固定栈，不进入这条路径。
-- 退出后不立即消失：`kthread_exit(code)` 把当前任务置 ZOMBIE，`task_reap()` 明确跳过它；必须由另一个内核任务 `kthread_join(tid,&status)` 读到退出码后，`task_reap_kthread()` 才释放动态栈、PID 和任务槽。
+- 退出后不立即消失：`kthread_exit(code)` 把当前任务置 ZOMBIE，`task_reap()` 明确跳过它；优先由另一个内核任务 `kthread_join(tid,&status)` 读到退出码后回收，无人 join 时由 P9 的 grace 兜底回收。
 
 入口参数通过 `task_create_kernel_arg()` 的 `kernel_entry/kernel_arg` 字段保存，再由 `task_kernel_arg_entry()` trampoline 在 ring0 调用。没有给初始中断帧塞参数寄存器，也没有复用用户线程的 `eax` 约定。
 
@@ -423,29 +425,54 @@ join 复用 P7.5 的 lost wake 防线：
 
 - joiner 先写 `kthread_wait_tid=tid`，再进 `task_block_until()`；`kthread_join_ready()` 在 `cli` 窗口内重查目标是否已 ZOMBIE。
 - 调度器只在 `prev->state == TASK_ZOMBIE`、`prev->kthread` 为真时调用 `task_wake_kthread_waiters(prev->pid)`，按等待 TID 唤醒 joiner；提前唤醒会让等待者重查后再次睡死。
-- `kthread_join()` 读出 `exit_code` 后调 `task_reap_kthread()`，先 `kernel_stack_free(stack_top)`，再 `pid_free`，最后 `task_zero`；`task_zero` 现在也清 `kthread/kthread_wait_tid/kernel_entry/kernel_arg`。
+- `kthread_join()` 读出 `exit_code` 后调 `task_reap_kthread()`，先 `kernel_stack_free(stack_top)`，再 `pid_free`，最后 `task_zero`；`task_zero` 现在也清 `kthread/kthread_wait_tid/zombie_ticks/kernel_entry/kernel_arg`。唤醒 joiner 时不清 `kthread_wait_tid`，只有 `task_reap_kthread()` 成功后才清，避免兜底 reaper 抢在 joiner 前收掉目标。
 
 P8 的内核自测由 control 在启动时执行一次：
 
 - `kthread_create("kping", kthread_demo_entry, &steps, 0)` 得到 TID 4；`kping` 是优先级 0，control 是 3，所以 control 在 `kthread_join` 上一定先进入 BLOCKED，不会让目标在 join 前跑完。
 - `kping` yield 192 次，`steps` 递增后 `kthread_exit(5)`；control 被唤醒，join 返回 status 5。
-- `kthread_demo_ok` 同时要求 status 5、join 前/后 `kernel_stack_used()` 相等、`join_blocks>0`、`reaped==1`；主页面显示 `kthr 4 s5 OK`。
-- tasks dump 只剩 control/render/idle 三个槽，slot 3 清零，TID 4 已归还；kthread 计数 `created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1 failed=0`。
+- P8 当时 `kthread_demo_ok` 同时要求 status 5、join 前/后 `kernel_stack_used()` 相等、`join_blocks>0`、`reaped==1`；主页面显示 `kthr 4 s5 OK`。P9 把同一用例扩展为 `kt 4 s5 a1 OK`。
+- P8 当时 tasks dump 只剩 control/render/idle 三个槽，slot 3 清零，TID 4 已归还；kthread 计数 `created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1 failed=0`。
 
 QEMU 实测（P8 clean 构建 `kernel.bin=75,336`，`__bss_start=0x92660`、`__bss_end=0x9669C`，`AEVUM_KERNEL_END=0x97000`）：
 
 - 主页面右下 `kthr 4 s5 OK`；`TASK SCHED P3/31` 表示 PID 池只占 control/render/idle 三个。
-- `tasks` 数组 16×100 字节：slot 0 control `pid=1 state=RUNNING kthread=0 stack=0x200000`，slot 1 render `pid=2 state=READY stack=0xA000`，slot 2 idle `pid=3 state=READY stack=0xB000`；slot 3 已全零，TID 4 不在 `pid_map`。
+- P8 当时 `tasks` 数组 16×100 字节：slot 0 control `pid=1 state=RUNNING kthread=0 stack=0x200000`，slot 1 render `pid=2 state=READY stack=0xA000`，slot 2 idle `pid=3 state=READY stack=0xB000`；slot 3 已全零，TID 4 不在 `pid_map`。
 - 这说明页面上的 `kthr 4` 不是渲染层伪造的计数：TID 4 确实在运行时被分配，又确实在 join 后消失。
 
-## 十二、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8 边界与已知取舍
+### P9 未 join kthread 的 grace 兜底
+
+P9 只补一个泄漏口：`kthread_exit()` 后没有人 `kthread_join()` 的 ZOMBIE 不再永久占住任务槽、TID 和 4KB 动态栈。
+
+- `task_struct` 增加 `u32 zombie_ticks`；任务在 `SCHED_EXIT` 转 ZOMBIE 时写 `tick_total`，`task_zero()` 清零。
+- `kthread.c` 定义 `KTHREAD_ZOMBIE_GRACE_TICKS=100u`。100Hz PIT 下是 1 秒，给 `kthread_create()` 返回 TID 后的创建者留出调用 `kthread_join()` 的窗口。
+- 调度器在 `task_reap_detached()` 后、`process_reap_orphans()` 前调用 `kthread_reap_unjoined()`；它把 `task_tick_total()` 和 grace 传给 `task_reap_unjoined_kthread()`。
+- `task_reap_unjoined_kthread(now, grace)` 只扫描 `TASK_ZOMBIE && kthread`，跳过 `current_task` 和 `now - zombie_ticks < grace` 的目标；再扫全部非 UNUSED 任务，只要任一 `kthread_wait_tid == target->pid` 就跳过，保证有人正在 join 时绝不抢收。
+- 无人等待且过 grace 时，依次 `kernel_stack_free(stack_top)`、`pid_free(pid)`、`task_zero()`，返回回收数量。`kthread_reap_unjoined()` 把数量同时累加到 `reaped_total` 和 `auto_reaped_total`，`live = created - reaped` 仍守恒。
+- `task_wake_kthread_waiters()` 只把 joiner 置 READY，不在此处清 `kthread_wait_tid`；`kthread_join()` 在 `task_reap_kthread()` 成功后才清，失败路径也清。否则“已唤醒但还没取走退出码”的 joiner 可能被兜底 reaper 抢先，join 返回 -1。
+- 策略边界：grace 过后才来 join 的调用者得到 -1。这不是 join 超时，而是“没有人等在 grace 内”的自动回收；正常 join 仍先拿退出码并回收，不走兜底。
+
+P9 的内核自测仍由 control 启动时执行一次：
+
+- 保留 `kping` 的 join 用例：TID 4、192 次 yield、退出 5；control 在 `task_block_until()` 上实际阻塞。
+- 新增 `korph`：只 yield 8 次，然后 `kthread_exit(6)`，故意不 join。
+- control 等 140 tick（大于 100 tick grace），再检查 `status==5`、`kernel_stack_used()` 回到创建前、`join_blocks>0`、`reaped==2`、`auto_reaped==1`、`live==0`。
+- 主页面右下显示 `kt 4 s5 a1 OK`：`s5` 证明正常 join 没被抢，`a1` 证明兜底路径真的回收了 1 个 kthread，`OK` 是上述整组断言的结果。
+
+QEMU 实测（P9 clean 构建 `kernel.bin=77,160`，`__bss_start=0x92D80`、`__bss_end=0x96DFC`，`AEVUM_KERNEL_END=0x97000`）：
+
+- 串口首帧仍为 `a5 5a 01`，没有 triple fault；主页面右下 `kt 4 s5 a1 OK`，右侧 `TASK SCHED P3/31`。
+- `kping` 仍拿到 TID 4 并退出 5；`korph` 退出 6 后先以 ZOMBIE 占住第 5 个 TID/任务槽，超过 100 tick 后被调度器回收。页面 `a1` 是 `stats.auto_reaped`，`s5` 是 join 读到的退出码。
+- 这次抓屏没有重新展开 tasks 数组；动态栈是否归还由 `kernel_stack_used()` 前后相等和 `live==0` 的页面断言覆盖，TID/任务槽归还由 `stats.reaped==2` 覆盖。
+
+## 十二、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9 边界与已知取舍
 
 - P7.4 期间 `wait` / `join` 仍是 `task_yield_wait()` 轮询；P7.5 已改为 `task_block_until()` 的真正阻塞。P6.0 的参数语义保持不变：`pid>0` 必须先是当前进程的直接子进程，否则立即返回 -1；`pid<=0` 等任意直接子进程。当前尚未实现等待超时、信号中断 wait（EINTR）和优先级继承。
 - `proc_orphan_children()` 现在把 LIVE 和 ZOMBIE 的直接子进程都改成 `ppid=0`，并写一份全局最近事件；ZOMBIE 子进程仍由 `process_reap_orphans()` 回收。事件只是 V 页只读快照，不改变调度或回收顺序。
 - G 页 reparent 面板从“最多 3 个子进程”改为 4 个；`child_count > 4` 时在第 13 行显示 `+N more`，`children` 计数仍显示总数，列表只放前 4 个。
 - V 页 TREE 的 `ORPHAN` 行占第 20/21 行，树节点上限从第 21 行收到第 19 行；第 22 行仍是 TREE 统计，第 23/24 行仍是公共底栏。当前用户 demo 没有“父进程先退出、子进程继续存活”的 lane，所以 TREE 页默认显示 `ORPHAN none yet`；事件路径已由 `process_terminate_current()` / `process_exit_current()` 的真实退出路径调用，不是渲染层伪造。
 - 当前速度基线（QEMU TCG，非实时）：100 Hz PIT 是硬控制节拍上限；CPU 页 4.14 秒窗口内 `SWITCHES +129,890`（约 31.4k/s）、`PREEMPTIONS +384`（约 92.8/s），control/render/idle 仍是 50/38/12；监视器建立后 69 ms 的首帧采样已有完整机械臂画面。详见 `PERFORMANCE.md`。
-- P5.2 的 `V` 页固定 4 页，原第 5 页 `DEMO` 因 `kernel.bin` 超过当时 65,536B 上限被删除，旧证据压缩进 `ADDRESS` 页。P8 clean 构建为 75,336B、上限 98,304B、余量 22,968B；`--gc-sections` 已回收不可达代码，但新增页面或长文案前仍必须先算体积。
+- P5.2 的 `V` 页固定 4 页，原第 5 页 `DEMO` 因 `kernel.bin` 超过当时 65,536B 上限被删除，旧证据压缩进 `ADDRESS` 页。P9 clean 构建为 77,160B、上限 98,304B、余量 21,144B；`--gc-sections` 已回收不可达代码，但新增页面或长文案前仍必须先算体积。
 - `V` 页的页面状态是单个静态实例（`page_mode/page_slot/page_first`），四页共享同一个选中槽；`process_slot_space()` / `process_slot_fd_info()` 是只读快照，没有 seqlock，单核下仍可能在 PIT 切换窗口看到半更新字段，已知取舍是“可观察面优先、不做事务化快照”。
 - `PgDn` 把选中槽带到槽 10/11 后，空槽详情只显示 `EMPTY` 和池统计；要回到有内容槽需 `Up` 或 `Home`，这是当前交互语义，不是滚动丢失。
 - P5.3 没有新增持久对象、页面或第二套计数；只复用 P5.1 池页与用户数据槽，压测状态由 ring3 写、页面只读。`S` 与 `Y` 共用同一池页外壳，二者互斥，不能同时运行。
@@ -455,8 +482,9 @@ QEMU 实测（P8 clean 构建 `kernel.bin=75,336`，`__bss_start=0x92660`、`__b
 - P7.3 已覆盖 join/detach 的 0、-1、self、不存在 TID，但未覆盖“跨线程组 join 一个真实存在的 TID”、detach 一个已 ZOMBIE 的线程、以及主线程 detach 自己后退出；这些仍由同组 `proc` 校验和 detached 延后回收兜底，尚未做成独立断言。
 - P7.4 已覆盖主线程 ZOMBIE 留在组内、由最后线程退出触发 `process_reap()` 整组释放的变体，并确认 tasks 表里该子进程整组任务槽全部消失。未覆盖：worker B 不 join A、A 先 exit 5 但仍以 ZOMBIE 留在组内直到整组回收；detached worker 故障终止整组；以及主线程 ZOMBIE 被单独 detach。
 - P7.5 已覆盖 `wait` 与 `thread_join` 的“目标仍 LIVE 时阻塞、随后被唤醒”正向路径，并用全局计数证明阻塞与唤醒都发生。未覆盖：等待期间收到信号后的 EINTR、`wait`/`join` 超时、多个父/子/线程同时等待同一目标、以及目标在唤醒后再次变成 LIVE（PID/TID 复用）的竞态；当前依赖 `ready()` 在外层重查后走完整扫描或错误返回。
-- P8 的 kthread 只做单创建者、单 joiner 最小闭环：支持 create/exit/self/join/stats，不支持 detach、超时、取消、优先级继承或 kthread 之间组成线程组；未 join 的 kthread ZOMBIE 会占住任务槽、PID 和栈池槽，当前没有泄漏兜底。`kthread_create` 只允许 ring0 任务调用，用户态没有入口；kthread 不创建 PCB、不进入 process 家族回收路径。未做多等待者、TID 复用竞态和高频创建/销毁压力测试。
-- P8 clean 构建为 75,336B、上限 98,304B、余量 22,968B；`__bss_start=0x92660`、`__bss_end=0x9669C`，BSS 距 `AEVUM_KERNEL_END=0x97000` 约 2.4KB。每个任务槽从 84B 增至 100B（`task_struct` 新增 kthread 标记、等待 TID、fn/arg），16 槽共增加 256B；继续加内核数据结构前仍要先核算 BSS 和镜像体积。
+- P8 的 kthread 只做单创建者、单 joiner 最小闭环：支持 create/exit/self/join/stats，不支持 detach、超时、取消、优先级继承或 kthread 之间组成线程组；未 join 的 kthread ZOMBIE 已由 P9 的 100 tick grace 兜底回收，但晚于 grace 才 join 会得到 -1。`kthread_create` 只允许 ring0 任务调用，用户态没有入口；kthread 不创建 PCB、不进入 process 家族回收路径。未做多等待者、TID 复用竞态和高频创建/销毁压力测试。
+- P9 clean 构建为 77,160B、上限 98,304B、余量 21,144B；`__bss_start=0x92D80`、`__bss_end=0x96DFC`，BSS 距 `AEVUM_KERNEL_END=0x97000` 仅 516B。每个任务槽从 P8 的 100B 增至 104B（`task_struct` 新增 `zombie_ticks`），16 槽共增加 64B；继续加内核数据结构前必须先核算 BSS 和镜像体积。
+- P9 只验证“单创建者、无 joiner”的自动回收：多 joiner 等同一 TID、join 超时/取消、TID 复用竞态、kthread 故障终止、worker 池和高频创建/销毁仍未覆盖。`task_reap_unjoined_kthread()` 每轮调度扫 16 个任务槽，没有做单独延迟测量；`task_struct` 的 `zombie_ticks` 只用于计龄，不参与优先级或调度排序。
 - P7.1 的多线程 `exec` 采取拒绝策略，不杀其他线程；长期是“拒绝”还是“exec 杀死同组其他线程”尚未定。线程 TID 与进程 TGID 共用 `PID_MAX=31`，且各占一个任务槽和 4KB 内核栈，`PROC_MAX=12/TASK_MAX=16/KSTACK=12` 下多线程会快速消耗容量。
 
 - P3.2 已有用户 handler、signal frame 和 `sigreturn`；P4.1 已有内嵌 flat 镜像 `exec`、PID/任务槽保留、AS 替换和信号重置；P4.2 已有 `argv/envp` 解析、字符串迁移、SysV 初始栈和 `exec_argc/exec_envc` 元数据；P4.3 已有每进程 fd 表、匿名 pipe、`pipe/read/write/close` 和 exec 后 fd 保留；P4.4 已有全局 console fd 0/1、fork 继承、close 边界和 VGA/COM1 双写。仍没有 ELF loader、文件系统/路径 `open`、console 会话/前台焦点、`kill()`、信号排队、真正阻塞的 mask、`SA_SIGINFO`/`SA_RESTART` 等 POSIX 语义。

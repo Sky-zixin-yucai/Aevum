@@ -1,6 +1,6 @@
 # 进度
 
-> 更新于 2026-11-23。仓库第一个提交是 2026-11-05，首版展示页进度口径是 2026-11-08；这份文件只写能核对的状态，计划写在 [ROADMAP.md](ROADMAP.md)。
+> 更新于 2026-11-25。仓库第一个提交是 2026-11-05，首版展示页进度口径是 2026-11-08；这份文件只写能核对的状态，计划写在 [ROADMAP.md](ROADMAP.md)。
 
 ## 一句话
 
@@ -16,7 +16,7 @@
 | 纯内存中继 | `control/relay/` | 已实现 | 会话、上下文、分片、在线计数；无落盘 |
 | 监控服务 | `archive/backend-python/monitor/desktop_server.py` | 已实现 | 读检查点、训练指标、错误码；起模型子进程 |
 | 串口桥接 | `src/kernel/host/bridge/serial_bridge.py` | 已实现 | VGA 差量帧 + `0x02` / `0x03` 状态帧转 WebSocket；页面 `joint` / `full_refresh` 写回内核 |
-| 内核 | `src/kernel/host/console/robot/` | 维护中 | 唯一引导扇区（130 扇区两段读）、任务/进程、结构化错误、80×25 单元格、手动关节模式；P8 动态内核线程已验收 |
+| 内核 | `src/kernel/host/console/robot/` | 维护中 | 唯一引导扇区（130 扇区两段读）、任务/进程、结构化错误、80×25 单元格、手动关节模式；P8 动态内核线程与 P9 未 join kthread 的 grace 兜底已验收 |
 | Forge | `interface/web/forge/` | 可打开 | 原生 3R 建模/控制；glTF/GLB 导入、任意 link/joint 树、手动关节 + `0x03` 状态 |
 | Memoria C++ | `src/architecture/memoria/` + `src/architecture/memoria/include/` | 可编译 | 17 个 `.cpp`、17 个头文件；训练/生成/检查点 |
 | 桌面壳 | `interface/desktop/` | 可打包 | Electron 窗口、拉起监控；`dist:installer` 出 Inno Setup，`dist:dir` 出目录 |
@@ -66,6 +66,7 @@ $all = Get-ChildItem -Recurse -File -Force | Where-Object {
 - 内核 P6.0 完成细节收口：`process_wait()` 的 `pid>0` 先校验直接子进程，非子进程/不存在立即 -1；`pid<=0` 等任意直接子进程。父进程退出时记录最近一次 orphan/reparent 事件，V 页 TREE 第 20/21 行显示，G 页 reparent 面板支持 4 个子进程和 `+N more`。clean `kernel.bin=66,248` 字节，上限 66,560，余量 312 字节；速度基线见 `src/kernel/host/console/robot/PERFORMANCE.md`。
 - 内核 P7.1–P7.5 已验收：最小线程组 `clone/thread_exit/gettid/thread_join`、`thread_detach` 自动回收、主线程先退后 worker 继续、主线程不 join 时最后线程触发整组 `process_reap()`，以及阻塞 `wait` / `thread_join` 的 lost wake 防护；V 页同时给出线程组、detach、阻塞计数和整组回收证据。
 - 内核 P8 已验收：`kthread_create/exit/join/stats` 在运行时申请任务槽、TID 和 4KB 内核栈槽；`kping` 以 TID 4、动态栈槽退出 5，control 在 `kthread_join` 上阻塞后被唤醒并取回 status 5，join 释放动态栈、TID 和任务槽。QEMU 主页显示 `kthr 4 s5 OK`，tasks dump 中 slot 3 清零；clean `kernel.bin=75,336B`，上限 98,304B，余量 22,968B。
+- 内核 P9 已验收：未 join 的 kthread ZOMBIE 在 100 tick（100Hz 下 1 秒）grace 后由调度器兜底回收，释放 4KB 动态栈、TID 和任务槽；有人在 `kthread_wait_tid` 上等时绝不抢收。`kthread_stats` 增加 `auto_reaped`，`live=created-reaped` 守恒。QEMU 主页显示 `kt 4 s5 a1 OK`，同时证明正常 join 拿到 status 5、`korph` 被自动回收 1 次；clean `kernel.bin=77,160B`，上限 98,304B，余量 21,144B。
 - README 内核截图改为当前 AEVUM FORGE 工作台：左侧结构树、中间 QEMU 内核窗口、右侧 3D 视口与 Inspector 同屏；旧的机械臂主画面不再引用。
 
 ## 缺口（按优先级）

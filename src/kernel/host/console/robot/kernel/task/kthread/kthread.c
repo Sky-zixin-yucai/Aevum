@@ -6,9 +6,13 @@
 static u32 created_total;
 static u32 exited_total;
 static u32 reaped_total;
+static u32 auto_reaped_total;
 static u32 failed_total;
 static u32 join_block_total;
 static u32 join_wake_total;
+
+/* 100Hz PIT：100 tick = 1s。给正常 join 留出调用窗口，晚到的 join 返回 -1。 */
+#define KTHREAD_ZOMBIE_GRACE_TICKS 100u
 
 struct kthread_join_ctx {
     int tid;
@@ -29,6 +33,7 @@ void kthread_boot(void)
     created_total = 0;
     exited_total = 0;
     reaped_total = 0;
+    auto_reaped_total = 0;
     failed_total = 0;
     join_block_total = 0;
     join_wake_total = 0;
@@ -117,9 +122,12 @@ int kthread_join(int tid, u32 *status)
         }
     }
 
-    task_set_kthread_wait(0);
     if (status) *status = info.exit_code;
-    if (task_reap_kthread(tid) != 0) return -1;
+    if (task_reap_kthread(tid) != 0) {
+        task_set_kthread_wait(0);
+        return -1;
+    }
+    task_set_kthread_wait(0);
     reaped_total++;
     return 0;
 }
@@ -129,12 +137,23 @@ int kthread_self(void)
     return task_current_is_kthread() ? task_current_pid() : -1;
 }
 
+void kthread_reap_unjoined(void)
+{
+    int n = task_reap_unjoined_kthread(task_tick_total(),
+                                       KTHREAD_ZOMBIE_GRACE_TICKS);
+    if (n > 0) {
+        reaped_total += (u32)n;
+        auto_reaped_total += (u32)n;
+    }
+}
+
 void kthread_stats(struct kthread_stats *out)
 {
     if (!out) return;
     out->created = created_total;
     out->exited = exited_total;
     out->reaped = reaped_total;
+    out->auto_reaped = auto_reaped_total;
     out->failed = failed_total;
     out->join_blocks = join_block_total;
     out->join_wakes = join_wake_total;

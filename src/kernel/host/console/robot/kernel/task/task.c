@@ -1,6 +1,7 @@
 #include "kernel/task.h"
 #include "kernel/task/family.h"
 #include "kernel/task/stack.h"
+#include "kernel/kthread.h"
 #include "kernel/proc.h"
 #include "arch/x86/interrupt.h"
 #include "arch/x86/frame.h"
@@ -34,8 +35,9 @@ struct task_struct {
     u32  cpu_ticks;
     u32  exit_code;
     int  detached;  /* 1：线程退出后由调度器自动回收，不等待 join */
-    int  kthread;   /* 1：P8 动态内核线程，ZOMBIE 必须等 kthread_join */
+    int  kthread;   /* 1：P8 动态内核线程，ZOMBIE 由 join 或调度器兜底回收 */
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
+    u32  zombie_ticks;     /* 进入 ZOMBIE 时的 PIT tick，供未 join kthread 计龄 */
     u32  kernel_entry;     /* kthread 入口函数指针 */
     u32  kernel_arg;       /* kthread 入口参数 */
     u64  vruntime;
@@ -124,6 +126,7 @@ static void task_zero(struct task_struct *task)
     task->detached = 0;
     task->kthread = 0;
     task->kthread_wait_tid = 0;
+    task->zombie_ticks = 0;
     task->kernel_entry = 0;
     task->kernel_arg = 0;
     task->vruntime = 0;
@@ -542,7 +545,9 @@ void task_set_kthread_wait(int tid)
     if (current_task) current_task->kthread_wait_tid = tid;
 }
 
-/* kthread 已经真正 ZOMBIE：只唤醒明确在等这个 TID 的 joiner。 */
+/* kthread 已经真正 ZOMBIE：只唤醒明确在等这个 TID 的 joiner。
+ * wait_tid 保留到 kthread_join() 真正取走退出码并回收后再清，
+ * 否则兜底 reaper 可能抢在已唤醒的 joiner 前把目标收掉。 */
 void task_wake_kthread_waiters(int tid)
 {
     int i;
@@ -551,7 +556,6 @@ void task_wake_kthread_waiters(int tid)
     for (i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_BLOCKED &&
             tasks[i].kthread_wait_tid == tid) {
-            tasks[i].kthread_wait_tid = 0;
             tasks[i].state = TASK_READY;
         }
     }
@@ -578,6 +582,40 @@ int task_reap_kthread(int tid)
         }
     }
     return -1;
+}
+
+/*
+ * 未 join 的 kthread 兜底：超过 grace 个 PIT tick 仍没人等这个 TID，
+ * 就归还动态栈、PID 和任务槽。有人在 wait_tid 上等时绝不抢收，
+ * 让正常 join 先拿到退出码。
+ */
+int task_reap_unjoined_kthread(u32 now, u32 grace)
+{
+    int i, j, n = 0;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task_struct *t = &tasks[i];
+        int waited = 0;
+
+        if (t->state != TASK_ZOMBIE || !t->kthread) continue;
+        if (t == current_task) continue;
+        if (now - t->zombie_ticks < grace) continue;
+
+        for (j = 0; j < TASK_MAX; j++) {
+            if (tasks[j].state != TASK_UNUSED &&
+                tasks[j].kthread_wait_tid == t->pid) {
+                waited = 1;
+                break;
+            }
+        }
+        if (waited) continue;
+
+        kernel_stack_free(t->stack_top);
+        pid_free(t->pid);
+        task_zero(t);
+        n++;
+    }
+    return n;
 }
 
 /* 用户 ZOMBIE 由 process_wait/reaper 调用；这里只清任务槽，不释放 PID/AS。 */
@@ -800,9 +838,10 @@ u32 task_schedule_irq(struct irq_frame *frame)
     }
 
     if (prev->state == TASK_RUNNING) {
-        if (reason == SCHED_EXIT)
+        if (reason == SCHED_EXIT) {
             prev->state = TASK_ZOMBIE;
-        else if (reason == SCHED_BLOCK)
+            prev->zombie_ticks = tick_total;
+        } else if (reason == SCHED_BLOCK)
             prev->state = TASK_BLOCKED;
         else
             prev->state = TASK_READY;       /* yield 或 PIT 时间片到期 */
@@ -832,6 +871,7 @@ u32 task_schedule_irq(struct irq_frame *frame)
 
     task_reap();
     task_reap_detached();
+    kthread_reap_unjoined();
     process_reap_orphans();
     next = task_pick_next(prev);
 
