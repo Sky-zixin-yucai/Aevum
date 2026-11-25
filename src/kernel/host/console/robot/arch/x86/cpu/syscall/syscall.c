@@ -146,12 +146,13 @@ u32 syscall_dispatch(struct irq_frame *frame)
         case 21:
             frame->eax = (u32)process_gettid_current();
             break;
-        case 22:
-            frame->eax = (process_thread_join_current((int)frame->ebx,
-                                                      frame->ecx) == 0)
-                             ? 0u
-                             : (u32)-1;
+        case 22: {
+            int rc = process_thread_join_current((int)frame->ebx,
+                                                 frame->ecx);
+            /* P11.7：EINTR 必须透传 -3，不能被压成普通错误 -1。 */
+            frame->eax = (rc == 0) ? 0u : (rc == -3 ? (u32)-3 : (u32)-1);
             break;
+        }
         case 23:
             frame->eax = (process_thread_detach_current((int)frame->ebx) == 0)
                              ? 0u

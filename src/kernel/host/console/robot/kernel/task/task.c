@@ -93,6 +93,8 @@ static u32 idle_hlt_total;
 /* P11.5：显式时间片的到期与“片未尽、跳过重选”计数。 */
 static u32 slice_expire_total;
 static u32 tick_defer_total;
+/* P11.7：被 pending signal 打断的阻塞次数。 */
+static u32 eintr_total;
 #define WEIGHT_QUANTUM 64u
 
 /* FXSAVE 区域必须 16 字节对齐；模板只用于新任务的初始 FPU/SSE 状态。 */
@@ -1100,6 +1102,17 @@ const char *task_wake(int pid)
     return "pid";
 }
 
+/*
+ * P11.7：条件不满足时检查 pending signal。只消费一个 pending 位；
+ * 返回非 0 表示本次阻塞应立即以 EINTR 返回。
+ */
+static int task_block_signal(void)
+{
+    if (!process_signal_take_current()) return 0;
+    eintr_total++;
+    return 1;
+}
+
 int task_block_until(task_block_check_t ready, void *ctx)
 {
     u32 flags;
@@ -1112,6 +1125,10 @@ int task_block_until(task_block_check_t ready, void *ctx)
     if (ready && ready(ctx)) {
         __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
         return 0;
+    }
+    if (task_block_signal()) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+        return 2;
     }
 
     /*
@@ -1156,6 +1173,13 @@ int task_block_until_timeout(task_block_check_t ready, void *ctx, u32 ticks)
             __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
             return 1;
         }
+        if (task_block_signal()) {
+            current_task->wake_tick = 0;
+            current_task->waitq = 0;
+            current_task->wait_ticket = 0;
+            __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+            return 2;
+        }
         current_task->state = TASK_BLOCKED;
         current_task->wake_tick = deadline;
         sched_reason = SCHED_BLOCK;
@@ -1181,6 +1205,7 @@ int task_sleep_ticks(u32 ticks)
         sleep_wake_total++;
         return 0;
     }
+    if (rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
     return rc < 0 ? -1 : 0;
 }
 
@@ -1303,6 +1328,13 @@ int task_block_on(struct wait_queue *q, task_block_check_t ready,
             __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
             return 1;
         }
+        if (task_block_signal()) {
+            current_task->wake_tick = 0;
+            current_task->waitq = 0;
+            current_task->wait_ticket = 0;
+            __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+            return 2;
+        }
         current_task->state = TASK_BLOCKED;
         current_task->wake_tick = deadline;
         /*
@@ -1348,6 +1380,11 @@ void task_wq_stats(u32 *blocks, u32 *wake_one, u32 *wake_all, u32 *max_depth)
     if (wake_one) *wake_one = wq_wake_one_total;
     if (wake_all) *wake_all = wq_wake_all_total;
     if (max_depth) *max_depth = wq_max_depth;
+}
+
+u32 task_eintr_total(void)
+{
+    return eintr_total;
 }
 
 void task_set_idle_task(struct task_struct *task)

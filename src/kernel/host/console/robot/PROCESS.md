@@ -2,9 +2,9 @@
 
 本文主体讨论 ring3 用户进程，不把 `control/render/idle` 这三个静态内核任务当成完整进程；P8/P9 的动态内核线程单独列为 ring0 调度实体，它没有 PCB/线程组，生命周期由 `kthread_create/exit/join` 和 grace 兜底回收管理。
 
-P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/reap` 闭环。P2.1 把地址空间推进到“255 页物理池 + 6 个 VMA + brk + guard + copyin/copyout”。P2.2 完成 COW fork 与物理页引用计数。P3.1 完成用户同步异常的默认终止、信号 pending/SIGCHLD、wait status 编码和 V 页信号视图；P3.2 在默认终止之上加入每进程 handler 表、用户栈 signal frame、`sigreturn`，并修复第二次 fork 时已有 COW 页丢失 COW 位的问题；P4.1 加入内嵌 flat 镜像 `exec`，保留 PID/任务槽，替换用户 AS、入口、栈和信号状态；P4.2 给 `exec` 增加 `argv/envp` 解析、字符串迁移和 SysV 初始栈；P4.3 增加每进程 fd 表、匿名 pipe、`pipe/read/write/close`，并证明 exec 后 fd 表继续有效；P4.4 把 fd 0/1 接到 console 字符设备，验证键盘输入、VGA/COM1 输出、fork 继承和 close 边界。P7.0 增加 `spawn(image_id,argv,envp)`：不经过 fork，直接为当前进程创建独立 AS/PCB/内核栈/用户栈的子进程，D lane 用 image 1 子进程和 wait(10) 做闭环。P7.1 增加最小线程组：`clone` 只共享 VM/FILES/SIGHAND/THREAD，`task` 拥有独立 TID/内核栈/用户栈/FPU，`thread_exit` 只结束当前任务，`thread_join` 回收同组任务，最后一个活线程退出才让进程进入 ZOMBIE。P7.2 增加 `thread_detach`：detached 线程退出后由调度器延后回收任务槽/内核栈，之后 `thread_join` 返回 -1。P7.3 验证主线程先退、worker 继续并 join 主线程，同时把所有非法 join/detach 参数压回 -1。P7.4 验证主线程不 join、以 ZOMBIE 留在组内，worker A 退出后 worker B 作为最后活线程退出，由父 `wait` 的 `process_reap()` 一次性回收整组任务槽。P7.5 把 `wait` / `thread_join` 从 `task_yield_wait()` 轮询改成真正的 `BLOCKED -> WAKE`：在 `cli` 窗口内重查条件后写 `TASK_BLOCKED` 并进门，调度器只在任务已实际转 ZOMBIE 后唤醒同组 join 等待者和父进程组，避免 lost wake。P8 把同样的阻塞/唤醒语义用到 ring0 动态内核线程：`kthread_create` 运行时申请任务槽、TID 和栈池 4KB 栈，`kthread_exit` 只结束当前任务，`kthread_join` 等到目标真正 ZOMBIE 后读退出码并释放动态栈/TID/任务槽；`task_reap()` 跳过 kthread，静态 control/render/idle 仍使用固定栈。P9 补上未 join kthread 的泄漏兜底：ZOMBIE 后记录 `zombie_ticks`，过 100 tick grace 且没有任何任务在 `kthread_wait_tid` 上等它时，由调度器回收动态栈/TID/任务槽。P11.1 把阻塞等待补上超时：`task_struct` 增加 `wake_tick`，PIT 每 tick 扫描到期 BLOCKED 任务；新增用户态 `eax=24 sleep(ticks)` 与 `eax=25 wait_timeout(pid,status,ticks)`，条件满足优先于超时。P11.2 增加优先级生命周期：`eax=26 getpriority(tid)`、`eax=27 setpriority(tid,priority)`，`tid=0` 表示当前任务，0 最高、3 最低；用户态只能操作 user 任务，fork 子进程和 clone 线程继承调用者优先级。P11.3 增加对象等待队列与带 tick 上限的阻塞 I/O：保留 `eax=15 read` / `eax=16 write` 的非阻塞语义，新增 `eax=28 read_block` / `eax=29 write_block`；pipe 读写与 console 输入各挂等待队列，`task_block_on()` 在关中断窗口内重查条件、关中断入 BLOCKED，超时由 PIT tick 唤醒。P11.4 把 idle 从“固定 12% 份额的普通 READY 任务”改成真正的空闲任务：只要存在非 idle 的 READY 任务，`task_pick_next()` 就不选 idle；只有全系统没有非 idle READY 时才选 idle，`proc_idle` 执行 `sti; hlt` 停机。I 键制造 40 tick 的无其它 READY 探针，C 页新增 `IDLE hlt` 统计；K 键 block/wake 保留。P11.5 把“每个 PIT tick 都重选任务”改成显式时间片：`task_struct` 增加 `slice_left`，IRQ0 每 tick 只记账并递减，片未尽直接返回当前帧，片归零才调用 `task_pick_next()`；C 页新增 `QUANTUM` 与 `EXP`，用 CPU-bound duel 证明 4 tick 片到期才抢占。P11.6 把对象等待队列从 16 槽广播改成 ticket FIFO + 定向唤醒：每个队列只保存单调票据分配器，等待者首次 BLOCKED 取 `wait_ticket`，`wait_queue_wake_one()` 选票据最小的 BLOCKED 成员置 READY；条件重查失败再次阻塞时保留原票据，关闭/EOF 等终止条件仍走 `wake_all`。
+P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/reap` 闭环。P2.1 把地址空间推进到“255 页物理池 + 6 个 VMA + brk + guard + copyin/copyout”。P2.2 完成 COW fork 与物理页引用计数。P3.1 完成用户同步异常的默认终止、信号 pending/SIGCHLD、wait status 编码和 V 页信号视图；P3.2 在默认终止之上加入每进程 handler 表、用户栈 signal frame、`sigreturn`，并修复第二次 fork 时已有 COW 页丢失 COW 位的问题；P4.1 加入内嵌 flat 镜像 `exec`，保留 PID/任务槽，替换用户 AS、入口、栈和信号状态；P4.2 给 `exec` 增加 `argv/envp` 解析、字符串迁移和 SysV 初始栈；P4.3 增加每进程 fd 表、匿名 pipe、`pipe/read/write/close`，并证明 exec 后 fd 表继续有效；P4.4 把 fd 0/1 接到 console 字符设备，验证键盘输入、VGA/COM1 输出、fork 继承和 close 边界。P7.0 增加 `spawn(image_id,argv,envp)`：不经过 fork，直接为当前进程创建独立 AS/PCB/内核栈/用户栈的子进程，D lane 用 image 1 子进程和 wait(10) 做闭环。P7.1 增加最小线程组：`clone` 只共享 VM/FILES/SIGHAND/THREAD，`task` 拥有独立 TID/内核栈/用户栈/FPU，`thread_exit` 只结束当前任务，`thread_join` 回收同组任务，最后一个活线程退出才让进程进入 ZOMBIE。P7.2 增加 `thread_detach`：detached 线程退出后由调度器延后回收任务槽/内核栈，之后 `thread_join` 返回 -1。P7.3 验证主线程先退、worker 继续并 join 主线程，同时把所有非法 join/detach 参数压回 -1。P7.4 验证主线程不 join、以 ZOMBIE 留在组内，worker A 退出后 worker B 作为最后活线程退出，由父 `wait` 的 `process_reap()` 一次性回收整组任务槽。P7.5 把 `wait` / `thread_join` 从 `task_yield_wait()` 轮询改成真正的 `BLOCKED -> WAKE`：在 `cli` 窗口内重查条件后写 `TASK_BLOCKED` 并进门，调度器只在任务已实际转 ZOMBIE 后唤醒同组 join 等待者和父进程组，避免 lost wake。P8 把同样的阻塞/唤醒语义用到 ring0 动态内核线程：`kthread_create` 运行时申请任务槽、TID 和栈池 4KB 栈，`kthread_exit` 只结束当前任务，`kthread_join` 等到目标真正 ZOMBIE 后读退出码并释放动态栈/TID/任务槽；`task_reap()` 跳过 kthread，静态 control/render/idle 仍使用固定栈。P9 补上未 join kthread 的泄漏兜底：ZOMBIE 后记录 `zombie_ticks`，过 100 tick grace 且没有任何任务在 `kthread_wait_tid` 上等它时，由调度器回收动态栈/TID/任务槽。P11.1 把阻塞等待补上超时：`task_struct` 增加 `wake_tick`，PIT 每 tick 扫描到期 BLOCKED 任务；新增用户态 `eax=24 sleep(ticks)` 与 `eax=25 wait_timeout(pid,status,ticks)`，条件满足优先于超时。P11.2 增加优先级生命周期：`eax=26 getpriority(tid)`、`eax=27 setpriority(tid,priority)`，`tid=0` 表示当前任务，0 最高、3 最低；用户态只能操作 user 任务，fork 子进程和 clone 线程继承调用者优先级。P11.3 增加对象等待队列与带 tick 上限的阻塞 I/O：保留 `eax=15 read` / `eax=16 write` 的非阻塞语义，新增 `eax=28 read_block` / `eax=29 write_block`；pipe 读写与 console 输入各挂等待队列，`task_block_on()` 在关中断窗口内重查条件、关中断入 BLOCKED，超时由 PIT tick 唤醒。P11.4 把 idle 从“固定 12% 份额的普通 READY 任务”改成真正的空闲任务：只要存在非 idle 的 READY 任务，`task_pick_next()` 就不选 idle；只有全系统没有非 idle READY 时才选 idle，`proc_idle` 执行 `sti; hlt` 停机。I 键制造 40 tick 的无其它 READY 探针，C 页新增 `IDLE hlt` 统计；K 键 block/wake 保留。P11.5 把“每个 PIT tick 都重选任务”改成显式时间片：`task_struct` 增加 `slice_left`，IRQ0 每 tick 只记账并递减，片未尽直接返回当前帧，片归零才调用 `task_pick_next()`；C 页新增 `QUANTUM` 与 `EXP`，用 CPU-bound duel 证明 4 tick 片到期才抢占。P11.6 把对象等待队列从 16 槽广播改成 ticket FIFO + 定向唤醒：每个队列只保存单调票据分配器，等待者首次 BLOCKED 取 `wait_ticket`，`wait_queue_wake_one()` 选票据最小的 BLOCKED 成员置 READY；条件重查失败再次阻塞时保留原票据，关闭/EOF 等终止条件仍走 `wake_all`。P11.7 把 pending signal 接入阻塞点：`task_block_until/task_block_until_timeout/task_block_on` 在条件不满足时取走一个 pending 位并以内部码 2 返回，`read_block/write_block/sleep/wait/wait_timeout/thread_join` 统一返回 -3（EINTR）；条件优先于超时、超时优先于信号，同一 tick 的 deadline 先返回。
 
-## 一、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9/P10/P11.1/P11.2/P11.3/P11.4/P11.5/P11.6 现在的实现
+## 一、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9/P10/P11.1/P11.2/P11.3/P11.4/P11.5/P11.6/P11.7 现在的实现
 
 | 能力 | 当前实现 | 位置 |
 | --- | --- | --- |
@@ -46,6 +46,7 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 | P11.4 idle 停机 | `task_set_idle_task()` 在 idle 创建后登记静态 `idle_task`；`task_pick_next()` 同时收集非 idle 的 `best` 和 `idle_best`：只要存在非 idle READY 就返回 `best`，只有全系统没有非 idle READY 时才返回 `idle_best`。`proc_idle` 被选中后执行 `task_note_idle_hlt(); sti; hlt`，不再忙等 `task_yield`。I 键（扫描码 `0x17`）把 control/render 主动置 BLOCKED 40 tick，制造“无其它 READY”窗口；到期由 idle 唤醒两者、清 phase 后 yield。C 页显示 `IDLE hlt <count>`；K 键 block/wake 保留 | `include/kernel/task.h`、`kernel/task/task.c`、`app/arm/app/app.c`、`app/arm/render/render.c` |
 | P11.5 显式时间片 | `TASK_SLICE_TICKS=4u`（100Hz 下 40ms）；`task_struct` 增加 `slice_left`，`task_boot/task_create_common/task_pick_next` 把它初始化为 4。IRQ0 每 tick 仍做 `tick_total++/task_wake_expired/cpu_ticks/vruntime`，之后递减 `slice_left`；片仍大于 0 时 `tick_defer_total++` 并直接返回当前 `irq_frame`，不调用 `task_pick_next()`；片到 0 时 `slice_expire_total++` 才进入原调度路径。`task_slice_stats()` 导出 quantum/expires/defers，C 页显示 `QUANTUM 4t` 与 `EXP <n>` | `include/kernel/task.h`、`kernel/task/task.c`、`app/arm/render/render.c` |
 | P11.6 等待队列 ticket FIFO | `struct wait_queue` 从 `u8 wake_seq` 改为 `u32 next_ticket + u32 wakes`；`task_struct` 增加 `u32 wait_ticket`。`wait_queue_init()` 把 `next_ticket` 初始化为 1，`wait_ticket_alloc()` 单调分配；`task_block_on()` 首次入队取票并统计队列深度，虚假唤醒后重查失败再次阻塞时保留原票据。`wait_queue_wake_one()` 线性扫 16 槽，用有符号差值比较票据、处理回绕，只把票据最小的 BLOCKED 成员置 READY，不清其票据；条件满足/超时/退出/广播时才清。pipe 读消费后定向唤醒写者、仍有数据再唤醒下一个读者，写入后只唤醒一个读者；console 输入只唤醒一个读者，仍有积压再唤醒下一个；pipe release 的关闭/EOF 继续 `wake_all`。`task_wq_stats(blocks,wake_one,wake_all,max_depth)` 导出 C 页 `WQ blk/one/all/dep` | `include/kernel/task.h`、`kernel/task/task.c`、`kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`、`app/arm/render/render.c`、`user/exec-io/exec_io.asm` |
+| P11.7 可中断阻塞 EINTR | 新增 `process_signal_take_current()`：按信号号取走当前进程最低位 pending 并清 bit，0 表示无信号。`task_block_until/task_block_until_timeout/task_block_on` 在条件不满足时检查 pending，命中则清 `waitq/wait_ticket/wake_tick`、递增 `eintr_total`、返回内部码 2；条件优先于 deadline，deadline 优先于信号。`task_sleep_ticks`、`pipe_read_block/write_block`、`console_read_block`、`process_wait_common`、`process_thread_join_current` 把内部码 2 映射为 -3；syscall case 22 保留 -3，不压成 -1。C 页第 22 行显示 `EINTR <n>`；image 3 用 SIGCHLD 分别打断 sleep/read_block/write_block/wait_timeout/thread_join | `include/kernel/task.h`、`include/kernel/proc.h`、`kernel/task/task.c`、`kernel/proc/process.c`、`kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`、`arch/x86/cpu/syscall/syscall.c`、`app/arm/render/render.c`、`user/exec-io/exec_io.asm` |
 | wait status | 正常退出保留原退出码（`exit(7) -> 7`）；信号终止为 `0x80000000` 按位或 `sig`（`#DE -> 0x80000008`） | `PROC_WAIT_STATUS()` |
 | PCB 信号字段 | `pending/last_sig/term_sig/sig_count/sigchld_count`；`process_info` 同步暴露 | `kernel/proc/process.c` |
 | pending 位图 | `pending |= 1u << (sig - 1)`；只记录 1..31 号信号，不在这里改进程状态 | `proc_signal_pending()` |
@@ -496,7 +497,7 @@ QEMU 实测（P10 clean 构建 `kernel.bin=77,544`，`__bss_start=0x92F00`、`__
 
 ## 十二、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9/P10/P11.1/P11.2/P11.3/P11.4/P11.5 边界与已知取舍
 
-- P7.4 期间 `wait` / `join` 仍是 `task_yield_wait()` 轮询；P7.5 已改为 `task_block_until()` 的真正阻塞。P6.0 的参数语义保持不变：`pid>0` 必须先是当前进程的直接子进程，否则立即返回 -1；`pid<=0` 等任意直接子进程。P11.1 已补 `wait_timeout` 与 `sleep`，P11.2 已补 fork/clone 优先级继承；仍没有 EINTR、完整 `WNOHANG` 语义和 `setpriority` 权限组/进程组语义。
+- P7.4 期间 `wait` / `join` 仍是 `task_yield_wait()` 轮询；P7.5 已改为 `task_block_until()` 的真正阻塞。P6.0 的参数语义保持不变：`pid>0` 必须先是当前进程的直接子进程，否则立即返回 -1；`pid<=0` 等任意直接子进程。P11.1 已补 `wait_timeout` 与 `sleep`，P11.2 已补 fork/clone 优先级继承；P11.7 已补 `wait`/`wait_timeout` 的 EINTR；仍没有完整 `WNOHANG` 语义和 `setpriority` 权限组/进程组语义。
 - `proc_orphan_children()` 现在把 LIVE 和 ZOMBIE 的直接子进程都改成 `ppid=0`，并写一份全局最近事件；ZOMBIE 子进程仍由 `process_reap_orphans()` 回收。事件只是 V 页只读快照，不改变调度或回收顺序。
 - G 页 reparent 面板从“最多 3 个子进程”改为 4 个；`child_count > 4` 时在第 13 行显示 `+N more`，`children` 计数仍显示总数，列表只放前 4 个。
 - V 页 TREE 的 `ORPHAN` 行占第 20/21 行，树节点上限从第 21 行收到第 19 行；第 22 行仍是 TREE 统计，第 23/24 行仍是公共底栏。当前用户 demo 没有“父进程先退出、子进程继续存活”的 lane，所以 TREE 页默认显示 `ORPHAN none yet`；事件路径已由 `process_terminate_current()` / `process_exit_current()` 的真实退出路径调用，不是渲染层伪造。
@@ -510,13 +511,13 @@ QEMU 实测（P10 clean 构建 `kernel.bin=77,544`，`__bss_start=0x92F00`、`__
 - P7.2 的 `thread_detach` 只是生命周期控制：没有 detach 时仍必须 join；detached 线程的退出码不可再读取；`task_reap_detached()` 依赖下一次调度事件，不会在 `thread_exit` 返回前释放当前栈。
 - P7.3 已覆盖 join/detach 的 0、-1、self、不存在 TID，但未覆盖“跨线程组 join 一个真实存在的 TID”、detach 一个已 ZOMBIE 的线程、以及主线程 detach 自己后退出；这些仍由同组 `proc` 校验和 detached 延后回收兜底，尚未做成独立断言。
 - P7.4 已覆盖主线程 ZOMBIE 留在组内、由最后线程退出触发 `process_reap()` 整组释放的变体，并确认 tasks 表里该子进程整组任务槽全部消失。未覆盖：worker B 不 join A、A 先 exit 5 但仍以 ZOMBIE 留在组内直到整组回收；detached worker 故障终止整组；以及主线程 ZOMBIE 被单独 detach。
-- P7.5 已覆盖 `wait` 与 `thread_join` 的“目标仍 LIVE 时阻塞、随后被唤醒”正向路径，并用全局计数证明阻塞与唤醒都发生。未覆盖：等待期间收到信号后的 EINTR、`wait`/`join` 超时、多个父/子/线程同时等待同一目标、以及目标在唤醒后再次变成 LIVE（PID/TID 复用）的竞态；当前依赖 `ready()` 在外层重查后走完整扫描或错误返回。
+- P7.5 已覆盖 `wait` 与 `thread_join` 的“目标仍 LIVE 时阻塞、随后被唤醒”正向路径，并用全局计数证明阻塞与唤醒都发生。P11.7 已覆盖等待期间收到 pending 信号后的 EINTR（返回 -3），但只验证 SIGCHLD，不覆盖 `kill()` 注入、handler 投递、`SA_RESTART` 或 per-thread pending。未覆盖：`wait`/`join` 超时、多个父/子/线程同时等待同一目标、以及目标在唤醒后再次变成 LIVE（PID/TID 复用）的竞态；当前依赖 `ready()` 在外层重查后走完整扫描或错误返回。
 - P8 的 kthread 只做单创建者、单 joiner 最小闭环：支持 create/exit/self/join/stats，不支持 detach、超时、取消、优先级继承或 kthread 之间组成线程组；未 join 的 kthread ZOMBIE 已由 P9 的 100 tick grace 兜底回收，但晚于 grace 才 join 会得到 -1。`kthread_create` 只允许 ring0 任务调用，用户态没有入口；kthread 不创建 PCB、不进入 process 家族回收路径。未做多等待者、TID 复用竞态和高频创建/销毁压力测试。
 - P9 clean 构建为 77,160B、上限 98,304B、余量 21,144B；`__bss_start=0x92D80`、`__bss_end=0x96DFC`，BSS 距 `AEVUM_KERNEL_END=0x97000` 仅 516B。每个任务槽从 P8 的 100B 增至 104B（`task_struct` 新增 `zombie_ticks`），16 槽共增加 64B；继续加内核数据结构前必须先核算 BSS 和镜像体积。
 - P9 只验证“单创建者、无 joiner”的自动回收：多 joiner 等同一 TID、join 超时/取消、TID 复用竞态、kthread 故障终止、worker 池和高频创建/销毁仍未覆盖。`task_reap_unjoined_kthread()` 每轮调度扫 16 个任务槽，没有做单独延迟测量；`task_struct` 的 `zombie_ticks` 只用于计龄，不参与优先级或调度排序。
 - P10 的 exit ring 是全局固定 4 槽，不按父进程或 PID 分桶；高并发 fork/wait 时早期退出摘要会被覆盖，V 页 `REAP0/REAP1` 只保证“最近两次”，不保证任意历史。ring 不做事务化快照，单核 PIT 窗口内 `process_exit_snapshot()` 与 `process_reap()` 并发时可能读到前一条 `seq` 的部分字段；当前接受“可观察面优先”。PCB 清零后 `process_snapshot()` 对该槽返回 0，V 页不再显示 DEAD 行；信号死因改由 ring 的最新生效记录保留。
 - P11.4 只做单核 idle：没有 SMP/APIC timer、没有 tickless、没有多级 idle，也没有 idle 进入/退出延迟和唤醒源统计；I 键探针靠 control/render 主动 block 制造窗口，不是通用的“全系统自然空闲”检测。`task_pick_next()` 仍线性扫描 16 槽，idle 是否被选中只看本轮 READY 集合，不做负载预测或历史份额。C 页 `IDLE hlt` 是 idle 循环执行 `sti; hlt` 的次数，不是 PIT tick 总数。
-- P11.5 只做固定 4 tick 的单核片：片长不按优先级缩放，高优先级只改 `vruntime` 权重与长期份额，不延长单次连续运行上限；没有动态片、剩余片继承、抢占阈值、调度延迟统计。`task_yield()` 视为主动放弃剩余片，`task_pick_next()` 会给下一个任务重置整片，所以协作式 control/render 正常负载下 C 页 `EXP` 为 0 是预期结果；片到期证据必须用不让出的 CPU-bound duel 或 idle 探针。`EXP` 是片到期次数，`PREEMPTIONS` 是实际换了任务的次数，片到期后仍选回同一任务时只增 `EXP` 不增 `PREEMPTIONS`。P11.5 当时等待队列仍是广播、不是 FIFO，仍没有 EINTR；P11.6 已补 ticket FIFO 与定向唤醒，EINTR、poll/select、等待延迟统计仍留后续。
+- P11.5 只做固定 4 tick 的单核片：片长不按优先级缩放，高优先级只改 `vruntime` 权重与长期份额，不延长单次连续运行上限；没有动态片、剩余片继承、抢占阈值、调度延迟统计。`task_yield()` 视为主动放弃剩余片，`task_pick_next()` 会给下一个任务重置整片，所以协作式 control/render 正常负载下 C 页 `EXP` 为 0 是预期结果；片到期证据必须用不让出的 CPU-bound duel 或 idle 探针。`EXP` 是片到期次数，`PREEMPTIONS` 是实际换了任务的次数，片到期后仍选回同一任务时只增 `EXP` 不增 `PREEMPTIONS`。P11.5 当时等待队列仍是广播、不是 FIFO，仍没有 EINTR；P11.6 已补 ticket FIFO 与定向唤醒，P11.7 已补 EINTR，poll/select、等待延迟统计仍留后续。
 - P7.1 的多线程 `exec` 采取拒绝策略，不杀其他线程；长期是“拒绝”还是“exec 杀死同组其他线程”尚未定。线程 TID 与进程 TGID 共用 `PID_MAX=31`，且各占一个任务槽和 4KB 内核栈，`PROC_MAX=12/TASK_MAX=16/KSTACK=12` 下多线程会快速消耗容量。
 
 - P3.2 已有用户 handler、signal frame 和 `sigreturn`；P4.1 已有内嵌 flat 镜像 `exec`、PID/任务槽保留、AS 替换和信号重置；P4.2 已有 `argv/envp` 解析、字符串迁移、SysV 初始栈和 `exec_argc/exec_envc` 元数据；P4.3 已有每进程 fd 表、匿名 pipe、`pipe/read/write/close` 和 exec 后 fd 保留；P4.4 已有全局 console fd 0/1、fork 继承、close 边界和 VGA/COM1 双写。仍没有 ELF loader、文件系统/路径 `open`、console 会话/前台焦点、`kill()`、信号排队、真正阻塞的 mask、`SA_SIGINFO`/`SA_RESTART` 等 POSIX 语义。
@@ -551,7 +552,7 @@ P11.1 在不改调度器单核结构的前提下，给 `TASK_BLOCKED` 增加一�
 - D lane 顺序：P7.5 阻塞验收写 `WBLK` 后进入 timer 轮；先 fork 慢子并做 5 tick 超时，再 50 tick 回收；再 fork 快子做 20 tick 回收。全部通过写 `0x401250="TMR1"`，V 页 ADDRESS 显示 `tmr OK`。
 - 构建：clean `kernel.bin=78,536`、上限 98,304、余量 29,768B；`__bss_start=0x932E0`、`__bss_end=0x972DC`；`AEVUM_KERNEL_END` 修正为 `0x98000`（boot 实际读 192 扇区到 `0x98000`），BSS 余量 3,364B。`struct task_struct` 从 104B 增至 108B，16 槽 +64B；`.text=0x113A0`、`.rodata=0x1E38`、`.data=0xE8`、`.bss=0x3FFC`。
 - QEMU：D 页 ADDRESS `tmr OK`、`CHILDREN live 0 zomb 0`、`blk 6 /1`；C 页 `SLEEP b 2 w 2 tmo 3`；P5.3 复测 `round 100/100 first 5 -> 5 live 1 state STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。
-- 边界：超时目前只按 PIT tick，不是高精度时钟；`wait_timeout` 未处理 EINTR/WNOHANG 的完整 POSIX 语义，`ticks=0` 是非阻塞轮询但不是 `WNOHANG` 返回值约定。`sleep` 不可被信号提前打断；超时后不会自动杀子进程；多等待者同时等同一目标仍未覆盖。若继续加字段，BSS 余量足够但 `struct task_struct` 已到 108B，优先复用字段而不是扩静态数组。
+- 边界：超时目前只按 PIT tick，不是高精度时钟；P11.7 已补 EINTR，但 `wait_timeout` 仍未处理完整 POSIX 语义，`ticks=0` 是非阻塞轮询但不是 `WNOHANG` 返回值约定。`sleep` 现在可被 pending signal 提前打断并返回 -3；超时后不会自动杀子进程；多等待者同时等同一目标仍未覆盖。若继续加字段，BSS 余量足够但 `struct task_struct` 已到 120B，优先复用字段而不是扩静态数组。
 
 ### P11.2 优先级读写与 fork/clone 继承
 
@@ -611,7 +612,7 @@ P11.3 在不改 `read/write` 既有返回约定的前提下，把阻塞点从“
 
 - 等待队列是 16 槽全表广播，不是 per-object 链表：一次唤醒 O(16)，没有 FIFO 公平性，也没有按优先级选择；多个等待者同时被唤醒后由调度器重新选，可能重复抢同一条件。
 - `ticks` 仍是 PIT tick 粒度（100Hz=10ms），不是高精度 deadline；超时与 P11.1 共用全局 `timeout_wake_total`，image3 的等待超时会进入 C 页 `SLEEP tmo` 口径，这是当前已知的统计混用。
-- pipe 的 `writers/readers` 计数跟 fd 引用走，但 fork/close 时序仍可能让写者在边界处看到 `readers==0`；这是“端点已关”的真实语义，不是 lost wake。没有 `poll/select`、没有 EINTR、没有非阻塞标志位、没有部分写保证。
+- pipe 的 `writers/readers` 计数跟 fd 引用走，但 fork/close 时序仍可能让写者在边界处看到 `readers==0`；这是“端点已关”的真实语义，不是 lost wake。P11.7 已让 `read_block/write_block` 在条件不满足时响应 pending signal 并返回 -3；仍没有 `poll/select`、非阻塞标志位、部分写保证。
 - console 只有输入队列可阻塞；输出没有队列满/背压路径。image 3 是独立 4KB code VMA，不参与 ring3 的 code_size 预算，但 spawn 仍固定 priority 1、不继承父优先级。
 
 ## 十四、P11.4 idle 停机与空闲调度
@@ -686,7 +687,7 @@ P11.4 之后调度器仍有一个结构缺口：IRQ0 每个 tick 都走到 `task
 - 片固定 4 tick，不按优先级缩放；100Hz 粒度下最短连续运行 40ms。高优先级只影响 `vruntime` 权重与长期份额，不延长单次片。
 - 仍是单核、16 槽线性扫描；没有 O(1) runqueue、红黑树、deadline/EDF、SMP、per-CPU runqueue、负载均衡或实时调度类。
 - 没有调度延迟、每任务等待时间、队列深度、片用完次数排行等统计；C 页只给全局 `EXP`。
-- 等待队列广播非 FIFO、无 EINTR、无 poll/select，这些仍属于 P11.3 的等待语义缺口，P11.5 没有顺手扩大。
+- 等待队列广播非 FIFO、无 EINTR、无 poll/select，这些仍属于 P11.3 的等待语义缺口，P11.5 没有顺手扩大；P11.6 已补 FIFO，P11.7 已补 EINTR。
 
 ## 十六、P11.6 等待队列 ticket FIFO 与定向唤醒
 
@@ -736,6 +737,61 @@ P11.3 的 16 槽等待队列只有广播：一次 `wake_all` 把所有 `waitq==q
 ### 边界
 
 - 只保证“已经 BLOCKED 的等待者”按票据唤醒；新到者可以插队，不是门票式严格 FIFO。
-- 没有 per-object 链表，唤醒仍是 16 槽线性扫描；没有优先级等待队列、等待时间/唤醒延迟统计、EINTR、poll/select、SMP。
+- 没有 per-object 链表，唤醒仍是 16 槽线性扫描；没有优先级等待队列、等待时间/唤醒延迟统计、poll/select、SMP。EINTR 已由 P11.7 补上。
 - 票据只在条件满足/超时/退出/广播时清除；虚假唤醒后重入队保留原票据是刻意行为，避免被反复唤醒的等待者永远排到队尾。
 - `wake_all` 仍用于关闭/EOF；常规数据到达只 `wake_one`，因此多个读者不会同时被叫醒后重复抢同一份数据。
+
+## 十七、P11.7 可中断阻塞（EINTR）
+
+P11.6 补上了等待队列的 FIFO 与定向唤醒，但所有阻塞点仍只会返回“条件满足 / 超时 / 错误”。P11.7 把已有的进程 pending signal 接入阻塞判断：条件不满足且当前进程有 pending 信号时，不再继续睡，而是返回 -3（EINTR），让用户态能先处理信号或子进程退出，再决定是否重试。
+
+### 内部返回码与信号消费
+
+- `process_signal_take_current()` 在 `kernel/proc/process.c` 中按信号号从 1 到 31 扫描 `process->pending`，取走最低位并清掉该 bit；没有 pending 返回 0。它不是新的异步投递器，只是把“有信号待处理”变成一个可消费的中断令牌。
+- 当前内核没有异步用户 handler 投递路径，SIGCHLD 只在子进程退出时由 `proc_notify_parent()` 置 pending；因此如果不清 bit，用户态每次重试阻塞都会立刻再次 EINTR。P11.7 的语义是“每次 EINTR 消费一个 pending 位”；`sig_count/sigchld_count` 仍保留历史累计，不清零。
+- `task_block_until()`、`task_block_until_timeout()`、`task_block_on()` 在 `cli` 窗口内先查条件；条件满足仍然优先返回 0。随后定时版本查绝对 deadline，到期返回 1；deadline 未到才检查 pending，命中则清 `wake_tick/waitq/wait_ticket`，递增 `eintr_total`，返回内部码 2。
+- 同一 tick 内条件、超时、信号同时成立时的优先级是“条件 > 超时 > 信号”。因此 `wait_timeout` 在 deadline 已到的 tick 仍返回 0 超时，不会因为同一 tick 的子进程 SIGCHLD 改报 -3。
+- `ticks=0` 的 `sleep`、`read_block`、`write_block`、`wait_timeout` 仍只做一次非阻塞查询，不进入 BLOCKED，也不检查 pending；它们保持 P11.1/P11.3 的旧语义。
+
+### 用户 ABI 映射
+
+- `task_sleep_ticks()`：内部码 2 映射为 -3，成功仍 0，其它错误 -1。
+- `pipe_read_block()`、`pipe_write_block()`、`console_read_block()`：内部码 2 映射为 -3；成功字节数、EOF 0、参数/端点错误 -1、超时 -2 不变。
+- `process_wait_common()`：timed 和 untimed 分支都在 `task_block_*` 返回 2 时直接返回 -3；`wait` 成功仍返回子 PID，`wait_timeout` 超时仍返回 0。
+- `process_thread_join_current()`：阻塞返回 2 时返回 -3；syscall case 22 单独保留 -3，不再把所有非 0 结果压成 -1。`thread_detach` 等其它非阻塞错误仍是 -1。
+- `read_block/write_block/sleep/wait/wait_timeout/thread_join` 的旧参数、旧成功返回值和旧错误码全部保持不变；只有“阻塞中被 pending signal 打断”这一种情况新增 -3。
+- `kthread_join()` 继续使用 `task_block_until()`；内核线程没有 PCB，`process_signal_take_current()` 返回 0，所以 P11.7 不改变 kthread 的 join 语义。
+
+### C 页观测
+
+- `task.c` 新增静态 `eintr_total` 与 `task_eintr_total()`；每次内部码 2 返回时只加 1。
+- `render.c` 第 22 行改为 `priority 0..3 -> weight 1..4; EINTR <n>`，数字放在第 39 列；非 0 用绿色。
+- P11.7 没有新增 task 字段，`sizeof(struct task_struct)` 仍为 120B，`sizeof(struct wait_queue)` 仍为 8B；新增的只是 4B 统计全局。
+
+### image 3 五段 EINTR 验收
+
+- 仍不新增 image 4、不改 ring3；在 P11.3/P11.6 的 image 3 上继续扩展，新数据区从 `0x401140` 开始：两个 pipe `0x401140/0x401148`，子 PID `0x401150/0x401154`，status `0x401158`，TID `0x40115C`，线程栈顶 `0x401F00`（同一 data 页）。
+- 场景 1：fork 子进程 sleep 20 后 exit(0)，父进程 `sleep(200)`；子退出置 SIGCHLD 并唤醒父进程，父的 sleep 必须返回 -3；随后 `wait` 拿到该子 PID 和状态 0。
+- 场景 2：创建 pipe，父进程保留写端，子进程只保留写端并 sleep 20 后 exit(0)；子退出后 pipe 仍有父进程写端，非 EOF，父 `read_block(1B,500)` 必须返回 -3；关闭两端后 `wait` 子进程状态 0。
+- 场景 3：创建 pipe，父进程保留读端并填满 64B，子进程只保留读端并 sleep 20 后 exit(0)；子退出后读者仍在，写条件不满足，父 `write_block(1B,500)` 必须返回 -3；关闭两端后 `wait` 状态 0。
+- 场景 4：fork 长子 A（sleep 200 后 exit 0）和次子 B（sleep 20 后 exit 7）；父 `wait_timeout(A,200)` 在 B 退出时收到 SIGCHLD，必须返回 -3；随后 `wait(B)` 拿到状态 7，再 `wait(A)` 拿到状态 0。
+- 场景 5：fork 子 C（sleep 20 后 exit 0），clone 一个 worker 线程；父 `thread_join(worker)` 在 C 退出时返回 -3；`wait(C)` 后再次 join worker 成功返回 0，状态 0。worker 不能用 sleep，否则 SIGCHLD 会同时打断 worker 的 sleep 并抢走同一进程的 pending 位；这里用纯用户态计数循环保持 RUNNING/READY，拖到子进程退出之后才 `thread_exit(0)`。
+- 失败码新增 20..25；成功先输出 `P11.3 IO OK\n`、`P11.6 WQ OK\n`、`P11.7 EINTR OK\n`，最后写 `0x401040="IO13"` 并 `exit(0)`。D lane 仍只检查 image 3 退出码并写 `0x4012A0="IOB1"`。
+
+### 构建与 QEMU 证据
+
+- clean build：`make clean && make` RC=0，无编译 warning。`kernel.bin=85,640B`（P11.6 84,264B，+1,376B）；`size kernel.elf` 的 text 列 85,369B、`.data=232B`、`.bss=16,700B`；`__bss_start=0x94EA0`、`__bss_end=0x98FDC`，距 `AEVUM_KERNEL_END=0x9A000` 余 `0x1024`（4,132B）；镜像距 106,496B 上限余 20,856B。`sizeof(struct task_struct)=120B`、`sizeof(struct wait_queue)=8B`。image 3 `user_io_exec_start=0x81380..0x81D0F`，代码 2,447B，仍小于 4KB code VMA。
+- SHA256：kernel `d21a23dd6d28f580793ad0b23bff112381f60749d4e0a4d4ebf90910a95db1ee`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `03f1fd15d5f0dff0a14a84caf4708b95930a13bad61373bbb06327a1bce382f1`。
+- 主页面：`kt 4 s5 a1 OK`，机械臂正常，control/render 57/43，idle 0%。
+- V/ADDRESS 选中 PID 7 的 userD：`REAP1 6 img 3 a0 e0`、`CHILDREN live 0 zomb 0`、`SIG pending 00000000 last 17 count 11 child 11`，说明五段 EINTR 路径跑完且没有遗留 pending；image 3 以 0 退出，失败码 20..25 未触发。
+- C 页：PIT 7,222 tick，`PREEMPTIONS 0`、`EXP 0`，`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`、`EINTR 7`、`IDLE hlt 0`。`EINTR 7` 中五个是 P11.7 的显式路径，另外两次来自更早 P11.3/P11.6 阻塞用例的子进程退出竞态；image 3 的五处 `cmp eax,-3` 都通过。
+- P5.3 复测：按 `S` 进入压测页，`round 100/100 first 5 -> 5 live 1 state STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`，说明 EINTR 接入没有破坏 fork/wait 回收。
+- `P11.7 EINTR OK` 的 console 文本仍无法直接从 UART serial 抓取：serial 同时承载高频二进制关节状态帧；通过 image 3 退出码 0、V 页 `img 3 a0 e0`、`SIG pending 0` 和 C 页 `EINTR 7` 间接证明五段阻塞路径通过。
+
+### 边界
+
+- 只做“已有 pending signal 打断阻塞”，不新增 `kill()`、信号排队、异步用户 handler 投递、`SA_RESTART` 或信号 mask 语义；P11.7 不是完整 POSIX 信号实现。
+- pending 是进程级的，没有 per-thread pending；多线程进程里任何一个任务在可中断阻塞点都可能消费掉同一个 pending 位。image 3 的 thread_join 用例刻意让 worker 保持 RUNNING/READY，避免 worker 抢走 SIGCHLD。
+- EINTR 只验证 SIGCHLD；SIGINT/SIGTERM/同步 fault 的 EINTR 路径没有用户态注入手段，也没有重启系统调用的选项。
+- 同一 tick 的优先级是条件 > 超时 > 信号；如果用户要求“信号先于超时”，需要另改顺序，当前没有这样做。
+- 仍没有 poll/select、非阻塞标志位、部分写保证、等待延迟统计、per-object 链表、SMP；也不跨到 P12 文件系统/网络。

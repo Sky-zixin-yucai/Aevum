@@ -66,7 +66,7 @@ B 行三任务 ticks 相加为 702，PIT TICKS 为 700；这是同一帧页面�
 
 ## 6. 对后续硬件内核的直接含义
 
-1. **阻塞 wait 已由 P7.5 实现**：`wait` / `thread_join` 不再用 `task_yield_wait()` 轮询，而是在 `cli` 窗口内重查条件后进入 `TASK_BLOCKED`；调度器在任务真实 ZOMBIE 后唤醒同组/父进程组。P7.5 页面给出 `wait_blocks=7`、`join_blocks=1`，对应唤醒计数均非零；等待者不再持续参与 vruntime 竞争。仍未实现超时与 EINTR。
+1. **阻塞 wait 已由 P7.5 实现**：`wait` / `thread_join` 不再用 `task_yield_wait()` 轮询，而是在 `cli` 窗口内重查条件后进入 `TASK_BLOCKED`；调度器在任务真实 ZOMBIE 后唤醒同组/父进程组。P7.5 页面给出 `wait_blocks=7`、`join_blocks=1`，对应唤醒计数均非零；等待者不再持续参与 vruntime 竞争。超时由 P11.1 补上，EINTR 由 P11.7 补上。
 2. **idle 要能停机**：`idle` 占 12% 且频繁 yield；真实硬件上应改成 `hlt`/WFI 或事件驱动，不能让 idle 空转。
 3. **控制周期要独立于 100 Hz tick**：1 kHz 伺服需要 1 kHz tick、APIC/HPET one-shot 或独立 PWM/定时器；不能把 100 Hz 当控制周期。
 4. **把渲染移出控制路径**：`render` 占 38%，当前和 `control` 共享 PIT tick；硬件上应先保证 control 的截止时间，再让 render 降频或在空闲时间跑。
@@ -119,7 +119,7 @@ P11.1 clean 构建 `kernel.bin=78,536`，`__bss_start=0x932E0`、`__bss_end=0x97
 - PIT 路径每 tick 多一次 16 槽线性扫描；只有 `TASK_BLOCKED && wake_tick` 的任务才做 `(int)(now-wake_tick)>=0`。当前最多 16 个任务，未做 TSC 级测量；`task_pick_next()` 本身也是 16 槽线性扫描，二者同量级。
 - `sleep/wait_timeout` 的 deadline 是绝对 tick，不随虚假唤醒重置；同一 tick 内条件满足优先返回 status，不误报 timeout。超时只负责把任务改 READY，不释放子进程、不改 PCB。
 - QEMU 计时证据：D lane `sleep(20)` 慢子、`sleep(1)` 快子，父 `wait_timeout(5)` 超时一次，C 页 `SLEEP b 2 w 2 tmo 3`。`tmo 3` = 2 次 sleep 到期 + 1 次 wait_timeout 超时。
-- 这不是实时定时器：100Hz PIT 下最小粒度 10ms，`ticks` 不是纳秒级 deadline；没有高精度时钟、没有 EINTR、没有多等待者队列。ring3 仍受 4KB code VMA 限制，P11.1 把 129 条 `mov eax, imm` 压成 `push byte imm; pop eax`，code_size 从 4,359B 降到 4,084B，避免 `address_space_create_user()` 拒绝镜像。
+- 这不是实时定时器：100Hz PIT 下最小粒度 10ms，`ticks` 不是纳秒级 deadline；没有高精度时钟、没有多等待者队列。EINTR 已由 P11.7 补上。ring3 仍受 4KB code VMA 限制，P11.1 把 129 条 `mov eax, imm` 压成 `push byte imm; pop eax`，code_size 从 4,359B 降到 4,084B，避免 `address_space_create_user()` 拒绝镜像。
 
 ## 12. P11.2 优先级读写体积与继承成本
 
@@ -181,3 +181,16 @@ P11.6 clean 构建 `kernel.bin=84,264B`，`__bss_start=0x94940`、`__bss_end=0x9
 - C 页 `WQ blk 9 one 8 all 0 dep 3` 是功能计数，不是延迟基准：`blocks` 复用 P11.3 的 `io_block_total`，`one/all` 是实际唤醒成员次数，`dep` 是任一队列同时 BLOCKED 的最大深度。本轮 image 3 的三段 FIFO 等待把 `dep` 推到 3，`one` 为 8；`all` 为 0 是因为没有走到关闭/EOF 时仍有等待者的广播路径。
 - P5.3 复测 `round 100/100 first 5 -> 5 live 1 state STRESS OK`、`PHYS 6/255`；C 页 PIT 11,473 tick 时 `PREEMPTIONS 0 / EXP 0`，再按 `P` 触发 probe 后 PIT 14,948 tick、`PREEMPTIONS 23 / EXP 23`，说明新增字段没有破坏 100 轮 fork/wait 回收，也没有让 PIT 片调度停摆。
 - 边界：这是 QEMU TCG 的功能计数；没有测等待延迟、唤醒到运行的时延、队列深度分布或高并发等待的尾部延迟。FIFO 只覆盖已阻塞者，新到者可直接插队，因此不能把它当作严格门票队列的吞吐基准。
+
+## 17. P11.7 EINTR 的存储、扫描与阻塞开销
+
+P11.7 clean 构建 `kernel.bin=85,640B`，`__bss_start=0x94EA0`、`__bss_end=0x98FDC`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 镜像从 P11.6 的 84,264B 增至 85,640B（+1,376B）；`size` 的 text 列从 84,022B 增至 85,369B（+1,347B），`.data=232B` 不变，`.bss=16,700B` 不变。新增代码主要是 `process_signal_take_current()`、三个 block helper 的第三出口、六个调用点的 -3 映射和 C 页一个数字。
+- `__bss_start` 随 text 后移 0x560，`__bss_end=0x98FDC`；BSS 距 `0x9A000` 余 `0x1024`（4,132B），镜像距 106,496B 上限余 20,856B。新增的静态数据只有 `eintr_total` 4B，落在 P11.6 的 BSS 对齐余量内，因此 `.bss` 总量不变。
+- `sizeof(struct task_struct)=120B`、`sizeof(struct wait_queue)=8B`，P11.7 没有扩 task 结构，也没有新增等待队列字段。
+- `process_signal_take_current()` 的最坏扫描是 31 个 bit（1..31），只在条件不满足、deadline 未到时调用；条件满足的快速路径不扫描 pending，因此正常 I/O 命中数据时不会增加这笔开销。命中后清一个 bit 并返回，不排队、不分配、不切任务。
+- 阻塞返回路径多一次 `block_rc==2` 分支；没有新增唤醒源。EINTR 与超时/条件满足共用同一次 `task_block_*` 返回，不产生额外的 PIT 扫描或任务切换。
+- image 3 代码从 P11.6 的 644B 增至 2,447B（`0x81380..0x81D0F`，+1,803B），仍小于 4KB code VMA；增加的是五段 fork/sleep/pipe/join 用户态测试，不是内核镜像体积。
+- C 页实测 `EINTR 7`、`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`；P5.3 仍 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`，PIT 7222 tick 时 `PREEMPTIONS 0 / EXP 0`、idle 0%。
+- 边界：`EINTR` 是功能计数，不是延迟或吞吐基准；没有测“信号置位到阻塞返回”的时延，也没有测多线程争抢同一个进程 pending 位的分布。P11.7 没有引入 `kill()` 注入，不能用它评估完整信号吞吐。

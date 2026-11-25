@@ -141,6 +141,7 @@ const char *task_wake(int pid);
  * P7.5：在关中断的临界区里重查 ready(ctx)，仍不满足才把当前任务置 BLOCKED
  * 并切走。check 返回非 0 表示“条件已满足，不要阻塞”，函数返回 0；
  * 真正阻塞并被唤醒后返回 1；状态或调度失败返回 -1。
+ * P11.7：条件不满足且当前进程有 pending signal 时返回 2（EINTR）。
  * 这样 wait/join 的“重查”和“进入 BLOCKED”之间不会丢唤醒。
  */
 typedef int (*task_block_check_t)(void *ctx);
@@ -162,7 +163,8 @@ void wait_queue_wake_one(struct wait_queue *q);
 void wait_queue_wake_all(struct wait_queue *q);
 /*
  * P11.3：加入对象等待队列并按 tick 超时阻塞。ready 为 NULL 时只看超时。
- * 返回 0 条件满足、1 超时、-1 状态/调度失败；ticks=0 只查询一次。
+ * 返回 0 条件满足、1 超时、2 pending signal（EINTR）、-1 状态/调度失败；
+ * ticks=0 只查询一次。
  */
 int task_block_on(struct wait_queue *q, task_block_check_t ready,
                   void *ctx, u32 ticks);
@@ -173,6 +175,8 @@ void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts);
  * 次数，max_depth 是任一队列同时阻塞过的最大深度。
  */
 void task_wq_stats(u32 *blocks, u32 *wake_one, u32 *wake_all, u32 *max_depth);
+/* P11.7：被 pending signal 打断的阻塞总次数。 */
+u32 task_eintr_total(void);
 
 /*
  * P11.4：idle 停机。idle_task 只在没有其它 READY 任务时参与选择；
@@ -192,11 +196,11 @@ void task_slice_stats(u32 *quantum, u32 *expires, u32 *defers);
 int task_block_until(task_block_check_t ready, void *ctx);
 /*
  * P11.1：带 PIT tick 超时的阻塞。返回 0 表示条件已满足，1 表示超时，
- * -1 表示状态/调度失败。ready 为 NULL 时等价于纯 sleep。
+ * 2 表示 pending signal（EINTR），-1 表示状态/调度失败。ready 为 NULL 时等价于纯 sleep。
  * ticks=0 只做一次条件查询，不进入 BLOCKED。
  */
 int task_block_until_timeout(task_block_check_t ready, void *ctx, u32 ticks);
-/* P11.1：按 100 Hz PIT tick 睡眠；0 立即返回，成功返回 0。 */
+/* P11.1：按 100 Hz PIT tick 睡眠；0 立即返回，成功返回 0，EINTR 返回 -3。 */
 int task_sleep_ticks(u32 ticks);
 void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts);
 /*

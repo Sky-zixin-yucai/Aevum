@@ -187,6 +187,7 @@ int console_read_block(u8 *buf, u32 len, u32 ticks)
     if (!buf || !len) return -1;
     if (!ticks) return console_read(buf, len);
     rc = task_block_on(&input_wq, console_read_ready, 0, ticks);
+    if (rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
     if (rc < 0) return -1;
     if (rc > 0) return -2;
     return console_read(buf, len);

@@ -326,6 +326,7 @@ void arm_render_cpu_frame(void)
     u32 wq_blocks, wq_one, wq_all, wq_depth;
     u32 idle_hlt;
     u32 quantum, slice_expire;
+    u32 eintr;
 
     vga_clear(0x00);
     vga_text(16, 0, "AEVUM / CPU TIME ACCOUNTING", 0x1F);
@@ -451,7 +452,12 @@ void arm_render_cpu_frame(void)
     p += fmt_dec(buf, idle_hlt);
     buf[p] = 0;
     vga_text(35, 21, buf, idle_hlt ? C_GREEN : C_GRAY);
-    vga_text(2, 22, "priority 0..3 -> weight 1..4; smallest vruntime next", 0x18);
+    vga_text(2, 22, "priority 0..3 -> weight 1..4; EINTR", 0x18);
+    eintr = task_eintr_total();
+    p = 0;
+    p += fmt_dec(buf, eintr);
+    buf[p] = 0;
+    vga_text(39, 22, buf, eintr ? C_GREEN : C_GRAY);
     task_wq_stats(&wq_blocks, &wq_one, &wq_all, &wq_depth);
     vga_text(2, 23, "WQ blk", C_GRAY);
     p = 0;

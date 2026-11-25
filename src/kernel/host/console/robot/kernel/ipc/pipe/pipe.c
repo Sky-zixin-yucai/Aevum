@@ -140,6 +140,7 @@ int pipe_read_block(struct pipe *p, void *buf, u32 len, u32 ticks)
     if (!len) return 0;
     if (!ticks) return pipe_read(p, buf, len);
     rc = task_block_on(&p->read_wq, pipe_read_ready, p, ticks);
+    if (rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
     if (rc < 0) return -1;
     if (rc > 0) return -2;
     return pipe_read(p, buf, len);
@@ -157,6 +158,7 @@ int pipe_write_block(struct pipe *p, const void *buf, u32 len, u32 ticks)
     wait.p = p;
     wait.len = len;
     rc = task_block_on(&p->write_wq, pipe_write_ready, &wait, ticks);
+    if (rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
     if (rc < 0) return -1;
     if (rc > 0) return -2;
     return pipe_write(p, buf, len);

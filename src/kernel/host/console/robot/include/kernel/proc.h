@@ -145,7 +145,8 @@ int process_clone_thread_current(const char *name,
 /* 线程退出：只标当前任务；最后一个活线程退出时才把进程标 ZOMBIE。 */
 int process_thread_exit_current(u32 code);
 
-/* 线程 join：只接受同组、非当前、已经 ZOMBIE 的 TID；status 可写 0。 */
+/* 线程 join：只接受同组、非当前、已经 ZOMBIE 的 TID；status 可写 0。
+ * P11.7：阻塞中被 pending signal 打断返回 -3（EINTR），其余错误 -1。 */
 int process_thread_join_current(int tid, u32 user_status);
 
 /* 线程 detach：标记同组 TID 为 detached；之后 join 返回 -1，退出由调度器自动回收。 */
@@ -191,12 +192,20 @@ int process_sigreturn_current(struct irq_frame *frame);
 /* 当前进程已执行 handler 的次数；异常记录在投递时取一次快照，避免 PID 复用后失真。 */
 u32 process_sig_handled_current(void);
 
+/*
+ * P11.7：取走当前进程最低位的 pending signal，返回信号号；0 表示没有。
+ * 阻塞点用它把“有信号待处理”变成 EINTR。当前内核还没有异步 handler 投递，
+ * 所以这里消费一次 pending 位，避免同一个位让下一次阻塞立刻再次 EINTR。
+ */
+int process_signal_take_current(void);
+
 /* wait 子进程：P7.5 用 BLOCKED/WAKE 等待，找到 ZOMBIE 后写 user status 并回收。
  * pid>0 只等指定直接子进程，不是当前进程的子进程立即返回 -1；
  * pid<=0 等任意直接子进程。 */
 int process_wait(int pid, u32 user_status);
 
 /* P11.1：带 PIT tick 超时的 wait；返回子 PID，超时返回 0，错误返回 -1。
+ * P11.7：阻塞中被 pending signal 打断返回 -3（EINTR）。
  * ticks=0 只做一次非阻塞查询，语义接近 WNOHANG。 */
 int process_wait_timeout(int pid, u32 user_status, u32 ticks);
 

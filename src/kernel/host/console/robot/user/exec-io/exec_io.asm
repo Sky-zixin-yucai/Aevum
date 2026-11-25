@@ -2,7 +2,9 @@
 ; 独立镜像避开 ring3 的 4KB code VMA，验证：
 ;   1) 空 pipe + 活写端，read_block(2 tick) 超时返回 -2；
 ;   2) 子进程 sleep(20) 后写 4B，父 read_block(500 tick) 被唤醒并读回 IORD；
-;   3) 父把 64B pipe 填满后 write_block(1B,500 tick) 阻塞，子 sleep(100) 后读 1B 唤醒。
+;   3) 父把 64B pipe 填满后 write_block(1B,500 tick) 阻塞，子 sleep(100) 后读 1B 唤醒；
+;   4) P11.7：sleep/read_block/write_block/wait_timeout/thread_join 在阻塞中被
+;      SIGCHLD 打断，必须返回 -3，且条件恢复后仍能完成 wait/join。
 ; 全部成功写 "IO13"/exit(0)，否则输出 "IOBAD\n" 并带失败码退出。
 [bits 32]
 section .text
@@ -309,6 +311,296 @@ user_io_exec_start:
     mov ebx, [0x401108]
     int 0x80
 
+    ; P11.7：用 SIGCHLD 逐个打断五类阻塞点。子进程退出既置 pending SIGCHLD，
+    ; 又通过 task_wake_process 唤醒父进程；条件不满足时阻塞点返回 -3。
+    ; data: 0x401140/148 两个 pipe，0x401150/154 子 PID，0x401158 status，
+    ;       0x40115C TID；线程栈顶 0x401F00（同一 data 页）。
+    ; (1) sleep 被 SIGCHLD 打断。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad20
+    jnz .sleep_parent
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.sleep_parent:
+    mov [0x401150], eax
+    push byte 24
+    pop eax
+    mov ebx, 200
+    int 0x80
+    cmp eax, -3
+    jne .bad20
+    push byte 4
+    pop eax
+    mov ebx, [0x401150]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401150]
+    jne .bad21
+    cmp dword [0x401158], 0
+    jne .bad21
+
+    ; (2) 空 pipe read_block：父进程保留写端，子进程只保留写端并退出；
+    ; 子退出后 pipe 仍非 EOF，条件不满足，SIGCHLD 触发 EINTR。
+    push byte 14
+    pop eax
+    mov ebx, 0x401140
+    int 0x80
+    test eax, eax
+    jnz .bad21
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad21
+    jnz .read_parent
+    push byte 17
+    pop eax
+    mov ebx, [0x401140]
+    int 0x80
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.read_parent:
+    mov [0x401150], eax
+    push byte 28
+    pop eax
+    mov ebx, [0x401140]
+    mov ecx, 0x401160
+    push byte 1
+    pop edx
+    mov esi, 500
+    int 0x80
+    cmp eax, -3
+    jne .bad22
+    push byte 17
+    pop eax
+    mov ebx, [0x401140]
+    int 0x80
+    push byte 17
+    pop eax
+    mov ebx, [0x401144]
+    int 0x80
+    push byte 4
+    pop eax
+    mov ebx, [0x401150]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401150]
+    jne .bad22
+    cmp dword [0x401158], 0
+    jne .bad22
+
+    ; (3) 满 pipe write_block：父保留读端并填满 64B，子只保留读端后退出；
+    ; 读者仍在，写条件不满足，SIGCHLD 触发 EINTR。
+    push byte 14
+    pop eax
+    mov ebx, 0x401148
+    int 0x80
+    test eax, eax
+    jnz .bad22
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad22
+    jnz .write_parent
+    push byte 17
+    pop eax
+    mov ebx, [0x40114C]
+    int 0x80
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.write_parent:
+    mov [0x401154], eax
+    push byte 8
+    pop eax
+    mov [0x40102C], eax
+.fill2:
+    push byte 16
+    pop eax
+    mov ebx, [0x40114C]
+    mov ecx, 0x4010F0
+    push byte 8
+    pop edx
+    int 0x80
+    cmp eax, 8
+    jne .bad23
+    dec dword [0x40102C]
+    jnz .fill2
+    push byte 29
+    pop eax
+    mov ebx, [0x40114C]
+    mov ecx, 0x401160
+    push byte 1
+    pop edx
+    mov esi, 500
+    int 0x80
+    cmp eax, -3
+    jne .bad23
+    push byte 17
+    pop eax
+    mov ebx, [0x401148]
+    int 0x80
+    push byte 17
+    pop eax
+    mov ebx, [0x40114C]
+    int 0x80
+    push byte 4
+    pop eax
+    mov ebx, [0x401154]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401154]
+    jne .bad23
+    cmp dword [0x401158], 0
+    jne .bad23
+
+    ; (4) wait_timeout 等长子进程时，次子退出触发 EINTR。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad24
+    jnz .waita_parent
+    push byte 24
+    pop eax
+    mov ebx, 200
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.waita_parent:
+    mov [0x401150], eax
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad24
+    jnz .waitb_parent
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 3
+    pop eax
+    push byte 7
+    pop ebx
+    int 0x80
+    jmp $
+.waitb_parent:
+    mov [0x401154], eax
+    push byte 25
+    pop eax
+    mov ebx, [0x401150]
+    mov ecx, 0x401158
+    mov edx, 200
+    int 0x80
+    cmp eax, -3
+    jne .bad24
+    push byte 4
+    pop eax
+    mov ebx, [0x401154]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401154]
+    jne .bad24
+    cmp dword [0x401158], 7
+    jne .bad24
+    push byte 4
+    pop eax
+    mov ebx, [0x401150]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401150]
+    jne .bad24
+    cmp dword [0x401158], 0
+    jne .bad24
+
+    ; (5) thread_join 等待 worker 时，另一个子进程退出触发 EINTR；
+    ; 再 wait 子进程，最后 join worker 成功。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad25
+    jnz .join_parent
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.join_parent:
+    mov [0x401150], eax
+    push byte 19
+    pop eax
+    mov ebx, intr_thread + 0x400000
+    mov ecx, 0x401F00
+    mov edx, 0x10D00
+    xor esi, esi
+    int 0x80
+    test eax, eax
+    jle .bad25
+    mov [0x40115C], eax
+    push byte 22
+    pop eax
+    mov ebx, [0x40115C]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, -3
+    jne .bad25
+    push byte 4
+    pop eax
+    mov ebx, [0x401150]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401150]
+    jne .bad25
+    cmp dword [0x401158], 0
+    jne .bad25
+    push byte 22
+    pop eax
+    mov ebx, [0x40115C]
+    mov ecx, 0x401158
+    int 0x80
+    test eax, eax
+    jne .bad25
+    cmp dword [0x401158], 0
+    jne .bad25
+
     mov dword [0x401040], 0x33314F49  ; "IO13"
     push byte 16
     pop eax
@@ -324,6 +616,14 @@ user_io_exec_start:
     pop ebx
     mov ecx, wq_ok + 0x400000
     push byte 12
+    pop edx
+    int 0x80
+    push byte 16
+    pop eax
+    push byte 1
+    pop ebx
+    mov ecx, eintr_ok + 0x400000
+    push byte 15
     pop edx
     int 0x80
     push byte 3
@@ -532,6 +832,24 @@ user_io_exec_start:
 .bad19:
     mov ebx, 19
     jmp .fail
+.bad20:
+    mov ebx, 20
+    jmp .fail
+.bad21:
+    mov ebx, 21
+    jmp .fail
+.bad22:
+    mov ebx, 22
+    jmp .fail
+.bad23:
+    mov ebx, 23
+    jmp .fail
+.bad24:
+    mov ebx, 24
+    jmp .fail
+.bad25:
+    mov ebx, 25
+    jmp .fail
 .fail:
     push ebx
     push byte 16
@@ -548,6 +866,24 @@ user_io_exec_start:
     int 0x80
     jmp $
 
+; P11.7 thread_join 的 worker：必须保持 RUNNING/READY，不能用 sleep，
+; 否则 SIGCHLD 会把 worker 的 sleep 也打断并抢走同一个进程 pending 位。
+; 这里用纯用户态计数循环拖到子进程退出之后，再 thread_exit(0)。
+intr_thread:
+    mov ecx, 100
+.intr_outer:
+    mov edx, 2000000
+.intr_inner:
+    dec edx
+    jnz .intr_inner
+    dec ecx
+    jnz .intr_outer
+    push byte 20
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+
 io_word:
     db 'I', 'O', 'R', 'D'
 io_fill:
@@ -556,6 +892,8 @@ io_ok:
     db 'P11.3 IO OK', 10
 wq_ok:
     db 'P11.6 WQ OK', 10
+eintr_ok:
+    db 'P11.7 EINTR OK', 10
 io_bad:
     db 'IOBAD', 10
 

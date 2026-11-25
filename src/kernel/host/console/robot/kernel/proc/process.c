@@ -256,6 +256,25 @@ static void proc_signal_pending(struct process *p, int sig)
     if (sig == PROC_SIGCHLD) p->sigchld_count++;
 }
 
+/* P11.7：阻塞点取走一个 pending 位，按信号号从小到大。 */
+int process_signal_take_current(void)
+{
+    struct process *self;
+    int sig;
+
+    if (!task_current() || !task_process_current()) return 0;
+    self = task_process_current();
+    if (self->state != PROC_LIVE) return 0;
+    for (sig = 1; sig < PROC_NSIG; sig++) {
+        u32 bit = 1u << (sig - 1);
+        if (self->pending & bit) {
+            self->pending &= ~bit;
+            return sig;
+        }
+    }
+    return 0;
+}
+
 /*
  * #DE 保存的 EIP 指向 faulting div/idiv 本身。这里只解码 P3.2 用到的
  * F6/F7 group：opcode + ModRM + 可选 SIB/位移，返回指令长度。
@@ -1100,6 +1119,7 @@ int process_thread_join_current(int tid, u32 user_status)
         if (info.detached) return -1;
         if (info.state == TASK_ZOMBIE) break;
         block_rc = task_block_until(proc_join_ready, &block_ctx);
+        if (block_rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
         if (block_rc < 0) return -1;
         if (block_rc > 0) {
             join_block_total++;
@@ -1253,10 +1273,12 @@ static int process_wait_common(int pid, u32 user_status, u32 ticks, int timed)
         if (!proc_has_children(self)) return -1;
         if (timed) {
             block_rc = task_block_until_timeout(proc_wait_ready, &block_ctx, ticks);
+            if (block_rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
             if (block_rc < 0) return -1;
             if (block_rc > 0) return 0;      /* P11.1：timeout */
         } else {
             block_rc = task_block_until(proc_wait_ready, &block_ctx);
+            if (block_rc == 2) return -3;     /* P11.7：pending signal -> EINTR */
             if (block_rc < 0) return -1;
             if (block_rc > 0) {
                 wait_block_total++;
