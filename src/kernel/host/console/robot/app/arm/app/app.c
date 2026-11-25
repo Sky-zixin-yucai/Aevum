@@ -54,6 +54,9 @@ static u32 probe_runs;
 static volatile int idle_pid;
 static volatile u32 idle_block_req;
 static volatile u32 idle_blocked;
+/* P11.4：I 键短时 idle 探针；phase=1 时 control/render 主动 BLOCKED。 */
+static volatile u32 idle_probe_phase;
+static volatile u32 idle_probe_until;
 
 /* P8 动态内核线程自测：先 join 一个 kping，再故意不 join 一个 korph。 */
 static int kthread_demo_started;
@@ -189,6 +192,12 @@ static void proc_control(void)
     next_tick = task_tick_total();
 
     for (;;) {
+        /* P11.4 idle 探针：control 主动入 BLOCKED，让 idle 有机会 hlt。 */
+        if (idle_probe_phase == 1u && task_block()) {
+            struct aevum_error e = app_state_template;
+            e.field = "task_block(control idle probe)";
+            aevum_fail(&e);
+        }
         while (uart_poll_input(&in)) {
             if (in.type == UART_CMD_RELEASE)
                 arm_control_release_manual();
@@ -218,6 +227,13 @@ static void proc_render(void)
     for (;;) {
         struct arm_status status;
         u8 key = keyboard_poll();
+
+        /* P11.4 idle 探针：render 也入 BLOCKED，保证 idle 是唯一 READY。 */
+        if (idle_probe_phase == 1u && task_block()) {
+            struct aevum_error e = app_state_template;
+            e.field = "task_block(render idle probe)";
+            aevum_fail(&e);
+        }
 
         /* P4.4 console 页是独立全屏模式；X 进入后所有非命令键进入 fd0 队列。 */
         if (key == 0x2D && !console_live && !duel_live && !cpu_live &&
@@ -409,6 +425,12 @@ static void proc_render(void)
         if (!duel_live && !cpu_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live) {
             if (key == 0x39) arm_control_toggle_nullspace();
             if (key == 0x19) (void)arm_app_spawn_probe();
+            /* P11.4：I 键制造“无其它 READY”的窗口，让 idle 真正 hlt。 */
+            if (key == 0x17 && !idle_block_req && !idle_blocked &&
+                idle_probe_phase == 0u) {
+                idle_probe_until = task_tick_total() + 40u;
+                idle_probe_phase = 1u;
+            }
             if (key == 0x30) {
                 if (idle_blocked) (void)task_wake(idle_pid);
                 else idle_block_req = 1;
@@ -636,11 +658,21 @@ static void proc_idle(void)
             if (task_block()) idle_blocked = 0;
             idle_blocked = 0;
         }
-        if (task_yield()) {
-            struct aevum_error e = app_state_template;
-            e.field = "task_yield(idle)";
-            aevum_fail(&e);
+        /* P11.4 探针到期：唤醒被压住的 control/render，再让出 idle。 */
+        if (idle_probe_phase == 1u &&
+            (i32)(task_tick_total() - idle_probe_until) >= 0) {
+            (void)task_wake(task_pid_of(p_control));
+            (void)task_wake(task_pid_of(p_render));
+            idle_probe_phase = 0;
+            if (task_yield()) {
+                struct aevum_error e = app_state_template;
+                e.field = "task_yield(idle probe wake)";
+                aevum_fail(&e);
+            }
+            continue;
         }
+        task_note_idle_hlt();
+        __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
 
@@ -705,6 +737,7 @@ const char *arm_app_init(void)
 
     rc = task_create(0, "idle", proc_idle, AEVUM_STACK_IDLE, &p_idle);
     if (rc) return rc;
+    task_set_idle_task(p_idle);
     family_set_reaper(task_pid_of(p_idle));
 
     return 0;

@@ -161,6 +161,14 @@ int task_block_on(struct wait_queue *q, task_block_check_t ready,
                   void *ctx, u32 ticks);
 void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts);
 
+/*
+ * P11.4：idle 停机。idle_task 只在没有其它 READY 任务时参与选择；
+ * 被选中后执行 sti; hlt，并由 task_note_idle_hlt() 记账。
+ */
+void task_set_idle_task(struct task_struct *task);
+void task_note_idle_hlt(void);
+u32 task_idle_hlt_total(void);
+
 int task_block_until(task_block_check_t ready, void *ctx);
 /*
  * P11.1：带 PIT tick 超时的阻塞。返回 0 表示条件已满足，1 表示超时，

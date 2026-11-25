@@ -143,3 +143,16 @@ P11.3 clean 构建 `kernel.bin=81,768`，`__bss_start=0x93F80`、`__bss_end=0x97
 - `ticks` 是 100Hz PIT 粒度；QEMU TCG 下 guest tick 推进远慢于 wall clock，image3 的 2 tick 超时、20/500 tick 读等待与 100/500 tick 写等待都是功能验收，不是延迟基准。最终 C 页 `IO b 3 w 2 tmo 1` 表示 image3 三次对象阻塞中两次被条件唤醒、一次按 tick 超时返回 -2；`SLEEP b 4 w 4 tmo 6` 是 P11.1 总口径，image3 的超时也计入其中。
 - image3 独立镜像 `exec_io.asm` 最终 644B，固定 4KB code VMA，不占 ring3 的 code_size；ring3 本体为 4,061B，比 P11.2 的 4,091B 少 30B，距 4KB 上限余量 35B。原因是新增 lane 的同时复用了零初始化、短立即数和 `xor` 归零压缩。
 - QEMU 证据：V 页 ADDRESS PID 7 `io OK`、`REAP1 6 img3 a0 e0`、`CHILDREN live 0 zomb 0`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1`。该页证明阻塞/唤醒/超时与 fork 继承路径成立，不是吞吐基准。
+
+## 14. P11.4 idle 停机与 208 扇区窗口
+
+P11.4 clean 构建 `kernel.bin=82,312`，`__bss_start=0x941A0`、`__bss_end=0x981FC`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 镜像距 106,496B 上限余量 24,184B；BSS 距 `0x9A000` 余量 3,588B。P11.3 的 36B BSS 余量已不够容纳 idle 选择/计数代码，因此按仓库既有约定把 boot 第二段从 64 扇区扩到 80，总扇区 192→208，窗口从 98,304B 增至 106,496B；`boot.bin` 仍是 512B，`disk.img` 仍是 1,474,560B。
+- `.text` 从 P11.3 的 `0x12029` 增至 `0x121F1`（+456B），`.rodata` 从 `0x1E40` 增至 `0x1E90`（+80B），`.data=0xE8`、`.bss=0x405C` 不变；总镜像 +544B。新增代码主要是 `task_pick_next()` 的双候选扫描、`task_set_idle_task/note_idle_hlt/total`、control/render 的探针分支、idle 的到期唤醒和 C 页 `IDLE hlt` 文案。
+- `task_pick_next()` 仍是 O(TASK_MAX=16) 线性扫描，只多了一个 `idle_best` 指针和一次 `t == idle_task` 比较；没有链表、没有第二套 runqueue，也没有额外动态分配。`tasks[]` 仍为 16×112B；BSS 只多 8B（`idle_hlt_total` 与 `idle_task` 各 4B），但被原有对齐吸收，`.bss` 总量未变。
+- 正常机械臂负载下 idle 完全不参与选择：C 页 PIT 3,113 tick 时 idle `TICKS 0`、`CPU% 0`、`IDLE hlt 0`，control/render 分摊 57%/43%。这与 P11.3 的 50/38/12 形成直接对比；idle 不再拿固定 12% 份额。
+- I 键探针让 control/render 主动 `task_block()` 40 tick，idle 成为唯一 READY；C 页实测 `IDLE hlt 39`、idle `TICKS 39`、`CPU% 1%`，PIT 4,516 tick。40 tick 目标只产生 39 次 hlt，是因为最后一次到期 tick 先唤醒 control/render，idle 未再进入 hlt。
+- 探针结束后继续运行到 PIT 8,043 tick，`IDLE hlt` 仍为 39，idle `TICKS` 仍为 39；control/render 的 TICKS 从 2,541/1,936 增至 4,543/3,461。这说明“idle 只在没有非 idle READY 时被选中”不是一次性文案，而是持续的选择规则。
+- P5.3 复测 `round 100/100 first 5 -> 5 live 1 state STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。ring3 `code_size` 仍为 4,061B，image3 仍为 644B，没有因 P11.4 改变用户镜像预算。
+- 边界：`IDLE hlt` 是 hlt 次数，不是 halt 停留时间；没有 TSC/PMU 级 idle residency 测量，也没有唤醒源分解。QEMU TCG 下 tick 推进慢于 wall clock，39 次 hlt 是功能证据，不是 idle 占比基准。

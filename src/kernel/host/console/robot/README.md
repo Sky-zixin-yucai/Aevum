@@ -21,8 +21,8 @@
 > ```
 >
 > `interface/desktop/main.js` 优先启动本目录的 `disk.img`；`kernel.bin` 上限
-> 98,304 字节（192 个扇区；`boot.asm` 分两段 LBA 读：128 扇区到 `0x80000`，64 扇区到 `0x90000`）。
-> 当前构建 79,016 字节，BSS 结束于 `0x974BC`（`AEVUM_KERNEL_END=0x98000`）。串口快照放在 `0x30000`，
+> 106,496 字节（208 个扇区；`boot.asm` 分两段 LBA 读：128 扇区到 `0x80000`，80 扇区到 `0x90000`）。
+> 当前构建 82,312 字节，BSS 结束于 `0x981FC`（`AEVUM_KERNEL_END=0x9A000`）。串口快照放在 `0x30000`，
 > 不占内核镜像窗口。模块归属、结构化错误和验收流程见 `CONSTRUCTION.md`，进程上下文完整化路线见 `PROCESS.md`。
 
 一个用 NASM + C 写的 32 位裸机内核：从软盘镜像启动，进入保护模式、建立自己的 GDT 和分页，
@@ -32,7 +32,7 @@
 
 ## 一、功能简介
 
-- **启动流程**：BIOS 把引导扇区加载到 `0x7C00` → `boot.asm` 用 `INT 13h` 的 LBA 扩展分两段读盘（128 扇区到 `0x80000`，64 扇区到 `0x90000`）
+- **启动流程**：BIOS 把引导扇区加载到 `0x7C00` → `boot.asm` 用 `INT 13h` 的 LBA 扩展分两段读盘（128 扇区到 `0x80000`，80 扇区到 `0x90000`）
   → 装载 GDT 进入保护模式 → 建立 0~4MB 恒等分页 → 跳到 `0x80000`。
 - **内核入口**：`loader.asm` 加载内核自己的 6 项 GDT、清 BSS、把主栈设为 `0xC000`（启动镜像里不再需要尾部搬运），再调用 C 的 `kernel_main`；`tss_init()` 写 TSS 描述符并 `ltr 0x28`。
 - **多进程**：`kernel_main` 通过 `task_create` 为 `control` / `render` / `idle` 构造独立内核栈；PID 由 `task.c` 的位图自动分配，应用不再硬编码，再用 `task_start` 切入第一个任务。
@@ -53,6 +53,7 @@
 - **P11.1 定时阻塞（sleep / wait_timeout）**：`task_struct` 新增 `wake_tick`；`task_block_until_timeout(ready,ctx,ticks)` 进入时固定绝对 tick deadline，PIT 每 tick 扫描 BLOCKED 任务，到期改 READY。用户 ABI：`eax=24 sleep(ebx=ticks)` 返回 0/-1；`eax=25 wait_timeout(ebx=pid,ecx=user_status,edx=ticks)` 返回子 PID/0 超时/-1，`ticks=0` 只做一次非阻塞查询。D lane 慢子 `sleep(20)` 后 exit(7)，父 `wait_timeout(5)` 必须超时返回 0、再 `wait_timeout(50)` 拿到 PID/7；快子 `sleep(1)` 后 exit(9)，父 `wait_timeout(20)` 拿到 PID/9，全部通过写 `0x401250="TMR1"`，V 页 ADDRESS 显示 `tmr OK`。C 页底部显示 `SLEEP b <blocks> w <wakes> tmo <timeouts>`；实测 `b 2 w 2 tmo 3`。PIT 100Hz 下 1 tick=10ms，超时不是高精度定时器。
 - **P11.2 优先级生命周期（setpriority / getpriority）**：`eax=26 getpriority(ebx=tid)` 返回 0..3/-1，`eax=27 setpriority(ebx=tid,ecx=priority)` 返回 0/-1；`tid=0` 表示当前任务，0 最高、3 最低。`task_priority_set()` 只改后续 PIT 记账权重，不重算历史 `vruntime`；ZOMBIE 不接受 set，用户态只能操作 user 任务，不能改 control/render/idle。fork 子进程从父任务继承优先级，clone 线程从当前线程继承，`process_clone_thread_current()` 删除了原先被忽略的 priority 参数。D lane 验证默认 1、set 3、非法 4 返回 -1、内核任务拒绝、fork 子为 3、clone 线程为 2；全部通过写 `0x401260="PRI1"`，V 页 ADDRESS 显示 `TASK READY P1` 与 `pri OK`。ring3 code 压到 4,091B，距 4KB 上限只剩 5B。
 - **P11.3 对象等待队列与阻塞 I/O（read_block / write_block）**：`eax=15 read` / `eax=16 write` 的旧非阻塞语义完全不变；新增 `eax=28 read_block(ebx=fd, ecx=user_buf, edx=len, esi=ticks)` 与 `eax=29 write_block`，`ticks=0` 等价非阻塞，`ticks>0` 最多等待 PIT tick；成功返回字节数、pipe EOF 0、参数/端点错误 -1、超时 -2。`task_struct` 增加 `waitq` 指针，`task_block_on()` 在 `cli` 窗口内先重查条件再查 deadline，才置 BLOCKED；`wait_queue_wake_all()` 广播 16 槽等待者，只改 READY 不直接切任务。pipe 增加 `read_wq/write_wq`，空读且写端活着时等、容量不足且读者存在时等，读写成功和端点关闭分别广播；console 输入队列增加 `input_wq`。`proc_fd_read_block/write_block` 做用户范围校验与 `copyin/copyout`，用户指针不直接进 pipe 缓冲。验收新增独立 image 3 `user/exec-io/exec_io.asm`（644B，固定 `0x400000`）：空 pipe `read_block(...,2)` 必须返回 -2；fork 子 `sleep(20)` 写 `IORD`、父 `read_block(...,500)` 读回 4B；fork 后父保留读端填满 64B、`write_block(...,1,500)` 返回 1。D lane 用 `spawn(image_id=3)` 启动并 wait，成功写 `0x4012A0="IOB1"`、`0x401040="IO13"`，V 页 ADDRESS 显示 `io OK`、`REAP1 6 img3 a0 e0`。C 页新增 `IO b <blocks> w <wakes> tmo <timeouts>`；最终实测 `IO b 3 w 2 tmo 1`、`SLEEP b 4 w 4 tmo 6`。
+- **P11.4 idle 停机与空闲调度**：`task_pick_next()` 不再把 idle 当普通 READY 参与 `vruntime` 竞争；只要存在非 idle READY 就返回该任务，只有全系统没有非 idle READY 时才返回 `idle_best`。`arm_app_init()` 在 idle 创建后调用 `task_set_idle_task()` 登记唯一 idle；`proc_idle()` 被选中后执行 `task_note_idle_hlt(); sti; hlt`，不再忙等 `task_yield()`。主页面 I 键（扫描码 `0x17`）让 control/render 主动 `task_block()` 40 tick，制造“无其它 READY”的探针窗口；idle 到期后唤醒两者、清 phase 再 `task_yield()`。C 页第 21 行显示 `IDLE hlt <count>`，正常机械臂负载下为 0，探针后实测 39；探针结束继续运行到 PIT 8,043 tick 仍为 39，证明 idle 只在没有非 idle READY 时被选中。K 键 `task_block()/task_wake()` 调试路径保留。新增代码把 BSS 推到 `0x981FC`，超过旧 `0x98000`，因此 boot 从 192 扇区扩到 208、`AEVUM_KERNEL_END` 同步到 `0x9A000`；clean `kernel.bin=82,312`，BSS 余量 3,588B。
 - **构建裁剪（P5.3）**：所有 C 目标加 `-ffunction-sections -fdata-sections`，链接加 `--gc-sections`，只保留从 `start` 可达的函数/数据。P5.2 单体链接里有约 1.3KB 不可达代码；P5.3 新增代码后仍把 clean `kernel.bin` 控制在 64,808 字节。P6.0 收口后 clean `kernel.bin=64,488`，余量 1,048 字节，BSS 结束于 `0x9387C`。手动关节模式与 19 字段状态帧加入后 clean `kernel.bin=66,248`；2–8 关节通用身体描述、动态状态帧和通用 VGA 加入后 clean `kernel.bin=68,264`，上限提高到 98,304。
 - **P6.0 细节收口**：`process_wait()` 的 `pid>0` 分支先校验当前进程的直接子进程，非子进程或不存在立即返回 -1；`pid<=0` 等任意直接子进程，`waitpid(0)` 不再误等 PID 0。父进程退出/异常终止时，`proc_orphan_children()` 同时重挂 LIVE 和 ZOMBIE 直接子进程，并记录 `from/to/children[]` 最近事件；V 页 TREE 第 20/21 行显示 `ORPHAN` 与 `kids`，G 页 reparent 面板显示 4 个子进程，超过 4 个时显示 `+N more`。速度基线见 `PERFORMANCE.md`。
 - **进程地址空间 / COW fork / VMA / 物理页池**：按 `V`（扫描码 `0x2F`）启动五个用户进程：`userA` / `userB` 做独立地址空间计数、`brk` 扩堆与 heap `peek/poke`，`userC` 做用户态 `#PF` 样本，`userD` 做四轮 fork/wait，`userF` 直接写 guard。每个进程有自己的页目录和 CR3，PD/PT/code/data/stack/control 全部从 `0x100000..0x1FEFFF` 的 255 页位图池分配，每页带引用计数；用户 VA 固定为 code `0x400000`、data `0x401000`、guard `0x402000`（VMA 存在但无 PTE）、stack `0x403000`、control `0x404000`、heap `0x405000..0x410000`。全屏页显示 `PID PPID ST EXIT CR3 AS PGS/C BRK COMM`、6 个 VMA 的地址/权限、`brk/peek/poke/guard` 结果、COW 统计、`PHYS PAGES used/total`、`pipe obj`，另有 `int 0x80`、fork/wait、#PF、#DE 与 SIGCHLD 面板。D 的四次 fork 都返回 8；第一轮子进程写 `CHLD` 后 `exit(7)`，父 wait 得到 status 7 并显示 `WAIT OK 7 / COW OK`；第二轮子进程先 `sigaction(SIGFPE, handler, 0)`，再 `1/0` 触发 `#DE`，signal frame 进入 handler、`sigreturn` 返回除零后的指令，写 `HAND` 后 `in al,0x60` 触发 `#GP -> SIGSEGV(11)`，父 wait 得到 status `0x8000000B` 并显示 `HAND OK`；第三轮子进程 `exec(1, argv, envp)`，参数为 `alpha/beta/NULL` 与 `MODE=p42/LEVEL=2/NULL`；新镜像从新栈校验四串后写 `ARGV/ENVP` 并 `exit(10)`，父 wait 得到 10 并显示 `P4 exec 8 wait 8 st 0000000A img 1 EXEC OK arg 2 env 2`。第四轮父 `pipe()` 得到 fd 2 读 / fd 3 写，fork 后父关写端、子关读端并 `exec(2)`；镜像在 exec 后仍通过 fd 3 写 `PIPE` 并 `exit(12)`，父 wait 得到 12 后从 fd 2 读回 4 字节，校验 `0x45505049`，关闭读端，显示 `P4.3 pipe 8 wait 8 st 0000000C fd 2>3 r4 PIPE OK`。
@@ -67,7 +68,7 @@
 - **抢占决斗**：按 `T`（扫描码 `0x14`）创建 `spinA` / `spinB` 两个 CPU 密集型任务，循环里都不调用
   `task_yield()`；全屏显示两条 lane 的实时步数、进度条和 80 格 IRQ0 抢占磁带。只有 PIT 真的抢占 CPU，
   两条 lane 才会同时推进，磁带才会出现青/洋红交替的条纹；再按 `T` 停止并回到机械臂画面。
-- **优先级与 CPU 统计**：`priority 0..3` 映射为权重 `1..4`；每个 PIT tick 给当前任务 `vruntime += 64 / weight`，`task_pick_next()` 选择 READY 任务中 `vruntime` 最小者，同值按 `prev` 之后的槽位轮转。高优先级任务获得更大份额，低优先级任务不会被饿死。每个任务累计 `cpu_ticks`，面板第二行显示真实 CPU 百分比；按 `C` 打开全屏 `AEVUM / CPU TIME ACCOUNTING`，列出 PID、TASK、PRI、WT、STATE、CPU%、TICKS、SHARE，底部是 PIT TICKS、SWITCHES、PREEMPTIONS，以及 P11.1 `SLEEP` 与 P11.3 `IO` 两组阻塞统计。P11.2 增加 `eax=26/27` 运行时读写优先级，fork/clone 继承，V 页 `TASK` 行显示 `P<n>`；P11.3 增加 `eax=28/29` 带 tick 上限的阻塞 I/O。
+- **优先级与 CPU 统计**：`priority 0..3` 映射为权重 `1..4`；每个 PIT tick 给当前任务 `vruntime += 64 / weight`，`task_pick_next()` 选择 READY 任务中 `vruntime` 最小者，同值按 `prev` 之后的槽位轮转。高优先级任务获得更大份额，低优先级任务不会被饿死。每个任务累计 `cpu_ticks`，面板第二行显示真实 CPU 百分比；按 `C` 打开全屏 `AEVUM / CPU TIME ACCOUNTING`，列出 PID、TASK、PRI、WT、STATE、CPU%、TICKS、SHARE，底部是 PIT TICKS、SWITCHES、PREEMPTIONS，以及 P11.1 `SLEEP` 与 P11.3 `IO` 两组阻塞统计。P11.2 增加 `eax=26/27` 运行时读写优先级，fork/clone 继承，V 页 `TASK` 行显示 `P<n>`；P11.3 增加 `eax=28/29` 带 tick 上限的阻塞 I/O；P11.4 让 idle 只在没有非 idle READY 时运行，C 页新增 `IDLE hlt`，正常负载下 idle 的 CPU% 为 0，I 键探针后才会增加。
 - **无 libc**：完全 freestanding，字符串输出、整数转十进制和 Q16.16 定点运算都由内核自己实现。
 
 ### 操作按键总表
@@ -79,6 +80,7 @@
 | 机械臂主画面 | `空格` | `0x39` | 切换零空间（nullspace）开/关 | 只在主画面生效；不按键也会每 420 帧自动切换一次 |
 | 机械臂主画面 | `P` | `0x19` | 创建 `probe` 任务，全屏显示 PID、生命周期和 PIT 抢占计数 | 自动演示 6000 帧后任务结束并回主画面；没有手动停止键，探针显示期间按 `P` 不会重入 |
 | 机械臂主画面 | `B` | `0x30` | 让 `idle` 执行 `task_block()`；再按一次 `task_wake()` 唤醒 | 只在主画面生效；阻塞时第三行显示 `3id B`，并出现 `BLOCKED` 提示 |
+| 机械臂主画面 | `I` | `0x17` | P11.4 idle 探针：control/render 主动 block 40 tick，idle 成为唯一 READY 并 `sti; hlt` | 只在主画面、无 demo、idle 未 block 时生效；探针结束后自动唤醒两者；C 页查看 `IDLE hlt` |
 | 机械臂主画面 | `T` | `0x14` | 进入/停止 `PREEMPTION DUEL`，创建 `spinA` / `spinB` 两个不让出的 CPU 密集型任务 | 只在主画面启动；停止后等两个 lane 任务结束再回主画面 |
 | 机械臂主画面 | `C` | `0x2E` | 进入/退出全屏 `AEVUM / CPU TIME ACCOUNTING` | 只在主画面启动；在统计页再按 `C` 返回 |
 | 机械臂主画面 | `F` | `0x21` | 进入/退出全屏 `AEVUM / FPU CONTEXT LAB` | 只在主画面启动；在实验页再按 `F` 返回 |

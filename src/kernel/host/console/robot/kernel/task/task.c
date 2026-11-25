@@ -81,6 +81,9 @@ static u32 timeout_wake_total;
 static u32 io_block_total;
 static u32 io_wake_total;
 static u32 io_timeout_total;
+/* P11.4：idle 只在没有其它 READY 任务时被选中；hlt 次数单独记账。 */
+static struct task_struct *idle_task;
+static u32 idle_hlt_total;
 #define WEIGHT_QUANTUM 64u
 
 /* FXSAVE 区域必须 16 字节对齐；模板只用于新任务的初始 FPU/SSE 状态。 */
@@ -558,10 +561,13 @@ static void task_note_switch(struct task_struct *next)
  * 优先级加权公平选择：priority 0..3 对应权重 1..4，每次 PIT 给运行任务
  * 的 vruntime 增加 64/weight。选择 READY 中 vruntime 最小者；同值按
  * prev 之后的槽位轮转，避免严格最高优先把 render/idle 饿死。
+ * P11.4：只要存在非 idle READY，idle 就不参与本轮选择；只有全系统都
+ * 没有可运行任务时才选 idle，让它在 sti; hlt 上真正停机。
  */
 static struct task_struct *task_pick_next(struct task_struct *prev)
 {
     struct task_struct *best = 0;
+    struct task_struct *idle_best = 0;
     u64 best_v = 0;
     int start = 0;
     int i;
@@ -577,12 +583,16 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
         int idx = (start + i) % TASK_MAX;
         struct task_struct *t = &tasks[idx];
         if (t->state != TASK_READY) continue;
+        if (t == idle_task) {
+            if (!idle_best) idle_best = t;
+            continue;
+        }
         if (!best || t->vruntime < best_v) {
             best = t;
             best_v = t->vruntime;
         }
     }
-    return best;
+    return best ? best : idle_best;
 }
 
 /* P11.1：每个 PIT tick 扫描一次定时阻塞；tick 是 32 位，比较用有符号差值防回绕。 */
@@ -1208,6 +1218,21 @@ void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts)
     if (blocks) *blocks = io_block_total;
     if (wakes) *wakes = io_wake_total;
     if (timeouts) *timeouts = io_timeout_total;
+}
+
+void task_set_idle_task(struct task_struct *task)
+{
+    idle_task = task;
+}
+
+void task_note_idle_hlt(void)
+{
+    idle_hlt_total++;
+}
+
+u32 task_idle_hlt_total(void)
+{
+    return idle_hlt_total;
 }
 
 void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts)

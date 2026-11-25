@@ -16,7 +16,7 @@
 | 纯内存中继 | `control/relay/` | 已实现 | 会话、上下文、分片、在线计数；无落盘 |
 | 监控服务 | `archive/backend-python/monitor/desktop_server.py` | 已实现 | 读检查点、训练指标、错误码；起模型子进程 |
 | 串口桥接 | `src/kernel/host/bridge/serial_bridge.py` | 已实现 | VGA 差量帧 + `0x02` / `0x03` 状态帧转 WebSocket；页面 `joint` / `full_refresh` 写回内核 |
-| 内核 | `src/kernel/host/console/robot/` | 维护中 | 唯一引导扇区（192 扇区两段读）、任务/进程、结构化错误、80×25 单元格、手动关节模式；P8 动态内核线程、P9 未 join kthread 的 grace 兜底、P10 PCB 清零 + exit ring、P11.1 定时阻塞 `sleep/wait_timeout`、P11.2 `setpriority/getpriority` 与 fork/clone 继承、P11.3 对象等待队列与 `read_block/write_block` 阻塞 I/O 已验收 |
+| 内核 | `src/kernel/host/console/robot/` | 维护中 | 唯一引导扇区（208 扇区两段读）、任务/进程、结构化错误、80×25 单元格、手动关节模式；P8 动态内核线程、P9 未 join kthread 的 grace 兜底、P10 PCB 清零 + exit ring、P11.1 定时阻塞 `sleep/wait_timeout`、P11.2 `setpriority/getpriority` 与 fork/clone 继承、P11.3 对象等待队列与 `read_block/write_block` 阻塞 I/O、P11.4 idle 停机与 `IDLE hlt` 探针已验收 |
 | Forge | `interface/web/forge/` | 可打开 | 原生 3R 建模/控制；glTF/GLB 导入、任意 link/joint 树、手动关节 + `0x03` 状态 |
 | Memoria C++ | `src/architecture/memoria/` + `src/architecture/memoria/include/` | 可编译 | 17 个 `.cpp`、17 个头文件；训练/生成/检查点 |
 | 桌面壳 | `interface/desktop/` | 可打包 | Electron 窗口、拉起监控；`dist:installer` 出 Inno Setup，`dist:dir` 出目录 |

@@ -323,6 +323,7 @@ void arm_render_cpu_frame(void)
     u32 total = task_cpu_total();
     u32 sleep_blocks, sleep_wakes, timeouts;
     u32 io_blocks, io_wakes, io_timeouts;
+    u32 idle_hlt;
 
     vga_clear(0x00);
     vga_text(16, 0, "AEVUM / CPU TIME ACCOUNTING", 0x1F);
@@ -429,6 +430,12 @@ void arm_render_cpu_frame(void)
     p += fmt_dec(buf, io_timeouts);
     buf[p] = 0;
     vga_text(19, 21, buf, io_timeouts ? C_GREEN : C_GRAY);
+    idle_hlt = task_idle_hlt_total();
+    vga_text(26, 21, "IDLE hlt", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, idle_hlt);
+    buf[p] = 0;
+    vga_text(35, 21, buf, idle_hlt ? C_GREEN : C_GRAY);
     vga_text(2, 22, "priority 0..3 -> weight 1..4; smallest vruntime runs next", 0x18);
     vga_text(2, 23, "CPU% = this task's PIT ticks / total PIT ticks", 0x18);
 }
