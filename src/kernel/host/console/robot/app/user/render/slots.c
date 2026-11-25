@@ -56,6 +56,7 @@ static void slot_row(int slot, int row)
 static void selected_detail(int slot)
 {
     struct process_info p;
+    struct process_exit_info e;
     int i;
     int kids_live = 0, kids_zomb = 0, kids_dead = 0;
     int live = 0, zomb = 0, dead = 0;
@@ -183,6 +184,20 @@ totals:
     ud_put_dec(25, 21, syscall_count_total(), C_WHITE);
     vga_text(32, 21, "pipe obj", C_GRAY);
     ud_put_dec(41, 21, pipe_live_count(), pipe_live_count() ? C_YELLOW : C_GREEN);
+    /* P10：PCB 清零后，最近一次退出仍可从 exit ring 读取。 */
+    vga_text(52, 21, "exit", C_GRAY);
+    if (process_exit_snapshot(0, &e) == 0) {
+        ud_put_dec(57, 21, (u32)e.pid, C_WHITE);
+        vga_text(60, 21, "st", C_GRAY);
+        if (e.term_sig) {
+            vga_text(63, 21, "S", C_MAG);
+            ud_put_dec(64, 21, e.term_sig, C_MAG);
+        } else {
+            ud_put_dec(63, 21, e.exit_code, C_WHITE);
+        }
+    } else {
+        vga_text(57, 21, "-", C_GRAY);
+    }
 
     vga_text(2, 22, "SCROLL", C_GRAY);
     {

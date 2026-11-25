@@ -19,7 +19,7 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 | 信号常量 | `SIGILL 4 / SIGTRAP 5 / SIGFPE 8 / SIGSEGV 11 / SIGCHLD 17` | `include/kernel/proc.h` |
 | P3.2 系统调用 | `eax=11 sigaction(sig,handler,mask)`、`eax=12 sigreturn()`；复用 `int80_stub` 返回同一 `irq_frame` 的路径 | `arch/x86/cpu/syscall/syscall.c` |
 | P4.2 exec | `eax=13 exec(image_id,argv,envp)`；`process_exec_current()` 先在旧 AS 解析两个向量，再建新 AS、构造 `argc/argv/envp` 新栈、切 CR3、更新任务 AS 指针、重置帧和信号状态、释放旧 AS；只接受镜像 1 | `kernel/proc/process.c`、`syscall.c` |
-| P4.2 exec 元数据 | `struct process.image_id/exec_argc/exec_envc`：ring3=0、exec=1；`fork` 继承，`reap` 保留墓碑；`process_image_id(pid)` 与 `process_exec_counts(pid)` 都取同 PID 最大镜像代次 | `include/kernel/proc.h`、`process.c` |
+| P4.2 exec 元数据 | `struct process.image_id/exec_argc/exec_envc`：ring3=0、exec=1；`fork` 继承。P10 前 `reap` 保留墓碑，P10 后摘要进入 exit ring、PCB 清零；`process_image_id(pid)` 与 `process_exec_counts(pid)` 先查活 PCB，再回退最新 ring | `include/kernel/proc.h`、`process.c` |
 | P4.2 任务 AS 指针 | `task_set_space()` 是 exec 更新任务持有 AS 的唯一入口；CR3 切换仍归 `address_space` | `kernel/task/task.c` |
 | P4.3 fd 表 | PCB 内嵌 `struct proc_fd_table fds`，8 槽；fd 0 为 console 读、fd 1 为 console 写，pipe 从 2 起；`kind` 区分 console 与 pipe；`fork` 复制，pipe 端点 acquire、console 端点继承；exec 保留、exit/terminate/reap 关闭 | `kernel/proc/fd/fd.c`、`include/kernel/proc/fd.h` |
 | P4.3 pipe | 4 个对象、每对象 64 字节非阻塞环形缓冲；`refs/readers/writers` 控制生命周期；空读有写端 `-1`、写端全关 `0`、满写 `-1` | `kernel/ipc/pipe/pipe.c` |
@@ -39,17 +39,18 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 | P7.5 block/wake | `task_block_until(ready,ctx)` 在 `pushf; cli` 后重查 `ready(ctx)`：已满足则恢复 flags 返回 0；否则写 `TASK_BLOCKED`、`SCHED_BLOCK` 后 `int $0x40`，唤醒返回 1，状态/调度失败 -1。`process_wait()` 与 `process_thread_join_current()` 使用各自的 `proc_wait_ready/proc_join_ready` 在外层继续扫描；调度器在 `prev->state == TASK_ZOMBIE` 后调 `process_notify_task_zombie()`，先 `task_wake_process(proc)`，进程整体 ZOMBIE 时再唤醒父进程组。全局 `wait_block_total/wait_wake_total/join_block_total/join_wake_total` 只统计 wait/join 的实际阻塞与唤醒 | `kernel/task/task.c`、`kernel/proc/process.c`、`include/kernel/task.h`、`include/kernel/proc.h` |
 | P8 dynamic kthread | `kthread_create()` 从 `kernel_stack_alloc()` 取 4KB 动态栈，经 `task_create_kernel_arg()` 建带 `kthread=1` 的 ring0 任务并保存 fn/arg；`kthread_exit(code)` 置退出码后 `task_exit()`。`task_reap()` 跳过 kthread ZOMBIE，`kthread_join(tid,&status)` 先登记 `kthread_wait_tid`，再用 `task_block_until()` 等目标 ZOMBIE；调度器在 `prev->kthread` 转 ZOMBIE 后按 TID 唤醒 joiner。join 读出 status 后由 `task_reap_kthread()` 释放动态栈、PID 和任务槽。kthread 不创建 PCB，不进入 process 线程组 | `kernel/task/kthread/kthread.c`、`kernel/task/task.c`、`include/kernel/kthread.h` |
 | P9 kthread 泄漏兜底 | 任务转 ZOMBIE 时记录 `zombie_ticks`；调度器每轮调 `kthread_reap_unjoined()`，`task_reap_unjoined_kthread(now,100)` 跳过 current、未满 grace 和有 `kthread_wait_tid` 等待者的目标，其余释放 4KB 动态栈、TID、任务槽。`kthread_stats` 增加 `auto_reaped`，`reaped` 是 join+兜底总回收数，`live=created-reaped`。唤醒 joiner 时保留 `wait_tid`，`kthread_join` 在 reap 成功后才清 | `kernel/task/task.c`、`kernel/task/kthread/kthread.c`、`include/kernel/kthread.h`、`include/kernel/task.h` |
+| P10 PCB 清零 | `struct process` 删除每进程 `reaped[2]`，改为全局 `exit_ring[4]`；`process_reap()` 先保存 `pid/ppid/exit_code/term_sig/image_id/argc/envc/comm`，再 `proc_zero()`，PCB 槽真正回到 `PROC_FREE`，不再保留 DEAD 墓碑。`process_reaped_exec()`、`process_image_id()`、`process_exec_counts()` 和 `proc_reusable_child_pid()` 都改从 ring 读取 | `kernel/proc/process.c`、`include/kernel/proc.h`、`app/user/render/slots.c` |
 | wait status | 正常退出保留原退出码（`exit(7) -> 7`）；信号终止为 `0x80000000` 按位或 `sig`（`#DE -> 0x80000008`） | `PROC_WAIT_STATUS()` |
 | PCB 信号字段 | `pending/last_sig/term_sig/sig_count/sigchld_count`；`process_info` 同步暴露 | `kernel/proc/process.c` |
 | pending 位图 | `pending |= 1u << (sig - 1)`；只记录 1..31 号信号，不在这里改进程状态 | `proc_signal_pending()` |
 | SIGCHLD | 子进程正常退出或被信号终止都 `proc_notify_parent()`；父进程 LIVE 时置 SIGCHLD pending | `proc_notify_parent()` |
-| wait 消费 | `process_wait()` 回收 ZOMBIE 后清父进程 SIGCHLD pending；`process_reap()` 保留 `term_sig` 墓碑供 V 页读取 | `process_wait()` / `process_reap()` |
+| wait 消费 | `process_wait()` 取走 ZOMBIE 后清父进程 SIGCHLD pending；`process_reap()` 把退出摘要写进 exit ring 后立即清零 PCB，V 页改读 ring 的最近记录 | `process_wait()` / `process_reap()` / `process_exit_snapshot()` |
 | 用户态 #PF | 不可恢复的 guard/RO/非法 #PF 改走 `process_terminate_current(SIGSEGV)`；C/F 显示 `SIG11` 而不是 `EXIT 142` | `page_fault.c` |
-| PID 复用 | `process_fork()` 优先复用刚退出的直接子 PID，保留另一条 lane 的墓碑；V 页按 `comm` 判 FAULT/GUARD，不按旧 PID 猜 | `proc_reusable_child_pid()`、`task_pid_reserve_hint()` |
+| PID 复用 | `process_fork()` 从 exit ring 取该父进程最近退出的直接子 PID，再 `task_pid_reserve_hint()`；不再依赖 DEAD 墓碑 | `proc_reusable_child_pid()`、`task_pid_reserve_hint()` |
 | 调度记账 | 普通 `task_yield()` 不记 vruntime，保持演示与轮询推进速度；`process_wait()` / `thread_join` 改用 `task_yield_wait()`，先按 `WEIGHT_QUANTUM / weight` 记当前任务 vruntime 再切走，避免低 vruntime 的等待者饿死被等任务 | `kernel/task/task.c`、`kernel/proc/process.c` |
-| V 页 | 标题 `AEVUM / COW FORK + SIGNALS + PHYS`；PCB 表 `EXIT` 显示 `SIG11/SIG8` 或 `EXIT 9/10/12`；新增 #DE、SIGCHLD、D 第二轮 fork/wait、`P4 exec`（`arg/env` 计数）、`P4.3 pipe`（`fd 2>3 r4 PIPE OK`）和 `pipe obj` | `app/user/render/render.c` |
+| V 页 | 标题 `AEVUM / COW FORK + SIGNALS + PHYS`；PCB 表回收后槽直接显示 `FREE`；`SLOT` 页底部 `exit <pid> st <status>` 读 exit ring 最新记录；`ADDRESS` 页 `REAP0/REAP1` 仍读该父进程最近两次回收 | `app/user/render/render.c`、`slots.c`、`address.c` |
 
-槽位预算：`TASK_MAX=16`（3 个静态内核任务 + 动态 kthread/用户任务/线程 + 余量）、`PROC_MAX=12`、`AEVUM_AS_MAX=12`（exec 期间旧 AS、新 AS、fork 子 AS 同时存在）、`PID_MAX=31`；P7.1 的线程 TID 与进程 TGID 共用 1..31 的 `pid_map`，每个线程另占一个任务槽和一个 4KB 内核栈；P8 的 kthread 同样占一个任务槽、一个 TID 和一个 4KB 动态栈，但没有 PCB。P4.3 另加 `PROC_FD_MAX=8`、`PROC_FD_FIRST=2`、`PIPE_MAX=4`、`PIPE_CAPACITY=64`；P4.4 加 `CONSOLE_INPUT_MAX=16`、`CONSOLE_LINES=8`、`CONSOLE_LINE_MAX=64`、`CONSOLE_WRITE_MAX=64`。
+槽位预算：`TASK_MAX=16`（3 个静态内核任务 + 动态 kthread/用户任务/线程 + 余量）、`PROC_MAX=12`、`AEVUM_AS_MAX=12`（exec 期间旧 AS、新 AS、fork 子 AS 同时存在）、`PID_MAX=31`；P7.1 的线程 TID 与进程 TGID 共用 1..31 的 `pid_map`，每个线程另占一个任务槽和一个 4KB 内核栈；P8 的 kthread 同样占一个任务槽、一个 TID 和一个 4KB 动态栈，但没有 PCB。P10 增加全局 `PROC_EXIT_HISTORY=4` 的 exit ring，每槽 48B，共 192B；同时删掉每 PCB 的 `reaped[2]`（12×32B），BSS 净减 192B。P4.3 另加 `PROC_FD_MAX=8`、`PROC_FD_FIRST=2`、`PIPE_MAX=4`、`PIPE_CAPACITY=64`；P4.4 加 `CONSOLE_INPUT_MAX=16`、`CONSOLE_LINES=8`、`CONSOLE_LINE_MAX=64`、`CONSOLE_WRITE_MAX=64`。
 用户内核栈顶 A `0x201000`、B `0x202000`、C `0x203000`、D `0x204000`、E `0x205000`、F `0x206000`。
 物理池仍为 `0x100000..0x1FEFFF` 的 255 页位图池。
 
@@ -60,7 +61,7 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 3. 默认动作：`process_terminate_current(sig)` 把当前进程置 ZOMBIE，`exit_code = PROC_WAIT_STATUS(sig)`，`term_sig = sig`，自身 pending 置位，父进程置 SIGCHLD；随后 `task_exit()`。
 4. `sigreturn`：handler 执行 `ret` 弹出 frame 第一个槽的 trampoline 地址，trampoline 执行 `eax=12 int 0x80`；`process_sigreturn_current()` 从 `frame->user_esp` 读回保存的 GPR/iret 帧，回到除零后的指令。
 5. 父进程 `wait`：找到 ZOMBIE 后把 `exit_code` copyout 到用户 status，回收任务/AS/PID/栈，清父进程 SIGCHLD pending。
-6. 墓碑：`process_reap()` 不把 `pid/comm/term_sig/exit_code/pending/sig_handled` 等显示字段清零，V 页因此能继续显示已回收进程的信号死因和 handler 次数。
+6. 回收：P10 前 `process_reap()` 保留 DEAD 墓碑；P10 后先把 `pid/ppid/exit_code/term_sig/image_id/argc/envc/comm` 写进 exit ring，再 `proc_zero()`，PCB 槽立即变 FREE。V 页改读 ring 的最新退出摘要，不再依赖墓碑。
 
 ## 二、P3.1 验收记录
 
@@ -156,7 +157,7 @@ QEMU 实测（本构建 `kernel.bin` 44,392 字节，BSS 结束 `0x8D3C0`，96 �
 - 切换：`cli` 下 `address_space_switch(new_space)` 写 CR3，`task_set_space(current_task, new_space)` 更新任务持有的 AS 指针，`self->space = new_space`；旧 AS 在所有引用切走后 `address_space_release()`。
 - 信号状态：`proc_reset_signals(self)` 清空 `sigactions[32]`、`sig_mask`、`pending` 和 `sig_handled`。exec 后 handler 表不继承。
 - iret 帧：`eax/ebx/ecx/edx/esi/edi/ebp=0`，`eip=0x400000`、`cs=0x1B`、`eflags=0x202`、`user_esp=new_esp`、`ss=0x23`；`fs/ds/es` 保持用户数据段。
-- 元数据：`image_id=1`、`exec_argc=argc`、`exec_envc=envc` 写入 PCB；`fork` 让子进程继承三字段；`reap` 保留在墓碑。`process_image_id(pid)` 和 `process_exec_counts(pid)` 都遍历同 PID 的槽取最大 `image_id` 代次，避免 PID 复用后旧墓碑覆盖新镜像。
+- 元数据：`image_id=1`、`exec_argc=argc`、`exec_envc=envc` 写入 PCB；`fork` 让子进程继承三字段；P10 前 `reap` 保留在墓碑，P10 后写入 exit ring。`process_image_id(pid)` 和 `process_exec_counts(pid)` 先查活 PCB，再回退同 PID 的最新 ring，避免 PID 复用后旧记录覆盖新镜像。
 - 失败原子性：解析、AS 分配、栈构造任一步失败都只释放新 AS，旧 AS、旧帧、旧 `image_id` 和旧参数计数全部保持；成功后才更新 PCB 和帧。
 
 ### 镜像
@@ -182,8 +183,8 @@ QEMU 实测（P4.2 clean 构建 `kernel.bin` 47,304 字节，BSS `0x8B8E0..0x8E0
 - P4.2 历史构建中 `D fork2 8 wait 8 st 00000009 HAND OK` 仍成立，说明 exec 没有破坏前两轮状态。
 - `P4 exec 8 wait 8 st 0000000A img 1 EXEC OK arg 2 env 2`：子进程 PID 8 不变；exec 镜像 `image_id=1`；退出码 10 被父进程 `wait` 回收；`arg/env` 计数来自 `process_exec_counts(pid)`。
 - 内核调试构建的串口日志曾输出 `P42 argc=2 env=2 a0=alpha e0=MODE=p42` 与 `P42S p0=alpha p1=beta e0=MODE=p42`，证明解析结果和新栈指针指向的字符串一致；该临时输出已在最终构建前移除。
-- PCB `userE PID 8 PPID 7 EXIT 10`：wait 回收后 AS 已释放；`image_id=1` 保留在墓碑。
-- 信号面板 `#DE 1 pid 8 eip 004002A6 sig 8 SIGFPE hdl 1 chld 3 pend 00000000`：第三轮 fork/exec 后 P3.2 的 handler 计数仍可见。`exception_info.handled` 在投递成功时快照，避免 PID 8 旧墓碑被清掉后按 PID 重查变成 0。
+- PCB `userE PID 8 PPID 7 EXIT 10`：wait 回收后 AS 已释放；P4.2 当时 `image_id=1` 保留在墓碑，P10 后改为 exit ring 摘要。
+- 信号面板 `#DE 1 pid 8 eip 004002A6 sig 8 SIGFPE hdl 1 chld 3 pend 00000000`：第三轮 fork/exec 后 P3.2 的 handler 计数仍可见。`exception_info.handled` 在投递成功时快照，避免 PID 8 旧进程槽被清掉后按 PID 重查变成 0。
 - COW `forks 3 shared 12 live 2 breaks 6 last AS4 old 0011B000 -> 0011C000`；`PHYS PAGES 20/255`；`int 0x80 traps` 持续增长，`last CS 0000001B`。
 - 再按 `V` 停止后回机械臂；没有 ZOMBIE/PID/页泄漏。
 
@@ -205,7 +206,7 @@ QEMU 实测（P4.2 clean 构建 `kernel.bin` 47,304 字节，BSS `0x8B8E0..0x8E0
 - **系统调用**：`eax=14 pipe(ebx=用户 u32[2])` 选两个空槽，写回读/写 fd；`eax=15 read(ebx=fd,ecx=用户缓冲,edx=长度)`；`eax=16 write(...)`；`eax=17 close(ebx=fd)`。失败统一 `-1`。用户范围校验和 `copyin/copyout` 都在 fd 模块内完成：read 最多 64 字节，write 超过 64 字节直接拒绝，坏指针不进入 pipe。
 - **镜像 2**：`user/exec-pipe/exec_pipe.asm` 固定链接 `0x400000`，由 `Makefile` 汇编成 `build/user/exec_pipe.o` 并链进内核。它从 `argv={"pipe","writer","FD=3"}` 解析 fd，校验 `argc=3`、三个字符串，然后向该 fd 写 4 字节 `PIPE`，成功 `exit(12)`；失败码 26 argc、27 argv0、28 argv1、29 argv2、30 fd、31 write。
 - **D 第四轮**：父 `pipe()` 得到 fd 2 读 / fd 3 写；`fork` 后父关闭 fd 3，子关闭继承的 fd 2 后 `exec(2)`。exec 不触碰 fd 表，新镜像继续持有 fd 3；它写 `PIPE` 后 `exit(12)`。父 `wait` 得到 12，从 fd 2 读 4 字节并校验 `0x45505049`，再关闭 fd 2；V 页写 `P4.3 pipe 8 wait 8 st 0000000C fd 2>3 r4 PIPE OK`，两端释放后 `pipe obj 0`。
-- **双 exec 证据的确定性**：P4.2 与 P4.3 的子进程都复用 PID 8，不能用“当前最大 `image_id`”稳定区分两行。PCB 增加 `PROC_REAP_HISTORY=2` 的 `reaped[2]`，在 `process_wait()` 回收前保存子进程的 `pid/image_id/argc/envc`；`process_reaped_exec(parent_pid,slot,...)` 只读这份历史。V 页 slot 0 固定显示 P4.2 的 `img 1 arg 2 env 2`，slot 1 对应 P4.3，不依赖 render 采样时机或额外 yield。
+- **双 exec 证据的确定性**：P4.2 与 P4.3 的子进程都复用 PID 8，不能用“当前最大 `image_id`”稳定区分两行。P4.2 当时在 PCB 里加 `PROC_REAP_HISTORY=2` 的 `reaped[2]`，由 `process_wait()` 回收前保存；P10 改为 `process_reap()` 写全局 exit ring，`process_reaped_exec(parent_pid,slot,...)` 按 `ppid` 取该父进程最近两次退出，slot 1 最新、slot 0 次新。固定 4 槽下，D lane 后续 spawn/thread 的 wait 会把 P4.2/P4.3 挤出，因此现在不再保证这两行固定可见。
 
 ### 验收
 
@@ -261,7 +262,7 @@ P5.2 新增 `include/app/user/page.h` 与 `app/user/page/page.c`，由 page 模�
 
 - `include/kernel/proc/fd.h` 新增 `struct proc_fd_info { int used; u32 kind; }` 与 `proc_fd_snapshot(...)`；`kernel/proc/fd/fd.c` 逐 fd 返回 kind，不暴露 pipe 指针。
 - `include/kernel/proc.h` 新增 `struct proc_fd_info` 前向声明、`process_slot_space(int slot)`、`process_slot_fd_info(int slot,int fd,...)`；`kernel/proc/process.c` 按 PCB 槽直接取 AS/fd，DEAD/FREE 槽返回空。
-- 保留 `process_slot_used()` 原语义（只数 LIVE/ZOMBIE）；`V` 页的 `POOL proc` 改为显式统计 `live+zomb+dead`，避免把 DEAD 墓碑误报为未占用。
+- 保留 `process_slot_used()` 原语义（只数 LIVE/ZOMBIE）；`V` 页的 `POOL proc` 显式统计 `live+zomb+dead`。P10 后回收槽直接 FREE，`dead` 固定为 0。
 
 ### 9.3 ZOMBIE 观察窗口
 
@@ -297,8 +298,8 @@ P5.3 不新增页面：`S`（`0x1F`）复用 P5.1 的池页外壳，`pool_demo_s
 
 两轮都从 fresh boot 的机械臂主画面按 `S` 进入，每轮等 `round 100/100` 与 `STRESS OK` 后按 `S` 停止、回主画面再启动下一轮：
 
-- 第一轮：`round 100/100 first 5 -> 5 live 1 state STRESS OK`，`PHYS 6/255 proc 1/12 AS 1/12 KSTK 1/12`，进程表 `PID 4 LIVE stressA`、`PID 5 DEAD userE`；ASID 1。
-- 第二轮：`round 100/100 first 5 -> 5 live 1 state STRESS OK`，`PHYS 6/255 proc 1/12 AS 1/12 KSTK 1/12`；ASID 102，首末 PID 仍为 5。
+- 第一轮（P5.3 当时）：`round 100/100 first 5 -> 5 live 1 state STRESS OK`，`PHYS 6/255 proc 1/12 AS 1/12 KSTK 1/12`，进程表 `PID 4 LIVE stressA`、`PID 5 DEAD userE`；ASID 1。P10 回收即清零后，同一压测页面只剩 `PID 4 LIVE stressA`，不再有 `PID 5 DEAD` 行；复测仍为 `round 100/100 first 5 -> 5 live 1 state STRESS OK`。
+- 第二轮（P5.3 当时）：`round 100/100 first 5 -> 5 live 1 state STRESS OK`，`PHYS 6/255 proc 1/12 AS 1/12 KSTK 1/12`；ASID 102，首末 PID 仍为 5。
 - 两轮间 PID、AS 槽、内核栈槽与物理页计数完全一致；ASID 变化只说明地址空间槽被重新分配后再次复用，没有累积。
 
 ## 十一、后续阶段
@@ -465,14 +466,36 @@ QEMU 实测（P9 clean 构建 `kernel.bin=77,160`，`__bss_start=0x92D80`、`__b
 - `kping` 仍拿到 TID 4 并退出 5；`korph` 退出 6 后先以 ZOMBIE 占住第 5 个 TID/任务槽，超过 100 tick 后被调度器回收。页面 `a1` 是 `stats.auto_reaped`，`s5` 是 join 读到的退出码。
 - 这次抓屏没有重新展开 tasks 数组；动态栈是否归还由 `kernel_stack_used()` 前后相等和 `live==0` 的页面断言覆盖，TID/任务槽归还由 `stats.reaped==2` 覆盖。
 
-## 十二、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9 边界与已知取舍
+### P10 删除进程描述符
+
+P10 把 `process_reap()` 从“保留 DEAD 墓碑”改成“保存摘要后清零 PCB”。目标不是删除历史，而是让进程表槽、PID、AS、fd 和任务槽在 wait 回收后全部可复用，同时 V 页仍能读到最近退出记录。
+
+- `struct process` 删除每进程 `reaped[2]`，`proc_zero()` 不再清墓碑字段；`process_reap()` 依次释放线程组、fd、AS、PID，然后调用 `proc_exit_push()`，最后 `proc_zero()`。回收后 `state=PROC_FREE`，`pid/ppid/space/stack_top/signals/fds` 全部归零。
+- 新增全局 `exit_ring[PROC_EXIT_HISTORY=4]`，每槽保存 `seq/pid/ppid/exit_code/term_sig/image_id/argc/envc/comm`。`proc_exit_push()` 只复制摘要，不保留任何指针；`process_exit_snapshot(index)` 供 V 页读最新记录。
+- `process_reaped_exec(parent_pid, slot)` 改为按 `ppid` 从 ring 找该父进程最近两次回收：slot 1 是最新，slot 0 是次新。`process_image_id()` / `process_exec_counts()` 先查活 PCB，再回退到同 PID 的最新 ring 记录。`proc_reusable_child_pid()` 也从 ring 取该父进程最近退出的子 PID。
+- `proc_exit_nth(pid, ppid, nth)` 用 `pid/ppid` 双过滤；`process_wait()` 不再写父进程的 `reaped[]`，退出摘要统一由 `process_reap()` 写入，避免 wait、cleanup、orphan reaper 三条路径各写一份。
+- 边界：ring 只保留全局最近 4 条退出，D lane 后续 spawn/thread 轮次会把更早的 P4.2/P4.3 记录挤出；`REAP0/REAP1` 现在表示“该父进程最近两次”，不再保证固定是 P4.2/P4.3。这是固定内存预算下的取舍，不是回收遗漏。
+
+P10 不新增独立内核自测，验收复用 D lane 的真实 fork/exit/wait 序列和 P9 的 kthread 回归：
+
+- 回收前 V 页 slot 4 是 `PID 8 / ZOMB / userE`；父 wait 后同一槽变 `FREE`，`POOL proc 3/12 live 3 zomb 0 dead 0`，没有 DEAD 墓碑残留。
+- `SLOT` 页底部 `exit 8 st 9` 来自 exit ring；`ADDRESS` 页选中 PID 7 时 `REAP0/REAP1` 仍返回 `PID 8` 的两条历史，证明 PCB 清零后父进程历史没有丢。
+- 主页面右下仍为 `kt 4 s5 a1 OK`，P9 的 join/grace 兜底没有回归。
+
+QEMU 实测（P10 clean 构建 `kernel.bin=77,544`，`__bss_start=0x92F00`、`__bss_end=0x96EBC`，`AEVUM_KERNEL_END=0x97000`）：
+
+- 串口首帧 `a5 5a 01 20...`，没有 triple fault。
+- `kernel.bin` 距 98,304B 上限余量 20,760B；BSS 距 `0x97000` 余量 324B。
+- `POOL proc 3/12`、`dead 0` 和 slot 4 `FREE` 是本轮 PCB 真正清零的直接证据；`exit 8 st 9` 是 ring 仍保留退出摘要的直接证据。
+
+## 十二、P3.1/P3.2/P4.1/P4.2/P4.3/P4.4/P5.1/P5.2/P5.3/P6.0/P7.0/P7.1/P7.2/P7.3/P7.4/P7.5/P8/P9/P10 边界与已知取舍
 
 - P7.4 期间 `wait` / `join` 仍是 `task_yield_wait()` 轮询；P7.5 已改为 `task_block_until()` 的真正阻塞。P6.0 的参数语义保持不变：`pid>0` 必须先是当前进程的直接子进程，否则立即返回 -1；`pid<=0` 等任意直接子进程。当前尚未实现等待超时、信号中断 wait（EINTR）和优先级继承。
 - `proc_orphan_children()` 现在把 LIVE 和 ZOMBIE 的直接子进程都改成 `ppid=0`，并写一份全局最近事件；ZOMBIE 子进程仍由 `process_reap_orphans()` 回收。事件只是 V 页只读快照，不改变调度或回收顺序。
 - G 页 reparent 面板从“最多 3 个子进程”改为 4 个；`child_count > 4` 时在第 13 行显示 `+N more`，`children` 计数仍显示总数，列表只放前 4 个。
 - V 页 TREE 的 `ORPHAN` 行占第 20/21 行，树节点上限从第 21 行收到第 19 行；第 22 行仍是 TREE 统计，第 23/24 行仍是公共底栏。当前用户 demo 没有“父进程先退出、子进程继续存活”的 lane，所以 TREE 页默认显示 `ORPHAN none yet`；事件路径已由 `process_terminate_current()` / `process_exit_current()` 的真实退出路径调用，不是渲染层伪造。
 - 当前速度基线（QEMU TCG，非实时）：100 Hz PIT 是硬控制节拍上限；CPU 页 4.14 秒窗口内 `SWITCHES +129,890`（约 31.4k/s）、`PREEMPTIONS +384`（约 92.8/s），control/render/idle 仍是 50/38/12；监视器建立后 69 ms 的首帧采样已有完整机械臂画面。详见 `PERFORMANCE.md`。
-- P5.2 的 `V` 页固定 4 页，原第 5 页 `DEMO` 因 `kernel.bin` 超过当时 65,536B 上限被删除，旧证据压缩进 `ADDRESS` 页。P9 clean 构建为 77,160B、上限 98,304B、余量 21,144B；`--gc-sections` 已回收不可达代码，但新增页面或长文案前仍必须先算体积。
+- P5.2 的 `V` 页固定 4 页，原第 5 页 `DEMO` 因 `kernel.bin` 超过当时 65,536B 上限被删除，旧证据压缩进 `ADDRESS` 页。P10 clean 构建为 77,544B、上限 98,304B、余量 20,760B；`--gc-sections` 已回收不可达代码，但新增页面或长文案前仍必须先算体积。P10 的 BSS 只剩 324B，下一阶段不能再随手加静态大数组。
 - `V` 页的页面状态是单个静态实例（`page_mode/page_slot/page_first`），四页共享同一个选中槽；`process_slot_space()` / `process_slot_fd_info()` 是只读快照，没有 seqlock，单核下仍可能在 PIT 切换窗口看到半更新字段，已知取舍是“可观察面优先、不做事务化快照”。
 - `PgDn` 把选中槽带到槽 10/11 后，空槽详情只显示 `EMPTY` 和池统计；要回到有内容槽需 `Up` 或 `Home`，这是当前交互语义，不是滚动丢失。
 - P5.3 没有新增持久对象、页面或第二套计数；只复用 P5.1 池页与用户数据槽，压测状态由 ring3 写、页面只读。`S` 与 `Y` 共用同一池页外壳，二者互斥，不能同时运行。
@@ -485,6 +508,7 @@ QEMU 实测（P9 clean 构建 `kernel.bin=77,160`，`__bss_start=0x92D80`、`__b
 - P8 的 kthread 只做单创建者、单 joiner 最小闭环：支持 create/exit/self/join/stats，不支持 detach、超时、取消、优先级继承或 kthread 之间组成线程组；未 join 的 kthread ZOMBIE 已由 P9 的 100 tick grace 兜底回收，但晚于 grace 才 join 会得到 -1。`kthread_create` 只允许 ring0 任务调用，用户态没有入口；kthread 不创建 PCB、不进入 process 家族回收路径。未做多等待者、TID 复用竞态和高频创建/销毁压力测试。
 - P9 clean 构建为 77,160B、上限 98,304B、余量 21,144B；`__bss_start=0x92D80`、`__bss_end=0x96DFC`，BSS 距 `AEVUM_KERNEL_END=0x97000` 仅 516B。每个任务槽从 P8 的 100B 增至 104B（`task_struct` 新增 `zombie_ticks`），16 槽共增加 64B；继续加内核数据结构前必须先核算 BSS 和镜像体积。
 - P9 只验证“单创建者、无 joiner”的自动回收：多 joiner 等同一 TID、join 超时/取消、TID 复用竞态、kthread 故障终止、worker 池和高频创建/销毁仍未覆盖。`task_reap_unjoined_kthread()` 每轮调度扫 16 个任务槽，没有做单独延迟测量；`task_struct` 的 `zombie_ticks` 只用于计龄，不参与优先级或调度排序。
+- P10 的 exit ring 是全局固定 4 槽，不按父进程或 PID 分桶；高并发 fork/wait 时早期退出摘要会被覆盖，V 页 `REAP0/REAP1` 只保证“最近两次”，不保证任意历史。ring 不做事务化快照，单核 PIT 窗口内 `process_exit_snapshot()` 与 `process_reap()` 并发时可能读到前一条 `seq` 的部分字段；当前接受“可观察面优先”。PCB 清零后 `process_snapshot()` 对该槽返回 0，V 页不再显示 DEAD 行；信号死因改由 ring 的最新生效记录保留。
 - P7.1 的多线程 `exec` 采取拒绝策略，不杀其他线程；长期是“拒绝”还是“exec 杀死同组其他线程”尚未定。线程 TID 与进程 TGID 共用 `PID_MAX=31`，且各占一个任务槽和 4KB 内核栈，`PROC_MAX=12/TASK_MAX=16/KSTACK=12` 下多线程会快速消耗容量。
 
 - P3.2 已有用户 handler、signal frame 和 `sigreturn`；P4.1 已有内嵌 flat 镜像 `exec`、PID/任务槽保留、AS 替换和信号重置；P4.2 已有 `argv/envp` 解析、字符串迁移、SysV 初始栈和 `exec_argc/exec_envc` 元数据；P4.3 已有每进程 fd 表、匿名 pipe、`pipe/read/write/close` 和 exec 后 fd 保留；P4.4 已有全局 console fd 0/1、fork 继承、close 边界和 VGA/COM1 双写。仍没有 ELF loader、文件系统/路径 `open`、console 会话/前台焦点、`kill()`、信号排队、真正阻塞的 mask、`SA_SIGINFO`/`SA_RESTART` 等 POSIX 语义。

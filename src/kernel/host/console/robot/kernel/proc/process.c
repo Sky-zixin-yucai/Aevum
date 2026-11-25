@@ -10,7 +10,7 @@
 #define PROC_SIGFRAME_MAGIC 0x53494746u  /* "SIGF" */
 #define PROC_EXEC_MAX_VEC 4
 #define PROC_EXEC_STRING_MAX 32
-#define PROC_REAP_HISTORY 2
+#define PROC_REAP_SLOTS 2
 
 /*
  * sigreturn 只保留信号恢复需要的算术/方向标志：
@@ -53,11 +53,16 @@ struct proc_signal_frame {
     u32 sig, old_mask, magic;
 };
 
-struct proc_reap_exec {
+struct proc_exit_record {
+    u32 seq;
     int pid;
+    int ppid;
+    u32 exit_code;
+    u32 term_sig;
     u32 image_id;
     u32 argc;
     u32 envc;
+    char comm[PROC_NAME_MAX + 1];
 };
 
 struct process {
@@ -80,10 +85,17 @@ struct process {
     u32 exec_argc;
     u32 exec_envc;
     struct proc_fd_table fds;
-    struct proc_reap_exec reaped[PROC_REAP_HISTORY];
 };
 
 static struct process procs[PROC_MAX];
+
+/*
+ * P10：PCB 被清零后，退出摘要留在这里。只用固定槽，避免为每个进程
+ * 永久保留一份历史；4 槽同时覆盖 P4.2/P4.3 两次复用 PID 的证据。
+ */
+static struct proc_exit_record exit_ring[PROC_EXIT_HISTORY];
+static u32 exit_seq;
+static int exit_count;
 
 /* P7.5 wait/join 的关中断重查上下文；函数定义放在进程表 helper 之后。 */
 struct proc_wait_ctx {
@@ -139,14 +151,57 @@ static void proc_zero(struct process *p)
     p->image_id = 0;
     p->exec_argc = 0;
     p->exec_envc = 0;
-    for (i = 0; i < PROC_REAP_HISTORY; i++) {
-        p->reaped[i].pid = 0;
-        p->reaped[i].image_id = 0;
-        p->reaped[i].argc = 0;
-        p->reaped[i].envc = 0;
-    }
     proc_fd_table_init(&p->fds);
     proc_reset_signals(p);
+}
+
+/* 只复制退出摘要，不带走 AS/fd/任务槽指针。 */
+static void proc_exit_push(const struct process *p)
+{
+    struct proc_exit_record *r;
+    int i;
+
+    if (!p) return;
+    r = &exit_ring[exit_seq % PROC_EXIT_HISTORY];
+    exit_seq++;
+    r->seq = exit_seq;
+    r->pid = p->pid;
+    r->ppid = p->ppid;
+    r->exit_code = p->exit_code;
+    r->term_sig = p->term_sig;
+    r->image_id = p->image_id;
+    r->argc = p->exec_argc;
+    r->envc = p->exec_envc;
+    for (i = 0; i <= PROC_NAME_MAX && p->comm[i]; i++) r->comm[i] = p->comm[i];
+    r->comm[i] = 0;
+    if (exit_count < PROC_EXIT_HISTORY) exit_count++;
+}
+
+/* 取第 nth 新的退出记录；pid/ppid 传 0 表示不按该字段过滤。 */
+static struct proc_exit_record *proc_exit_nth(int pid, int ppid, int nth)
+{
+    u32 limit = 0xFFFFFFFFu;
+    struct proc_exit_record *best = 0;
+    int n, i;
+
+    if (nth <= 0 || nth > exit_count) return 0;
+    for (n = 0; n < nth; n++) {
+        u32 best_seq = 0;
+        best = 0;
+        for (i = 0; i < PROC_EXIT_HISTORY; i++) {
+            struct proc_exit_record *r = &exit_ring[i];
+            if (!r->seq || r->seq >= limit) continue;
+            if (pid > 0 && r->pid != pid) continue;
+            if (ppid > 0 && r->ppid != ppid) continue;
+            if (!best || r->seq > best_seq) {
+                best = r;
+                best_seq = r->seq;
+            }
+        }
+        if (!best) return 0;
+        limit = best->seq;
+    }
+    return best;
 }
 
 static void proc_zero_orphan(struct proc_orphan_event *e)
@@ -456,15 +511,14 @@ void process_block_stats(u32 *wait_blocks, u32 *wait_wakes,
     if (join_wakes) *join_wakes = join_wake_total;
 }
 
-/* 连续 fork/wait 时优先复用刚退出的直接子 PID，保住无关 lane 的墓碑。 */
+/* 连续 fork/wait 时优先复用刚退出的直接子 PID，摘要来自 exit ring。 */
 static int proc_reusable_child_pid(const struct process *parent)
 {
-    int i;
+    struct proc_exit_record *r;
+
     if (!parent) return 0;
-    for (i = 0; i < PROC_MAX; i++)
-        if (procs[i].state == PROC_DEAD && procs[i].ppid == parent->pid)
-            return procs[i].pid;
-    return 0;
+    r = proc_exit_nth(0, parent->pid, 1);
+    return r ? r->pid : 0;
 }
 
 static struct process *proc_alloc_slot(int pid)
@@ -472,7 +526,7 @@ static struct process *proc_alloc_slot(int pid)
     struct process *slot = 0;
     int i;
 
-    /* 优先空槽；DEAD 只作为可显示的墓碑，可以被下一次创建复用。 */
+    /* 优先空槽；P10 后回收直接清零，DEAD 分支仅保留兼容。 */
     for (i = 0; i < PROC_MAX; i++) {
         if (procs[i].state == PROC_FREE) {
             slot = &procs[i];
@@ -489,7 +543,7 @@ static struct process *proc_alloc_slot(int pid)
     }
     if (!slot) return 0;
 
-    /* PID 可能被复用；清掉其他同 PID 的旧墓碑，避免 V 页出现重复行。 */
+    /* PID 可能被复用；清掉其他同 PID 的旧槽，避免 V 页出现重复行。 */
     for (i = 0; i < PROC_MAX; i++) {
         if (&procs[i] != slot && procs[i].state == PROC_DEAD &&
             procs[i].pid == pid)
@@ -507,16 +561,19 @@ static void process_reap(struct process *p)
     if (task_process_current() == p) return;
     /*
      * 线程组里仍有非 ZOMBIE 任务在跑时不能回收：此时释放地址空间
-     * 等于拆正在跑的台。留墓碑，等下一轮 reaper 再试。
+     * 等于拆正在跑的台。保留 ZOMBIE，等下一轮 reaper 再试。
      */
     if (task_process_live_threads(p) != 0) return;
     if (task_release_process_threads(p) != 0) return;
     proc_fd_table_close_all(&p->fds);
     if (p->space) address_space_release(p->space);
     task_pid_release(p->pid);
-    p->space = 0;
-    p->stack_top = 0;
-    p->state = PROC_DEAD;
+    /*
+     * P10：先把 pid/ppid/exit_code/term_sig/镜像和 comm 复制到 exit ring，
+     * 再清空 PCB。之后这个槽不再保留任何可被 wait 或 V 页误读的墓碑。
+     */
+    proc_exit_push(p);
+    proc_zero(p);
 }
 
 static int proc_copy_name(struct process *p, const char *name)
@@ -1177,18 +1234,8 @@ int process_wait(int pid, u32 user_status)
             {
                 int child_pid = child->pid;
                 /*
-                 * PID 会被后续 fork 复用；先把本次 wait 的子进程 exec 代次
-                 * 存入父进程最近两次历史，V 页不依赖已清空的子墓碑。
-                 */
-                self->reaped[0] = self->reaped[1];
-                self->reaped[1].pid = child->pid;
-                self->reaped[1].image_id = child->image_id;
-                self->reaped[1].argc = child->exec_argc;
-                self->reaped[1].envc = child->exec_envc;
-                /*
-                 * 回收必须在切走子任务之后；此时 current 是父进程，
-                 * process_reap() 会清掉子进程的调度槽。
-                 * wait 取走 ZOMBIE 即消费掉一次 SIGCHLD pending。
+                 * 退出摘要由 process_reap() 统一写入 exit ring；wait 只负责
+                 * copyout status 和消费一次 SIGCHLD pending。
                  */
                 process_reap(child);
                 self->pending &= ~(1u << (PROC_SIGCHLD - 1));
@@ -1244,7 +1291,7 @@ void process_stop_all(void)
             address_space_set_stop(procs[i].space, 1);
 }
 
-/* 新 V 演示开始前清掉上一轮墓碑和已经无父的 ZOMBIE。 */
+/* 新 V 演示开始前回收上一轮 ZOMBIE；P10 后 process_reap 会直接清零 PCB。 */
 void process_cleanup(void)
 {
     int i;
@@ -1382,13 +1429,37 @@ int process_reaped_exec(int parent_pid, int slot, int *pid,
                         u32 *image_id, u32 *argc, u32 *envc)
 {
     struct process *p = proc_find_active(parent_pid);
+    struct proc_exit_record *r;
 
-    if (!p || p->state != PROC_LIVE || slot < 0 || slot >= PROC_REAP_HISTORY)
+    if (!p || p->state != PROC_LIVE || slot < 0 || slot >= PROC_REAP_SLOTS)
         return -1;
-    if (pid) *pid = p->reaped[slot].pid;
-    if (image_id) *image_id = p->reaped[slot].image_id;
-    if (argc) *argc = p->reaped[slot].argc;
-    if (envc) *envc = p->reaped[slot].envc;
+    r = proc_exit_nth(0, parent_pid, slot == 0 ? 2 : 1);
+    if (!r) return -1;
+    if (pid) *pid = r->pid;
+    if (image_id) *image_id = r->image_id;
+    if (argc) *argc = r->argc;
+    if (envc) *envc = r->envc;
+    return 0;
+}
+
+int process_exit_snapshot(int index, struct process_exit_info *out)
+{
+    struct proc_exit_record *r;
+    int i;
+
+    if (!out || index < 0) return -1;
+    r = proc_exit_nth(0, 0, index + 1);
+    if (!r) return -1;
+    out->valid = 1;
+    out->seq = r->seq;
+    out->pid = r->pid;
+    out->ppid = r->ppid;
+    out->exit_code = r->exit_code;
+    out->term_sig = r->term_sig;
+    out->image_id = r->image_id;
+    out->argc = r->argc;
+    out->envc = r->envc;
+    for (i = 0; i <= PROC_NAME_MAX; i++) out->comm[i] = r->comm[i];
     return 0;
 }
 
@@ -1401,6 +1472,7 @@ u32 process_read32(int pid, u32 va)
 
 int process_image_id(int pid)
 {
+    struct proc_exit_record *r;
     int i;
     int image = 0;
 
@@ -1410,11 +1482,14 @@ int process_image_id(int pid)
             (int)procs[i].image_id > image)
             image = (int)procs[i].image_id;
     }
+    r = proc_exit_nth(pid, 0, 1);
+    if (r && (int)r->image_id > image) image = (int)r->image_id;
     return image;
 }
 
 int process_exec_counts(int pid, u32 *argc, u32 *envc)
 {
+    struct proc_exit_record *r;
     int i;
     int best = -1;
     u32 best_image = 0;
@@ -1429,8 +1504,14 @@ int process_exec_counts(int pid, u32 *argc, u32 *envc)
             best_image = procs[i].image_id;
         }
     }
-    if (best < 0) return -1;
-    *argc = procs[best].exec_argc;
-    *envc = procs[best].exec_envc;
+    if (best >= 0) {
+        *argc = procs[best].exec_argc;
+        *envc = procs[best].exec_envc;
+        return 0;
+    }
+    r = proc_exit_nth(pid, 0, 1);
+    if (!r) return -1;
+    *argc = r->argc;
+    *envc = r->envc;
     return 0;
 }

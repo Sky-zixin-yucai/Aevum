@@ -99,3 +99,12 @@ P9 clean 构建 `kernel.bin=77,160`，主页面右下显示 `kt 4 s5 a1 OK`，`T
 - `kthread_demo_ok` 要求 status 5、join 前/后 `kernel_stack_used()` 相等、`join_blocks>0`、`reaped=2`、`auto_reaped=1`、`live=0`；页面 `OK` 是这组断言的结果。P8 clean 构建 75,336B，对应旧页面 `kthr 4 s5 OK`。
 - 页面右侧常驻 `P3/31` 只统计 control/render/idle；kping/korph 存活期间会占用额外 PID/任务槽，回收后回到 3。该页是生命周期验收，不测 kthread 创建/销毁延迟；192+8 次 yield 在一次启动后 2 秒内完成，未做 TSC 或高频压力测量。
 - P7.5 的 `V` 页路径没有新增用户态演示，ring3 代码仍为 4,063B；P9 的改动只发生在 ring0 任务/栈池、调度器回收路径和主页面底栏。`kthread_reap_unjoined()` 每轮调度扫 16 个任务槽，未做单独延迟测量。
+
+## 10. P10 PCB 清零与 exit ring 体积
+
+P10 clean 构建 `kernel.bin=77,544`，`__bss_start=0x92F00`、`__bss_end=0x96EBC`，`AEVUM_KERNEL_END=0x97000`：
+
+- 镜像距 98,304B 上限余量 20,760B；BSS 距 `0x97000` 余量 324B。
+- `struct process` 删除每进程 `reaped[2]`（12×32B=384B），新增全局 `exit_ring[4]`（4×48B=192B），BSS 净减 192B；但 `.text/.rodata` 增长 384B，所以 `__bss_start` 前移 384B、`__bss_end` 后移 192B。
+- 回收路径多一次 `proc_exit_push()` 的 48B 摘要复制和一次 `proc_zero()`；没有新增锁、没有动态分配。退出 ring 是固定槽，不随进程数增长。
+- QEMU 实测 slot 4 从 `PID 8 / ZOMB` 变 `FREE`，`POOL proc 3/12 live 3 zomb 0 dead 0`；`exit 8 st 9` 来自 ring。该页只证明清零和摘要保留，不测 `process_reap()` 的单次周期成本。

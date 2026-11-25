@@ -12,8 +12,27 @@ struct proc_fd_info;
 #define PROC_MAX 12
 #define PROC_NAME_MAX 15
 
+/*
+ * P10：PCB 被 wait/reaper 真正清零前，退出摘要进入全局 ring。
+ * ring 只保存显示和 wait 历史需要的字段，不保留 AS/fd/任务指针。
+ */
+#define PROC_EXIT_HISTORY 4
+
 /* 最近一次“父进程退出，直接子进程改挂 PID 0”的只读快照。 */
 #define PROC_ORPHAN_CHILDREN 4
+
+struct process_exit_info {
+    int valid;
+    u32 seq;
+    int pid;
+    int ppid;
+    u32 exit_code;
+    u32 term_sig;
+    u32 image_id;
+    u32 argc;
+    u32 envc;
+    char comm[PROC_NAME_MAX + 1];
+};
 
 struct proc_orphan_event {
     int valid;
@@ -197,7 +216,7 @@ int process_live_count(void);
 /* V 停止：给所有活进程的控制页写停止字。 */
 void process_stop_all(void);
 
-/* V 新启动前：回收上一轮 ZOMBIE，清掉 DEAD 墓碑。 */
+/* V 新启动前：回收上一轮 ZOMBIE；P10 后回收即清零 PCB。 */
 void process_cleanup(void);
 
 /* 调度器钩子：回收没有活父进程的 ZOMBIE；不碰当前任务。 */
@@ -205,11 +224,11 @@ void process_reap_orphans(void);
 
 int process_snapshot(int slot, struct process_info *out);
 int process_count(void);
-/* PROC_MAX 是静态 PCB 槽容量；live+ZOMBIE 墓碑都占用槽，DEAD 才归还。 */
+/* PROC_MAX 是静态 PCB 槽容量；LIVE/ZOMBIE 占用槽，回收后直接 FREE。 */
 int process_slot_used(void);
 int process_pid_of(struct process *proc);
 struct address_space *process_space(struct process *proc);
-/* 只读观察入口：按 PCB 槽取 AS/fd，不转移所有权；DEAD 槽返回空。 */
+/* 只读观察入口：按 PCB 槽取 AS/fd，不转移所有权；FREE 槽返回空。 */
 struct address_space *process_slot_space(int slot);
 int process_slot_fd_info(int slot, int fd, struct proc_fd_info *out);
 /* 每进程 fd 表归 kernel/proc/fd；exec 不重建它，fork 复制引用。 */
@@ -217,11 +236,15 @@ struct proc_fd_table *process_fds(struct process *proc);
 u32 process_read32(int pid, u32 va);
 /* exec 后镜像编号；0 表示初始 ring3 镜像，1 表示 P4.2 exec 镜像，2 表示 P4.3 pipe 镜像。 */
 int process_image_id(int pid);
-/* exec 后参数计数；同 PID 有多个墓碑时取最大镜像代次，失败返回 -1。 */
+/* exec 后参数计数；优先读活 PCB，否则读同 PID 的最新 exit ring，失败返回 -1。 */
 int process_exec_counts(int pid, u32 *argc, u32 *envc);
 
-/* 最近两次 wait 回收子进程的 exec 快照，用于 PID 复用后的 V 页证据。 */
+/* 最近两次 wait 回收子进程的 exec 快照，用于 PID 复用后的 V 页证据。
+ * 数据来自全局 exit ring；slot 0=较早一条，slot 1=最新一条。 */
 int process_reaped_exec(int parent_pid, int slot, int *pid,
                         u32 *image_id, u32 *argc, u32 *envc);
+
+/* 读全局 exit ring。index 0=最新，index 1=次新；失败返回 -1。 */
+int process_exit_snapshot(int index, struct process_exit_info *out);
 
 #endif
