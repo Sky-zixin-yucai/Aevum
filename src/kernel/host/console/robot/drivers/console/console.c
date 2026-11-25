@@ -152,7 +152,8 @@ void console_input_push(u8 scan)
     input_tail = (input_tail + 1) % CONSOLE_INPUT_MAX;
     input_count++;
     push_total++;
-    wait_queue_wake_all(&input_wq);
+    /* P11.6：一个输入字节只交给队首读者。 */
+    wait_queue_wake_one(&input_wq);
 }
 
 int console_read(u8 *buf, u32 len)
@@ -168,6 +169,8 @@ int console_read(u8 *buf, u32 len)
     if (!out) return -1;
     read_total += out;
     last_input = buf[out - 1];
+    /* P11.6：还有积压时把下一个读者按 FIFO 唤醒。 */
+    if (input_count) wait_queue_wake_one(&input_wq);
     return (int)out;
 }
 

@@ -169,3 +169,15 @@ P11.5 clean 构建 `kernel.bin=82,664`，`__bss_start=0x94300`、`__bss_end=0x98
 - I 键 idle 探针：PIT 11,676 tick，`IDLE hlt 39`、idle `TICKS 39`、`PREEMPTIONS 100`、`EXP 109`。多出的 9 次是 idle 片到期后没有其它非 idle READY、picker 仍返回 idle；这证明 `EXP` 统计片到期，`PREEMPTIONS` 统计实际换任务，两个口径不能混。
 - P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。ring3 `code_size=4,061B`、image3 644B 未变。
 - 边界：这是 QEMU TCG 的功能计数，不是调度延迟基准；片固定 4 tick，高优先级只改 `vruntime` 权重，不缩短/延长单次片。没有 per-task 片用完次数、等待时间、队列深度或唤醒延迟统计。
+
+## 16. P11.6 等待队列 FIFO 的存储与唤醒成本
+
+P11.6 clean 构建 `kernel.bin=84,264B`，`__bss_start=0x94940`、`__bss_end=0x98A7C`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 镜像从 P11.5 的 82,664B 增至 84,264B（+1,600B）；BSS 从 16,540B 增至 16,700B（+160B）；镜像距 106,496B 上限余 22,232B，BSS 距 `0x9A000` 余 5,508B。208 扇区 boot 窗口继续够用。
+- `sizeof(struct task_struct)` 从 116B 增至 120B（新增 `wait_ticket`），16 槽 `tasks[]` 从 `0x740` 增至 `0x780`（+64B）；`struct wait_queue` 从 1B 增至 8B，9 个队列合计 +63B；新增 `wq_wake_one_total`、`wq_wake_all_total`、`wq_max_depth` 三个 4B 统计全局。三者相加约 +139B，其余 BSS 增量来自对齐和新增 helper 的静态数据。
+- 唤醒路径仍是固定的 16 槽线性扫描：`wake_one` 在扫描时多一次票据比较，复杂度与 P11.3 的 `wake_all` 同为 O(16)，没有链表插入/删除、没有动态分配。区别是 `wake_one` 只改一个 BLOCKED 任务，常规 pipe/console 数据到达不再同时放行所有等待者。
+- `task_block_on()` 首次入队多一次 `wait_ticket_alloc()` 和深度比较；虚假唤醒后重入队不再分配新票据，只重写 `waitq/wake_tick`，因此不会因为重复唤醒把等待者排到队尾。
+- C 页 `WQ blk 9 one 8 all 0 dep 3` 是功能计数，不是延迟基准：`blocks` 复用 P11.3 的 `io_block_total`，`one/all` 是实际唤醒成员次数，`dep` 是任一队列同时 BLOCKED 的最大深度。本轮 image 3 的三段 FIFO 等待把 `dep` 推到 3，`one` 为 8；`all` 为 0 是因为没有走到关闭/EOF 时仍有等待者的广播路径。
+- P5.3 复测 `round 100/100 first 5 -> 5 live 1 state STRESS OK`、`PHYS 6/255`；C 页 PIT 11,473 tick 时 `PREEMPTIONS 0 / EXP 0`，再按 `P` 触发 probe 后 PIT 14,948 tick、`PREEMPTIONS 23 / EXP 23`，说明新增字段没有破坏 100 轮 fork/wait 回收，也没有让 PIT 片调度停摆。
+- 边界：这是 QEMU TCG 的功能计数；没有测等待延迟、唤醒到运行的时延、队列深度分布或高并发等待的尾部延迟。FIFO 只覆盖已阻塞者，新到者可直接插队，因此不能把它当作严格门票队列的吞吐基准。

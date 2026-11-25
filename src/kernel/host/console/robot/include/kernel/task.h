@@ -146,14 +146,19 @@ const char *task_wake(int pid);
 typedef int (*task_block_check_t)(void *ctx);
 
 /*
- * P11.3：对象等待队列的逻辑成员集。队列本身只保存唤醒代次；真正的
- * BLOCKED 成员由 task_struct.waitq 指向这里，调度器仍是 16 槽扫描。
- * 采用条件重查 + 关中断入队，wake 只负责置 READY，不直接切任务。
+ * P11.3：对象等待队列的逻辑成员集。真正的 BLOCKED 成员由
+ * task_struct.waitq 指向这里，调度器仍是 16 槽扫描。
+ * P11.6：队列只保存票据分配器；每个等待者拿一个单调票据，定向唤醒取
+ * 最小票据。成员仍不挂链，FIFO 顺序靠 16 槽扫描比较票据实现。
  */
 struct wait_queue {
-    u8 wake_seq;
+    u32 next_ticket;
+    u32 wakes;
 };
 void wait_queue_init(struct wait_queue *q);
+/* P11.6：按票据顺序只唤醒最早的一个等待者；没有等待者时不计唤醒。 */
+void wait_queue_wake_one(struct wait_queue *q);
+/* 关闭/EOF 等终止条件仍广播所有等待者。 */
 void wait_queue_wake_all(struct wait_queue *q);
 /*
  * P11.3：加入对象等待队列并按 tick 超时阻塞。ready 为 NULL 时只看超时。
@@ -162,6 +167,12 @@ void wait_queue_wake_all(struct wait_queue *q);
 int task_block_on(struct wait_queue *q, task_block_check_t ready,
                   void *ctx, u32 ticks);
 void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts);
+/*
+ * P11.6：对象等待队列的 FIFO 观测。blocks 是首次进入阻塞的任务数，
+ * wake_one 是有等待者被定向唤醒的次数，wake_all 是有等待者被广播唤醒的
+ * 次数，max_depth 是任一队列同时阻塞过的最大深度。
+ */
+void task_wq_stats(u32 *blocks, u32 *wake_one, u32 *wake_all, u32 *max_depth);
 
 /*
  * P11.4：idle 停机。idle_task 只在没有其它 READY 任务时参与选择；

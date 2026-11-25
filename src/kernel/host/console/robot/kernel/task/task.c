@@ -39,6 +39,7 @@ struct task_struct {
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
     u32  wake_tick;         /* P11.1：定时阻塞的到期 PIT tick；0 表示无限等待 */
     struct wait_queue *waitq; /* P11.3：当前阻塞所属对象等待队列；0 表示普通等待 */
+    u32  wait_ticket;       /* P11.6：队列内 FIFO 票据；0 表示未排队 */
     u32  slice_left;        /* P11.5：当前时间片剩余 PIT tick */
     u32  zombie_ticks;     /* 进入 ZOMBIE 时的 PIT tick，供未 join kthread 计龄 */
     u32  kernel_entry;     /* kthread 入口函数指针 */
@@ -82,6 +83,10 @@ static u32 timeout_wake_total;
 static u32 io_block_total;
 static u32 io_wake_total;
 static u32 io_timeout_total;
+/* P11.6：FIFO 定向唤醒与最大等待深度。 */
+static u32 wq_wake_one_total;
+static u32 wq_wake_all_total;
+static u32 wq_max_depth;
 /* P11.4：idle 只在没有其它 READY 任务时被选中；hlt 次数单独记账。 */
 static struct task_struct *idle_task;
 static u32 idle_hlt_total;
@@ -145,6 +150,7 @@ static void task_zero(struct task_struct *task)
     task->kthread_wait_tid = 0;
     task->wake_tick = 0;
     task->waitq = 0;
+    task->wait_ticket = 0;
     task->slice_left = 0;
     task->zombie_ticks = 0;
     task->kernel_entry = 0;
@@ -622,6 +628,7 @@ static void task_wake_expired(u32 now)
         if ((int)(now - t->wake_tick) < 0) continue;
         t->wake_tick = 0;
         t->waitq = 0;
+        t->wait_ticket = 0;
         t->state = TASK_READY;
         timeout_wake_total++;
     }
@@ -663,6 +670,7 @@ void task_wake_kthread_waiters(int tid)
             tasks[i].kthread_wait_tid == tid) {
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
+            tasks[i].wait_ticket = 0;
             tasks[i].state = TASK_READY;
         }
     }
@@ -896,6 +904,9 @@ void task_terminate_threads(struct process *proc, int except_tid)
         if (tasks[i].state == TASK_UNUSED || tasks[i].proc != proc) continue;
         if (tasks[i].pid == except_tid || tasks[i].state == TASK_ZOMBIE) continue;
         tasks[i].exit_code = 0;
+        tasks[i].wake_tick = 0;
+        tasks[i].waitq = 0;
+        tasks[i].wait_ticket = 0;
         tasks[i].state = TASK_ZOMBIE;
     }
 }
@@ -1041,6 +1052,8 @@ const char *task_set_current_state(int state)
     if (!prev || prev->state != TASK_RUNNING) return "state";
     if (state == TASK_RUNNING) return 0;
     prev->wake_tick = 0;
+    prev->waitq = 0;
+    prev->wait_ticket = 0;
 
     if (state == TASK_READY) {
         sched_reason = SCHED_YIELD;
@@ -1079,6 +1092,7 @@ const char *task_wake(int pid)
         if (tasks[i].pid == pid && tasks[i].state == TASK_BLOCKED) {
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
+            tasks[i].wait_ticket = 0;
             tasks[i].state = TASK_READY;
             return 0;
         }
@@ -1093,6 +1107,8 @@ int task_block_until(task_block_check_t ready, void *ctx)
     if (!current_task || current_task->state != TASK_RUNNING) return -1;
     __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
     current_task->wake_tick = 0;
+    current_task->waitq = 0;
+    current_task->wait_ticket = 0;
     if (ready && ready(ctx)) {
         __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
         return 0;
@@ -1127,6 +1143,8 @@ int task_block_until_timeout(task_block_check_t ready, void *ctx, u32 ticks)
     if (!deadline) deadline = 1;
 
     __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    current_task->waitq = 0;
+    current_task->wait_ticket = 0;
     for (;;) {
         if (ready && ready(ctx)) {
             current_task->wake_tick = 0;
@@ -1166,29 +1184,90 @@ int task_sleep_ticks(u32 ticks)
     return rc < 0 ? -1 : 0;
 }
 
+static u32 wait_queue_depth(struct wait_queue *q)
+{
+    int i;
+    u32 n = 0;
+
+    for (i = 0; i < TASK_MAX; i++)
+        if (tasks[i].state == TASK_BLOCKED && tasks[i].waitq == q) n++;
+    return n;
+}
+
+/* P11.6：0 保留为“未排队”，票据单调递增；回绕时跳过 0。 */
+static u32 wait_ticket_alloc(struct wait_queue *q)
+{
+    u32 ticket = q->next_ticket++;
+
+    if (!ticket) {
+        q->next_ticket = 2;
+        ticket = 1;
+    }
+    return ticket;
+}
+
 void wait_queue_init(struct wait_queue *q)
 {
-    if (q) q->wake_seq = 0;
+    if (!q) return;
+    q->next_ticket = 1;
+    q->wakes = 0;
 }
 
 /*
- * P11.3：广播唤醒。只把属于该队列的 BLOCKED 任务改成 READY，不直接切任务；
- * 被唤醒者回到 task_block_on 的循环里重查真实条件。PIT 超时也会清 waitq。
+ * P11.6：定向唤醒。只把票据最小的 BLOCKED 成员改 READY，不清 wait_ticket；
+ * 被唤醒者若重查条件后仍不满足，会带着原票据重新入队，保持 FIFO 位置。
+ * 真正返回调用方或超时/退出时才清票据。
  */
-void wait_queue_wake_all(struct wait_queue *q)
+void wait_queue_wake_one(struct wait_queue *q)
 {
     u32 flags;
+    struct task_struct *best = 0;
+    u32 best_ticket = 0;
     int i;
 
     if (!q) return;
     __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
-    q->wake_seq++;
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task_struct *t = &tasks[i];
+        if (t->state != TASK_BLOCKED || t->waitq != q) continue;
+        if (!best || (int)(t->wait_ticket - best_ticket) < 0) {
+            best = t;
+            best_ticket = t->wait_ticket;
+        }
+    }
+    if (best) {
+        best->wake_tick = 0;
+        best->waitq = 0;
+        best->state = TASK_READY;
+        q->wakes++;
+        wq_wake_one_total++;
+    }
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
+/*
+ * P11.3/P11.6：广播唤醒。关闭/EOF 这类终止条件仍一次放开所有等待者；
+ * 票据在这里一并清掉，因为等待者已经离开该对象。
+ */
+void wait_queue_wake_all(struct wait_queue *q)
+{
+    u32 flags;
+    int i, woke = 0;
+
+    if (!q) return;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
     for (i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_BLOCKED && tasks[i].waitq == q) {
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
+            tasks[i].wait_ticket = 0;
             tasks[i].state = TASK_READY;
+            woke = 1;
         }
+    }
+    if (woke) {
+        q->wakes++;
+        wq_wake_all_total++;
     }
     __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
 }
@@ -1211,6 +1290,7 @@ int task_block_on(struct wait_queue *q, task_block_check_t ready,
         if (ready && ready(ctx)) {
             current_task->wake_tick = 0;
             current_task->waitq = 0;
+            current_task->wait_ticket = 0;
             if (blocked) io_wake_total++;
             __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
             return 0;
@@ -1218,13 +1298,26 @@ int task_block_on(struct wait_queue *q, task_block_check_t ready,
         if ((int)(tick_total - deadline) >= 0) {
             current_task->wake_tick = 0;
             current_task->waitq = 0;
+            current_task->wait_ticket = 0;
             if (blocked) io_timeout_total++;
             __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
             return 1;
         }
         current_task->state = TASK_BLOCKED;
         current_task->wake_tick = deadline;
-        current_task->waitq = q;
+        /*
+         * P11.6：首次入队分配票据；被定向唤醒但输掉条件重查时保留原票据，
+         * 不重新排到队尾。深度在成员真正 BLOCKED 之后再统计。
+         */
+        if (!current_task->waitq) {
+            if (!current_task->wait_ticket)
+                current_task->wait_ticket = wait_ticket_alloc(q);
+            current_task->waitq = q;
+            {
+                u32 depth = wait_queue_depth(q);
+                if (depth > wq_max_depth) wq_max_depth = depth;
+            }
+        }
         if (!blocked) {
             blocked = 1;
             io_block_total++;
@@ -1235,6 +1328,7 @@ int task_block_on(struct wait_queue *q, task_block_check_t ready,
         current_task->waitq = 0;
         if (sched_failed) {
             current_task->wake_tick = 0;
+            current_task->wait_ticket = 0;
             __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
             return -1;
         }
@@ -1246,6 +1340,14 @@ void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts)
     if (blocks) *blocks = io_block_total;
     if (wakes) *wakes = io_wake_total;
     if (timeouts) *timeouts = io_timeout_total;
+}
+
+void task_wq_stats(u32 *blocks, u32 *wake_one, u32 *wake_all, u32 *max_depth)
+{
+    if (blocks) *blocks = io_block_total;
+    if (wake_one) *wake_one = wq_wake_one_total;
+    if (wake_all) *wake_all = wq_wake_all_total;
+    if (max_depth) *max_depth = wq_max_depth;
 }
 
 void task_set_idle_task(struct task_struct *task)
@@ -1285,6 +1387,7 @@ void task_wake_process(struct process *proc)
         if (tasks[i].proc == proc && tasks[i].state == TASK_BLOCKED) {
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
+            tasks[i].wait_ticket = 0;
             tasks[i].state = TASK_READY;
         }
     }

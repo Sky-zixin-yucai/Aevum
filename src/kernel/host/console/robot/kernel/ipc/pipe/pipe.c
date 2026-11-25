@@ -87,7 +87,9 @@ int pipe_read(struct pipe *p, void *buf, u32 len)
         p->tail = (p->tail + 1u) % PIPE_CAPACITY;
     }
     p->count -= n;
-    wait_queue_wake_all(&p->write_wq);
+    /* P11.6：腾出空间只唤醒一个写者；若仍有数据，再把下一个读者交出去。 */
+    wait_queue_wake_one(&p->write_wq);
+    if (p->count) wait_queue_wake_one(&p->read_wq);
     return (int)n;
 }
 
@@ -106,7 +108,8 @@ int pipe_write(struct pipe *p, const void *buf, u32 len)
         p->head = (p->head + 1u) % PIPE_CAPACITY;
     }
     p->count += len;
-    wait_queue_wake_all(&p->read_wq);
+    /* P11.6：新数据只交给队首读者，避免广播后所有读者一起抢同一份数据。 */
+    wait_queue_wake_one(&p->read_wq);
     return (int)len;
 }
 

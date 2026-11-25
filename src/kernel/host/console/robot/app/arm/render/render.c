@@ -323,6 +323,7 @@ void arm_render_cpu_frame(void)
     u32 total = task_cpu_total();
     u32 sleep_blocks, sleep_wakes, timeouts;
     u32 io_blocks, io_wakes, io_timeouts;
+    u32 wq_blocks, wq_one, wq_all, wq_depth;
     u32 idle_hlt;
     u32 quantum, slice_expire;
 
@@ -450,9 +451,29 @@ void arm_render_cpu_frame(void)
     p += fmt_dec(buf, idle_hlt);
     buf[p] = 0;
     vga_text(35, 21, buf, idle_hlt ? C_GREEN : C_GRAY);
-    vga_text(2, 22, "priority 0..3 -> weight 1..4; smallest vruntime runs next", 0x18);
-    vga_text(2, 23, "CPU% = this task's PIT ticks / total PIT ticks", 0x18);
-    vga_text(2, 24, "QUANTUM = PIT ticks per slice; EXP = slice expired", 0x18);
+    vga_text(2, 22, "priority 0..3 -> weight 1..4; smallest vruntime next", 0x18);
+    task_wq_stats(&wq_blocks, &wq_one, &wq_all, &wq_depth);
+    vga_text(2, 23, "WQ blk", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, wq_blocks);
+    buf[p] = 0;
+    vga_text(9, 23, buf, C_WHITE);
+    vga_text(12, 23, "one", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, wq_one);
+    buf[p] = 0;
+    vga_text(16, 23, buf, wq_one ? C_GREEN : C_GRAY);
+    vga_text(19, 23, "all", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, wq_all);
+    buf[p] = 0;
+    vga_text(23, 23, buf, wq_all ? C_GREEN : C_GRAY);
+    vga_text(26, 23, "dep", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, wq_depth);
+    buf[p] = 0;
+    vga_text(30, 23, buf, wq_depth > 1 ? C_GREEN : C_GRAY);
+    vga_text(2, 24, "QUANTUM/EXP = slice; WQ one=directed, all=broadcast; CPU%=ticks/total", 0x18);
 }
 
 void arm_render_frame(const struct arm_status *s)

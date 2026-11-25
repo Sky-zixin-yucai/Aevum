@@ -145,12 +145,184 @@ user_io_exec_start:
     mov ebx, [0x401028]
     int 0x80
 
+    ; P11.6：三个读者按 20/40/60 tick 依次阻塞在同一 pipe 读端。
+    ; 父每 50 tick 写一个 token；FIFO 正确时子进程按 1/2/3 回写结果。
+    push byte 14
+    pop eax
+    mov ebx, 0x401100
+    int 0x80
+    test eax, eax
+    jnz .bad13
+    push byte 14
+    pop eax
+    mov ebx, 0x401108
+    int 0x80
+    test eax, eax
+    jnz .bad14
+
+    ; 子进程 1：20 tick 后阻塞，持有 id '1'。
+    mov dword [0x40111C], 20
+    mov dword [0x401120], 0x31
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad14
+    jz .fifo_child
+    mov [0x401110], eax
+
+    ; 子进程 2：40 tick 后阻塞，持有 id '2'。
+    mov dword [0x40111C], 40
+    mov dword [0x401120], 0x32
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad14
+    jz .fifo_child
+    mov [0x401114], eax
+
+    ; 子进程 3：60 tick 后阻塞，持有 id '3'。
+    mov dword [0x40111C], 60
+    mov dword [0x401120], 0x33
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad14
+    jz .fifo_child
+    mov [0x401118], eax
+
+    ; 父只保留 data 写端和 result 读端，避免自己持有对端。
+    push byte 17
+    pop eax
+    mov ebx, [0x401100]
+    int 0x80
+    push byte 17
+    pop eax
+    mov ebx, [0x40110C]
+    int 0x80
+
+    ; 先收三个 'R'，确认每个子进程都已走到阻塞入口附近。
+    mov dword [0x40112C], 0
+.fifo_ready_loop:
+    mov eax, [0x40112C]
+    mov ecx, 0x401124
+    add ecx, eax
+    mov edx, 3
+    sub edx, eax
+    push byte 28
+    pop eax
+    mov ebx, [0x401108]
+    mov esi, 500
+    int 0x80
+    cmp eax, 1
+    jl .bad15
+    add [0x40112C], eax
+    cmp dword [0x40112C], 3
+    jb .fifo_ready_loop
+    cmp byte [0x401124], 0x52
+    jne .bad15
+    cmp byte [0x401125], 0x52
+    jne .bad15
+    cmp byte [0x401126], 0x52
+    jne .bad15
+
+    push byte 24
+    pop eax
+    push byte 30
+    pop ebx
+    int 0x80
+
+    ; 每 50 tick 写一个 A/B/C，只允许队首读者被唤醒并取走。
+    mov dword [0x40112C], 0
+.fifo_token_loop:
+    mov al, 0x41
+    add al, byte [0x40112C]
+    mov [0x401130], al
+    push byte 16
+    pop eax
+    mov ebx, [0x401104]
+    mov ecx, 0x401130
+    push byte 1
+    pop edx
+    int 0x80
+    cmp eax, 1
+    jne .bad16
+    push byte 24
+    pop eax
+    push byte 50
+    pop ebx
+    int 0x80
+    inc dword [0x40112C]
+    cmp dword [0x40112C], 3
+    jb .fifo_token_loop
+
+    ; 读三个回写 id，顺序必须是 1/2/3。
+    mov dword [0x40112C], 0
+.fifo_order_loop:
+    mov eax, [0x40112C]
+    mov ecx, 0x401128
+    add ecx, eax
+    mov edx, 3
+    sub edx, eax
+    push byte 28
+    pop eax
+    mov ebx, [0x401108]
+    mov esi, 500
+    int 0x80
+    cmp eax, 1
+    jl .bad17
+    add [0x40112C], eax
+    cmp dword [0x40112C], 3
+    jb .fifo_order_loop
+    cmp byte [0x401128], 0x31
+    jne .bad18
+    cmp byte [0x401129], 0x32
+    jne .bad18
+    cmp byte [0x40112A], 0x33
+    jne .bad18
+
+    ; 三个子进程都必须正常退出。
+    mov dword [0x40112C], 0
+.fifo_wait_loop:
+    mov ecx, [0x40112C]
+    mov ebx, [0x401110 + ecx*4]
+    push byte 4
+    pop eax
+    mov ecx, 0x401138
+    int 0x80
+    cmp eax, 0
+    jle .bad19
+    cmp dword [0x401138], 0
+    jne .bad19
+    inc dword [0x40112C]
+    cmp dword [0x40112C], 3
+    jb .fifo_wait_loop
+
+    push byte 17
+    pop eax
+    mov ebx, [0x401104]
+    int 0x80
+    push byte 17
+    pop eax
+    mov ebx, [0x401108]
+    int 0x80
+
     mov dword [0x401040], 0x33314F49  ; "IO13"
     push byte 16
     pop eax
     push byte 1
     pop ebx
     mov ecx, io_ok + 0x400000
+    push byte 12
+    pop edx
+    int 0x80
+    push byte 16
+    pop eax
+    push byte 1
+    pop ebx
+    mov ecx, wq_ok + 0x400000
     push byte 12
     pop edx
     int 0x80
@@ -210,6 +382,88 @@ user_io_exec_start:
     int 0x80
     jmp $
 
+; P11.6 FIFO 子进程：延迟到确定的先后顺序后阻塞在同一读端，读到一个 token
+; 就把自己的 id 写回 result pipe；读失败写 'X' 并 exit(1)。
+.fifo_child:
+    push byte 17
+    pop eax
+    mov ebx, [0x401104]
+    int 0x80
+    push byte 17
+    pop eax
+    mov ebx, [0x401108]
+    int 0x80
+
+    mov ebx, [0x40111C]
+    push byte 24
+    pop eax
+    int 0x80
+
+    mov byte [0x401130], 0x52   ; "R"：已到达阻塞入口
+    push byte 16
+    pop eax
+    mov ebx, [0x40110C]
+    mov ecx, 0x401130
+    push byte 1
+    pop edx
+    int 0x80
+    cmp eax, 1
+    jne .fifo_child_fail
+
+    push byte 28
+    pop eax
+    mov ebx, [0x401100]
+    mov ecx, 0x401134
+    push byte 1
+    pop edx
+    mov esi, 500
+    int 0x80
+    cmp eax, 1
+    jne .fifo_child_badread
+
+    mov al, [0x401120]
+    mov [0x401130], al
+    push byte 16
+    pop eax
+    mov ebx, [0x40110C]
+    mov ecx, 0x401130
+    push byte 1
+    pop edx
+    int 0x80
+    cmp eax, 1
+    jne .fifo_child_fail
+
+    push byte 17
+    pop eax
+    mov ebx, [0x401100]
+    int 0x80
+    push byte 17
+    pop eax
+    mov ebx, [0x40110C]
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+
+.fifo_child_badread:
+    mov byte [0x401130], 0x58   ; "X"：超时或读失败
+    push byte 16
+    pop eax
+    mov ebx, [0x40110C]
+    mov ecx, 0x401130
+    push byte 1
+    pop edx
+    int 0x80
+.fifo_child_fail:
+    push byte 3
+    pop eax
+    push byte 1
+    pop ebx
+    int 0x80
+    jmp $
+
 .child_bad1:
     push byte 11
     pop ebx
@@ -256,6 +510,28 @@ user_io_exec_start:
     jmp .fail
 .bad10:
     mov ebx, 10
+    jmp .fail
+.bad13:
+    mov ebx, 13
+    jmp .fail
+.bad14:
+    mov ebx, 14
+    jmp .fail
+.bad15:
+    mov ebx, 15
+    jmp .fail
+.bad16:
+    mov ebx, 16
+    jmp .fail
+.bad17:
+    mov ebx, 17
+    jmp .fail
+.bad18:
+    mov ebx, 18
+    jmp .fail
+.bad19:
+    mov ebx, 19
+    jmp .fail
 .fail:
     push ebx
     push byte 16
@@ -278,6 +554,8 @@ io_fill:
     db 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'
 io_ok:
     db 'P11.3 IO OK', 10
+wq_ok:
+    db 'P11.6 WQ OK', 10
 io_bad:
     db 'IOBAD', 10
 
