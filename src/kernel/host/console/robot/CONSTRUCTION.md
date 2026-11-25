@@ -12,7 +12,7 @@
 | 内存布局 | `config/memory.h` | 物理地址常量 | 只读宏 |
 | 基础类型 | `include/kernel/types.h` | `i32/u32/u16/u8/i64/u64` | 只读类型 |
 | 错误入口 | `kernel/error/error.c` | 错误屏、停机 | `aevum_fail()` |
-| 任务 | `kernel/task/task.c` | `task_struct` 字段、`tasks[]`、`current_task`、`pid_map`、切换轨迹、`cpu_ticks`/`vruntime`/`fpu_state`；P7.1 增加 `tgid/exit_code` 与线程创建/回收/终止/快照 helper；P7.2 增加 `detached` 标志与调度器延后回收；P7.3 验证主线程 ZOMBIE 后 worker 仍可 join 并继续调度；P7.4 增加 `task_yield_wait()`，只在 wait/join 轮询记 vruntime，普通 yield 不记；P7.5 增加 `task_block_until()` 与 `task_wake_process()`，并在任务真正 ZOMBIE 后触发 `process_notify_task_zombie()`；P8 增加 `kthread/kthread_wait_tid/kernel_entry/kernel_arg` 字段、`task_create_kernel_arg()`、`task_wake_kthread_waiters()`、`task_reap_kthread()`，并让 `task_reap()` 跳过动态 kthread；P9 增加 `zombie_ticks`、`task_reap_unjoined_kthread()`，并在调度器里挂 `kthread_reap_unjoined()`；P11.1 增加 `wake_tick`、`task_block_until_timeout()`、`task_sleep_ticks()`、`task_timer_stats()` 和 IRQ0 的 `task_wake_expired()`；P11.2 增加 `task_priority_get()` / `task_priority_set()`，并让 fork/clone 从当前任务继承优先级；P11.3 增加 `struct wait_queue`、`task_struct.waitq`、`task_block_on()`、`wait_queue_wake_all()`、`task_io_stats()`；P11.4 增加 `idle_task` 选择规则、`task_set_idle_task()`、`task_note_idle_hlt()`、`task_idle_hlt_total()`，让 `task_pick_next()` 只在没有非 idle READY 时返回 idle | `task_boot/task_create/task_create_kernel_arg/task_create_thread_user/task_start/task_current/task_exit/task_yield/task_yield_wait/task_block/task_wake/task_pid_used/task_pid_of/task_snapshot_pid/task_preempt_total/task_cpu_total/task_process_live_threads/task_detach_thread/task_reap_thread/task_release_process_threads/task_priority_get/task_priority_set/task_set_idle_task/task_note_idle_hlt/task_idle_hlt_total` |
+| 任务 | `kernel/task/task.c` | `task_struct` 字段、`tasks[]`、`current_task`、`pid_map`、切换轨迹、`cpu_ticks`/`vruntime`/`fpu_state`；P7.1 增加 `tgid/exit_code` 与线程创建/回收/终止/快照 helper；P7.2 增加 `detached` 标志与调度器延后回收；P7.3 验证主线程 ZOMBIE 后 worker 仍可 join 并继续调度；P7.4 增加 `task_yield_wait()`，只在 wait/join 轮询记 vruntime，普通 yield 不记；P7.5 增加 `task_block_until()` 与 `task_wake_process()`，并在任务真正 ZOMBIE 后触发 `process_notify_task_zombie()`；P8 增加 `kthread/kthread_wait_tid/kernel_entry/kernel_arg` 字段、`task_create_kernel_arg()`、`task_wake_kthread_waiters()`、`task_reap_kthread()`，并让 `task_reap()` 跳过动态 kthread；P9 增加 `zombie_ticks`、`task_reap_unjoined_kthread()`，并在调度器里挂 `kthread_reap_unjoined()`；P11.1 增加 `wake_tick`、`task_block_until_timeout()`、`task_sleep_ticks()`、`task_timer_stats()` 和 IRQ0 的 `task_wake_expired()`；P11.2 增加 `task_priority_get()` / `task_priority_set()`，并让 fork/clone 从当前任务继承优先级；P11.3 增加 `struct wait_queue`、`task_struct.waitq`、`task_block_on()`、`wait_queue_wake_all()`、`task_io_stats()`；P11.4 增加 `idle_task` 选择规则、`task_set_idle_task()`、`task_note_idle_hlt()`、`task_idle_hlt_total()`，让 `task_pick_next()` 只在没有非 idle READY 时返回 idle；P11.5 增加 `slice_left`、`TASK_SLICE_TICKS`、`task_slice_stats()`，IRQ0 片未尽直接返回当前帧，片到期才重选 | `task_boot/task_create/task_create_kernel_arg/task_create_thread_user/task_start/task_current/task_exit/task_yield/task_yield_wait/task_block/task_wake/task_pid_used/task_pid_of/task_snapshot_pid/task_preempt_total/task_cpu_total/task_process_live_threads/task_detach_thread/task_reap_thread/task_release_process_threads/task_priority_get/task_priority_set/task_set_idle_task/task_note_idle_hlt/task_idle_hlt_total/task_slice_stats` |
 | 动态 kthread | `kernel/task/kthread/kthread.c` | P8 唯一 owner：`kthread_create` 从 `kernel_stack_alloc()` 取 4KB 动态栈，经 `task_create_kernel_arg()` 建 ring0 任务；`kthread_exit` 置退出码并转 ZOMBIE；`kthread_join` 用 `task_block_until()` 等待目标 ZOMBIE，再回收栈/PID/任务槽；P9 增加 100 tick grace 的 `kthread_reap_unjoined()`，`kthread_stats()` 导出 created/exited/reaped/auto_reaped/failed/join_blocks/join_wakes/live。kthread 没有 PCB，也不进入用户线程组 | `kthread_boot/kthread_create/kthread_exit/kthread_join/kthread_self/kthread_stats/kthread_reap_unjoined` |
 | 进程家族 | `kernel/task/family/family.c` | `family[]`、`reaper`、最近一次重挂事件；只写 `ppid` 关系 | `family_boot/set_reaper/add/exit/snapshot/last_event` |
 | 用户 PCB | `kernel/proc/process.c` | PCB 槽、PID/PPID、LIVE/ZOMBIE（P10 后回收直接清零，不再产生 DEAD 墓碑）、wait status、fork/exec/reap；P6.0 的 `wait` 先校验直接子进程，并记录最近一次 orphan/reparent 事件；P7.1 以 `process` 为 TGID 资源组，增加 `clone/thread_exit/thread_join/gettid` 和线程组回收；P7.2 增加 `thread_detach`；P7.3 主线程先退只结束当前任务，并移除已无读者的 `process->task` 指针，避免主线程被 join 后悬空；P7.4 `process_snapshot()` 在有任务时改用 `task_info.stack_top`，并让 wait/join 轮询走 `task_yield_wait()`；P7.5 `process_wait` / `thread_join` 改走 `task_block_until()`，新增 `process_notify_task_zombie()` 与 wait/join 阻塞/唤醒计数；P11.1 抽出 `process_wait_common()`，新增 `process_wait_timeout()` 走 `task_block_until_timeout()`，返回子 PID/0 超时/-1；P11.2 让 `process_clone_thread_current()` 去掉被忽略的 priority 参数、改用调用线程优先级 | `process_snapshot/process_slot_space/process_slot_fd_info/process_last_orphan/process_clone_thread_current/process_thread_exit_current/process_thread_join_current/process_thread_detach_current/process_exit_snapshot/process_wait_timeout` |
@@ -316,8 +316,8 @@ P9 的内核自测仍由 control 启动时执行一次：
 | --- | --- |
 | `0x80000` | 内核镜像起点 |
 | `0x80000..0x90000` | boot 第一段 LBA 读取：128 扇区（64KB）窗口 |
-| `0x90000..0x9A000` | boot 第二段 LBA 读取：80 扇区（40KB）窗口；P11.4 当前 `kernel.bin` 82,312 字节，结束于 `0x94188` |
-| `0x941A0..0x981FC` | 当前构建的 BSS；`__bss_start=0x941A0`、`__bss_end=0x981FC`，低于 `AEVUM_KERNEL_END=0x9A000` |
+| `0x90000..0x9A000` | boot 第二段 LBA 读取：80 扇区（40KB）窗口；P11.5 当前 `kernel.bin` 82,664 字节，结束于 `0x942E8` |
+| `0x94300..0x9839C` | 当前构建的 BSS；`__bss_start=0x94300`、`__bss_end=0x9839C`，低于 `AEVUM_KERNEL_END=0x9A000` |
 | `0x9000..0x9FFF` | `render` 任务栈（栈顶 `0xA000`） |
 | `0xA000..0xAFFF` | `idle` 任务栈（栈顶 `0xB000`） |
 | `0xB000..0xBFFF` | 内核主线程栈（栈顶 `0xC000`） |
@@ -342,7 +342,7 @@ P9 的内核自测仍由 control 启动时执行一次：
 | `0xB8000` | VGA 文本显存 |
 
 `boot.asm` 先读 128 个扇区，再读 80 个扇区到 `0x80000`，合计 208 个扇区，因此 `kernel.bin` 上限为 106,496 字节。
-当前 P11.4 clean 构建 82,312 字节，BSS 从 `0x941A0` 到 `0x981FC`；镜像余量 24,184 字节，BSS 距 `AEVUM_KERNEL_END=0x9A000` 余 0xE04（3,588B）。`kernel.bin` 结束于 `0x94188`，BSS 尾部仍在第二段读取窗口 `0x90000..0x9A000` 内，loader 按 `__bss_end` 清零。BSS 与 `render` 栈 `0x9000`、VGA `0xB8000`、VGA BIOS 影子 ROM `0xC0000` 均不重叠。P11.4 新增两个 4B 全局（`idle_hlt_total`、`idle_task`），`sizeof(struct task_struct)` 保持 112B，`tasks[]` 仍为 16×112B；新增代码抬高了 `.text/.rodata`，第一次构建越过旧 `0x98000`，因此按既有约定把 boot 从 192 扇区扩到 208、`AEVUM_KERNEL_END` 同步到 `0x9A000`。
+当前 P11.5 clean 构建 82,664 字节，BSS 从 `0x94300` 到 `0x9839C`；镜像余量 23,832 字节，BSS 距 `AEVUM_KERNEL_END=0x9A000` 余 0x1C64（7,268B）。`kernel.bin` 结束于 `0x942E8`，BSS 尾部仍在第二段读取窗口 `0x90000..0x9A000` 内，loader 按 `__bss_end` 清零。BSS 与 `render` 栈 `0x9000`、VGA `0xB8000`、VGA BIOS 影子 ROM `0xC0000` 均不重叠。P11.5 新增 `slice_left` 后 `sizeof(struct task_struct)=116B`，`tasks[]` 为 16×116B（`0x740`）；新增两个 4B 统计全局（`slice_expire_total`、`tick_defer_total`）。P11.4 的 208 扇区窗口、`AEVUM_KERNEL_END=0x9A000` 继续沿用，本轮不需要再扩 boot。
 `kernel.bin` 由 `kernel.elf` 经 `objcopy -O binary` 生成，保证 loader 与 C 看到的 `__bss_start`/`__bss_end` 一致。
 若继续增长，先加 `boot.asm` 扇区数，同时同步 `kernel.ld` 与 `config/memory.h` 的 `AEVUM_KERNEL_END`，并确认 BSS 不越过内核主线程栈底 `0xC000`。`AEVUM_TASK_STACK_MIN=0x8000`，
 `AEVUM_TASK_STACK_MAX=0x20C000`，`AEVUM_KSTACK_COUNT=12`，`AEVUM_TASK_STACK_SIZE=0x1000`，`AEVUM_AS_MAX=12`，`PROC_MAX=12`，`TASK_MAX=16`，`AEVUM_PHYS_POOL_BASE=0x100000`，`AEVUM_PHYS_POOL_END=0x1FF000`。
@@ -359,7 +359,7 @@ xxd -l 4 /tmp/robot-serial.bin   # 期望 a5 5a 01
 
 通过标准：
 
-- `kernel.bin` 不超过 106,496 字节，链接无 undefined symbol；P11.4 clean 构建 82,312 字节。
+- `kernel.bin` 不超过 106,496 字节，链接无 undefined symbol；P11.5 clean 构建 82,664 字节。
 - QEMU 不 triple fault，串口首帧为 `a5 5a 01 ...`。
 - 屏幕出现机械臂、目标点、轨迹和右侧 `ARM STATUS` 面板；标题显示 `PIT 100Hz | P/B/T/C/F/G/V/K`，面板出现 `px` 抢占计数和每任务 CPU 百分比。
 - 空格扫描码 `0x39` 可切换零空间；每 420 帧自动切换。
@@ -368,6 +368,7 @@ xxd -l 4 /tmp/robot-serial.bin   # 期望 a5 5a 01
 - 按 `T`（扫描码 `0x14`）进入全屏 `PREEMPTION DUEL`：创建 `spinA` / `spinB` 两个 CPU 密集型任务，循环里都不调用 `task_yield()`；两条 lane 的 `STEP` 同时增长，80 格抢占磁带出现青/洋红交替条纹，`PIT PREEMPTIONS` 持续增加。再按 `T` 停止，两个任务经 `task_exit()` 退出，画面恢复机械臂，面板回到 `P3/31`。
 - 按 `C`（扫描码 `0x2E`）进入全屏 `AEVUM / CPU TIME ACCOUNTING`：正常机械臂负载下三行任务的 `CPU%` 约为 `57% / 43% / 0%`，idle 的 `TICKS` 应保持为 0，`IDLE hlt` 也为 0；`TICKS` 每秒增长，`PIT TICKS` 等于三行 `TICKS` 之和；再按 `C` 返回机械臂，帧号和 `sw` 继续增长。
 - 按 `I`（扫描码 `0x17`）启动 P11.4 idle 探针：control/render 主动 `task_block()` 40 tick，idle 成为唯一 READY 并执行 `sti; hlt`。再按 `C` 查看，`IDLE hlt` 应大于 0（本轮实测 39），idle `TICKS` 同步增加；探针结束后继续运行，`IDLE hlt` 不再增长，证明 idle 只在没有非 idle READY 时被选中。
+- P11.5 时间片验收：C 页应显示 `QUANTUM 4t`；普通协作负载 `EXP` 可以为 0，因为 `task_yield()` 重置整片。按 `T` 进入 CPU-bound duel 后，`PIT PREEMPTIONS` 应以约 4 tick 一次的节奏增长；停止 duel 后 C 页 `PREEMPTIONS` 与 `EXP` 应同步增加，本轮为 100/100。I 键探针后 `EXP` 会比 `PREEMPTIONS` 多，因为 idle 片到期后仍被选回；本轮 109 对 100。
 - 按 `F`（扫描码 `0x21`）进入全屏 `AEVUM / FPU CONTEXT LAB`：`fpuA` / `fpuB` 两个 CPU 密集型任务同时推进 `COUNT`，`TAG` 始终分别为 `A11CE` / `B22CE`，两条 lane 都显示 `CTX OK`；`SWITCHES` / `PREEMPTIONS` 持续增长。再按 `F` 停止，画面恢复机械臂。
 - 按 `G`（扫描码 `0x22`）进入全屏 `AEVUM / PROCESS FAMILY TREE`：`famP` 下面先出现 `famA` / `famB`；约 1.5 秒后 `famP` 退出，两个子进程移到 `idle` 下面，右侧 `LAST REPARENT` 显示 `parent`、`children`、子 PID 和 `reaper`。再按 `G` 停止，画面恢复机械臂。
 - 按 `V`（扫描码 `0x2F`）进入全屏 `AEVUM / V PAGE OBSERVABILITY / P5.2`：默认 `page 1/4 SLOTS`，10 行窗口显示 `window 1-10/12`，`SLOT 0..9` 同时出现；选中槽显示 KSTACK/CR3/BRK/VMA、image/argc/envc/switches/ticks、信号、children 与池统计。P10 抓屏中父 wait 前 `SLOT 4 PID 8 PP 7 ST ZOMB EX 7`，wait 后同一槽变 `FREE`，`POOL proc 3/12 live 3 zomb 0 dead 0`，`exit 8 st 9` 来自 exit ring；这证明 PCB 已清零且退出摘要仍可读。
@@ -455,3 +456,17 @@ P11.4 把 idle 从“普通 READY 任务”改成真正的空闲任务。P11.3 �
 - P11.4 clean 构建 `kernel.bin=82,312B`、`boot.bin=512B`、`disk.img=1,474,560B`；`.text=74,225B`、`.rodata=7,824B`、`.data=232B`、`.bss=16,476B`；`__bss_start=0x941A0`、`__bss_end=0x981FC`，BSS 余量 3,588B，镜像余量 24,184B；`sizeof(struct task_struct)=112B` 不变。SHA256 kernel `c1070904c321928d69f709b73746cd88a72a9bffb9cb233271e71662dda37a98`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `0cc40a815f3710cea1ba7991e3852bb7e63dc0e1246a93ebd6bce88a295e70c9`。
 - QEMU 基线：PIT 3,113 tick 时 idle `TICKS 0`、`CPU% 0`、`IDLE hlt 0`，主页面 `kt 4 s5 a1 OK`。I 键探针后 C 页 `IDLE hlt 39`、idle `TICKS 39`、PIT 4,516；探针结束后继续到 PIT 8,043，`IDLE hlt` 仍为 39，control/render 的 TICKS 继续增长。P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`；串口无 fault/panic。
 - 边界：只做单核、100Hz PIT、静态任务表的 idle；没有 SMP/APIC、tickless、idle governor、C-state、唤醒源统计。I 键探针靠 control/render 主动 block 制造“无非 idle READY”窗口，不是自然负载空闲检测；`IDLE hlt` 只统计 hlt 次数，不统计停留时间或被哪个中断唤醒。
+
+## P11.5 显式时间片与 PIT 延迟重调度
+
+P11.5 把“每个 PIT tick 都重选任务”收成真正的显式片：片没用完时 IRQ0 只记账并返回当前帧，片归零才进入 `task_pick_next()`。
+
+- `include/kernel/task.h` 增加 `TASK_SLICE_TICKS=4u`（100Hz=40ms）与 `task_slice_stats(u32 *quantum,u32 *expires,u32 *defers)`。
+- `kernel/task/task.c` 的 `task_struct` 在 `waitq` 后增加 `u32 slice_left`；`task_zero()` 清 0，`task_boot()` 与 `task_create_common()` 初始化为 4，`task_pick_next()` 返回 `best/idle_best` 前重置为 4。
+- IRQ0 仍执行 `interrupt_eoi()`、`tick_total++`、`task_wake_expired()`、`cpu_ticks++`、`vruntime += 64/weight`；随后 `slice_left--`。若仍大于 0，`tick_defer_total++` 并 `return (u32)frame`，跳过 `task_pick_next()/switch_trace/current_task` 更新；若到 0，`slice_expire_total++` 才重选。
+- 提前返回在 `prev->ctx.esp=(u32)frame` 之后，当前任务的内核栈帧保持可恢复；`sched_reason` 保留上次值，下一 tick 重新写 `SCHED_TICK`。
+- `task_yield()` 视为放弃剩余片；下一次 `task_pick_next()` 给被选中任务重置整片。因此协作式 control/render 正常负载下 `EXP` 为 0，片到期证据由 CPU-bound duel 与 idle 探针提供。
+- C 页 `app/arm/render/render.c` 第 19 行 x=52 `QUANTUM 4t`、x=64 `EXP <count>`，第 24 行说明；`EXP` 与 `PREEMPTIONS` 分开记账。
+- P11.5 clean 构建 `kernel.bin=82,664B`、`boot.bin=512B`、`disk.img=1,474,560B`；`.text=74,528B`、`.rodata=7,888B`、`.data=232B`、`.bss=16,540B`；`__bss_start=0x94300`、`__bss_end=0x9839C`，BSS 余量 7,268B，镜像余量 23,832B；`sizeof(struct task_struct)=116B`，`tasks[]=16×116B`。SHA256 kernel `d6d261d535583ec8669d6f85449eb7b850f392accf3df2139d7e8f39d34f3804`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `8d42c7a376647258cdf86298fd7a5e61bb74101c9d92b7e2b824d8dc4109f627`。同时把 `Makefile` 体积守卫从 98,304/192 扇区修正为 106,496/208 扇区，与 P11.4 的 boot 窗口一致。
+- QEMU：普通负载 PIT 1,897 tick 时 `QUANTUM 4t / PREEMPTIONS 0 / EXP 0 / SWITCHES 5,725`，control/render 57/43、idle 0%（协作 yield 重置片，EXP 为 0 是预期）；T duel 显示 `PIT PREEMPTIONS 20`，磁带交替；停 duel 后 PIT 4,827 时 `PREEMPTIONS 100 / EXP 100 / SWITCHES 16,040`；I 键探针后 `IDLE hlt 39`、idle `TICKS 39`、PIT 11,676、`PREEMPTIONS 100 / EXP 109`，多出的 9 次是 idle 片到期后仍选回 idle。P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。
+- 边界：片固定 4 tick，不按优先级缩放；没有动态片、O(1) runqueue、SMP、per-CPU、实时类、调度延迟统计；等待队列仍广播非 FIFO、无 EINTR，这些不在 P11.5 范围。

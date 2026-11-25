@@ -39,6 +39,7 @@ struct task_struct {
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
     u32  wake_tick;         /* P11.1：定时阻塞的到期 PIT tick；0 表示无限等待 */
     struct wait_queue *waitq; /* P11.3：当前阻塞所属对象等待队列；0 表示普通等待 */
+    u32  slice_left;        /* P11.5：当前时间片剩余 PIT tick */
     u32  zombie_ticks;     /* 进入 ZOMBIE 时的 PIT tick，供未 join kthread 计龄 */
     u32  kernel_entry;     /* kthread 入口函数指针 */
     u32  kernel_arg;       /* kthread 入口参数 */
@@ -84,6 +85,9 @@ static u32 io_timeout_total;
 /* P11.4：idle 只在没有其它 READY 任务时被选中；hlt 次数单独记账。 */
 static struct task_struct *idle_task;
 static u32 idle_hlt_total;
+/* P11.5：显式时间片的到期与“片未尽、跳过重选”计数。 */
+static u32 slice_expire_total;
+static u32 tick_defer_total;
 #define WEIGHT_QUANTUM 64u
 
 /* FXSAVE 区域必须 16 字节对齐；模板只用于新任务的初始 FPU/SSE 状态。 */
@@ -141,6 +145,7 @@ static void task_zero(struct task_struct *task)
     task->kthread_wait_tid = 0;
     task->wake_tick = 0;
     task->waitq = 0;
+    task->slice_left = 0;
     task->zombie_ticks = 0;
     task->kernel_entry = 0;
     task->kernel_arg = 0;
@@ -156,6 +161,7 @@ void task_boot(void)
 {
     task_zero(&boot_task);
     boot_task.state = TASK_RUNNING;
+    boot_task.slice_left = TASK_SLICE_TICKS;
     boot_task.comm[0] = 'i';
     boot_task.comm[1] = 'n';
     boot_task.comm[2] = 'i';
@@ -236,6 +242,8 @@ static const char *task_create_common(int priority, const char *name, u32 entry,
     task->pid = pid;
     task->tgid = proc ? process_pid_of(proc) : pid;
     task->priority = priority;
+    /* P11.5：新任务从完整时间片开始，避免落在 0 片立即被抢占。 */
+    task->slice_left = TASK_SLICE_TICKS;
     /* 新任务从当前虚拟时间起跑，不靠 0 值抢占已运行任务的时间片。 */
     task->vruntime = current_task ? current_task->vruntime : 0;
     task->stack_base = stack_base;
@@ -592,7 +600,15 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
             best_v = t->vruntime;
         }
     }
-    return best ? best : idle_best;
+    if (best) {
+        best->slice_left = TASK_SLICE_TICKS;
+        return best;
+    }
+    if (idle_best) {
+        idle_best->slice_left = TASK_SLICE_TICKS;
+        return idle_best;
+    }
+    return 0;
 }
 
 /* P11.1：每个 PIT tick 扫描一次定时阻塞；tick 是 32 位，比较用有符号差值防回绕。 */
@@ -894,6 +910,7 @@ u32 task_schedule_irq(struct irq_frame *frame)
     struct task_struct *next;
     u32 reason = sched_reason;
     int prev_reaped = 0;
+    int tick_defer = 0;
 
     if (!prev || !frame) {
         for (;;) __asm__ __volatile__("cli; hlt");
@@ -907,10 +924,21 @@ u32 task_schedule_irq(struct irq_frame *frame)
         if (prev->state == TASK_RUNNING) {
             prev->cpu_ticks++;
             prev->vruntime += WEIGHT_QUANTUM / task_weight(prev);
+            if (prev->slice_left > 0) prev->slice_left--;
+            if (prev->slice_left > 0) {
+                tick_defer_total++;
+                tick_defer = 1;
+            } else {
+                slice_expire_total++;
+            }
         }
     }
     prev->ctx.esp = (u32)frame;
     sched_failed = 0;
+
+    /* P11.5：片未尽就不重选，直接返回当前帧；片到期才进入下面的调度流程。 */
+    if (reason == SCHED_TICK && tick_defer)
+        return (u32)frame;
 
     if (reason == SCHED_START) {
         next = start_target;
@@ -1233,6 +1261,13 @@ void task_note_idle_hlt(void)
 u32 task_idle_hlt_total(void)
 {
     return idle_hlt_total;
+}
+
+void task_slice_stats(u32 *quantum, u32 *expires, u32 *defers)
+{
+    if (quantum) *quantum = TASK_SLICE_TICKS;
+    if (expires) *expires = slice_expire_total;
+    if (defers) *defers = tick_defer_total;
 }
 
 void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts)

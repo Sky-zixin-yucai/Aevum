@@ -156,3 +156,16 @@ P11.4 clean 构建 `kernel.bin=82,312`，`__bss_start=0x941A0`、`__bss_end=0x98
 - 探针结束后继续运行到 PIT 8,043 tick，`IDLE hlt` 仍为 39，idle `TICKS` 仍为 39；control/render 的 TICKS 从 2,541/1,936 增至 4,543/3,461。这说明“idle 只在没有非 idle READY 时被选中”不是一次性文案，而是持续的选择规则。
 - P5.3 复测 `round 100/100 first 5 -> 5 live 1 state STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。ring3 `code_size` 仍为 4,061B，image3 仍为 644B，没有因 P11.4 改变用户镜像预算。
 - 边界：`IDLE hlt` 是 hlt 次数，不是 halt 停留时间；没有 TSC/PMU 级 idle residency 测量，也没有唤醒源分解。QEMU TCG 下 tick 推进慢于 wall clock，39 次 hlt 是功能证据，不是 idle 占比基准。
+
+## 15. P11.5 显式时间片与 PIT 重选频率
+
+P11.5 clean 构建 `kernel.bin=82,664`，`__bss_start=0x94300`、`__bss_end=0x9839C`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 镜像距 106,496B 上限余量 23,832B；BSS 距 `0x9A000` 余量 7,268B。P11.4 的 208 扇区/106,496B 窗口继续够用，本轮没有再次扩 boot。`task_struct` 从 112B 增至 116B，`tasks[]` 从 0x700 增至 0x740；BSS 总量 16,540B（+64B），另加两个 4B 统计全局。
+- `.text` 从 P11.4 的 `0x121F1` 增至 `0x12320`（+303B），`.rodata` 从 `0x1E90` 增至 `0x1ED0`（+64B），`.data=0xE8`、`.bss=0x409C`；总镜像 +352B。新增代码主要是 IRQ0 的片记账/提前返回、`task_pick_next()` 的片重置和 C 页 `QUANTUM/EXP`。
+- 片长固定 `TASK_SLICE_TICKS=4`；100Hz 下每次连续运行上限 40ms。IRQ0 每 tick 仍做 `task_wake_expired()`、`cpu_ticks/vruntime` 记账，成本与 P11.4 同阶；省掉的是片未尽的 `task_pick_next()` 16 槽线性扫描、切换轨迹和上下文切换。
+- 普通协作负载 PIT 1,897 tick：`QUANTUM 4t`、`PREEMPTIONS 0`、`EXP 0`、`SWITCHES 5,725`，control/render 57/43、idle 0%。`SWITCHES` 仍高，是因为 control/render 每轮 `task_yield()`，不是 PIT 抢占；每次 yield 重置整片，所以 `EXP` 为 0 是预期。
+- CPU-bound duel：两个 lane 不让出，页面 `PIT PREEMPTIONS 20`，磁带出现青/洋红交替块；停止后 C 页 PIT 4,827 tick，`PREEMPTIONS 100`、`EXP 100`、`SWITCHES 16,040`。100 次片到期全部换了任务，说明 duel 路径每 4 tick 重选一次。
+- I 键 idle 探针：PIT 11,676 tick，`IDLE hlt 39`、idle `TICKS 39`、`PREEMPTIONS 100`、`EXP 109`。多出的 9 次是 idle 片到期后没有其它非 idle READY、picker 仍返回 idle；这证明 `EXP` 统计片到期，`PREEMPTIONS` 统计实际换任务，两个口径不能混。
+- P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。ring3 `code_size=4,061B`、image3 644B 未变。
+- 边界：这是 QEMU TCG 的功能计数，不是调度延迟基准；片固定 4 tick，高优先级只改 `vruntime` 权重，不缩短/延长单次片。没有 per-task 片用完次数、等待时间、队列深度或唤醒延迟统计。

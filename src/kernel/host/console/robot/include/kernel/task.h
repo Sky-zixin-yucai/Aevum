@@ -6,6 +6,8 @@
 #define TASK_NAME_MAX 15
 #define TASK_MAX 16
 #define TASK_PRIORITY_MAX 3
+/* P11.5：显式 PIT 时间片；100Hz 下 4 tick = 40ms。 */
+#define TASK_SLICE_TICKS 4u
 
 enum task_state {
     TASK_UNUSED = 0,
@@ -168,6 +170,13 @@ void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts);
 void task_set_idle_task(struct task_struct *task);
 void task_note_idle_hlt(void);
 u32 task_idle_hlt_total(void);
+
+/*
+ * P11.5：显式时间片。IRQ0 只在 slice_left 归零时重选任务；片未尽的
+ * tick 只做 cpu_ticks/vruntime 记账并返回当前帧。quantum 返回每片 tick
+ * 数，expires 返回片到期次数，defers 返回“片未尽、跳过重选”的 tick 数。
+ */
+void task_slice_stats(u32 *quantum, u32 *expires, u32 *defers);
 
 int task_block_until(task_block_check_t ready, void *ctx);
 /*

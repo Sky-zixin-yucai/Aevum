@@ -324,6 +324,7 @@ void arm_render_cpu_frame(void)
     u32 sleep_blocks, sleep_wakes, timeouts;
     u32 io_blocks, io_wakes, io_timeouts;
     u32 idle_hlt;
+    u32 quantum, slice_expire;
 
     vga_clear(0x00);
     vga_text(16, 0, "AEVUM / CPU TIME ACCOUNTING", 0x1F);
@@ -389,6 +390,19 @@ void arm_render_cpu_frame(void)
     vga_text(26, 19, "SWITCHES", C_GRAY);
     vga_text(36, 19, buf, C_WHITE);
 
+    task_slice_stats(&quantum, &slice_expire, 0);
+    vga_text(52, 19, "QUANTUM", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, quantum);
+    buf[p] = 0;
+    vga_text(60, 19, buf, C_WHITE);
+    vga_text(61, 19, "t", C_GRAY);
+    vga_text(64, 19, "EXP", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, slice_expire);
+    buf[p] = 0;
+    vga_text(68, 19, buf, slice_expire ? C_GREEN : C_GRAY);
+
     p = 0;
     p += fmt_dec(buf, task_preempt_total());
     buf[p] = 0;
@@ -438,6 +452,7 @@ void arm_render_cpu_frame(void)
     vga_text(35, 21, buf, idle_hlt ? C_GREEN : C_GRAY);
     vga_text(2, 22, "priority 0..3 -> weight 1..4; smallest vruntime runs next", 0x18);
     vga_text(2, 23, "CPU% = this task's PIT ticks / total PIT ticks", 0x18);
+    vga_text(2, 24, "QUANTUM = PIT ticks per slice; EXP = slice expired", 0x18);
 }
 
 void arm_render_frame(const struct arm_status *s)
