@@ -1,4 +1,5 @@
 #include "kernel/proc/fd.h"
+#include "kernel/fs/ramfs.h"
 #include "kernel/ipc/pipe.h"
 #include "kernel/mm/address_space.h"
 #include "drivers/console/console.h"
@@ -14,6 +15,8 @@ static void proc_fd_entry_close(struct proc_fd_entry *e)
     if (proc_fd_is_pipe(e->kind))
         pipe_release(e->pipe, e->kind == PROC_FD_PIPE_WRITE);
     e->pipe = 0;
+    e->file = 0;
+    e->offset = 0;
     e->kind = PROC_FD_CLOSED;
 }
 
@@ -21,6 +24,7 @@ static void proc_fd_table_link(struct proc_fd_table *table, u32 fd,
                                struct pipe *p, u32 kind)
 {
     table->entries[fd].pipe = p;
+    table->entries[fd].offset = 0;
     table->entries[fd].kind = kind;
     if (proc_fd_is_pipe(kind)) pipe_acquire(p, kind == PROC_FD_PIPE_WRITE);
 }
@@ -32,6 +36,8 @@ void proc_fd_table_init(struct proc_fd_table *table)
     if (!table) return;
     for (i = 0; i < PROC_FD_MAX; i++) {
         table->entries[i].pipe = 0;
+        table->entries[i].file = 0;
+        table->entries[i].offset = 0;
         table->entries[i].kind = PROC_FD_CLOSED;
     }
 }
@@ -61,8 +67,15 @@ int proc_fd_table_copy(struct proc_fd_table *dst,
     proc_fd_table_init(dst);
     for (i = 0; i < PROC_FD_MAX; i++) {
         if (src->entries[i].kind == PROC_FD_CLOSED) continue;
-        proc_fd_table_link(dst, (u32)i, src->entries[i].pipe,
-                           src->entries[i].kind);
+        if (src->entries[i].kind == PROC_FD_RAMFS_FILE) {
+            dst->entries[i].pipe = 0;
+            dst->entries[i].file = src->entries[i].file;
+            dst->entries[i].offset = src->entries[i].offset;
+            dst->entries[i].kind = PROC_FD_RAMFS_FILE;
+        } else {
+            proc_fd_table_link(dst, (u32)i, src->entries[i].pipe,
+                               src->entries[i].kind);
+        }
     }
     return 0;
 }
@@ -76,6 +89,44 @@ u32 proc_fd_count(const struct proc_fd_table *table)
     for (i = 0; i < PROC_FD_MAX; i++)
         if (table->entries[i].kind != PROC_FD_CLOSED) n++;
     return n;
+}
+
+int proc_fd_open_ramfs(struct proc_fd_table *table, struct address_space *space,
+                       u32 user_path, u32 flags)
+{
+    char path[RAMFS_NAME_MAX];
+    const struct ramfs_file *file;
+    u32 fd;
+    int i;
+    int done = 0;
+
+    if (!table || !space || !user_path) return -1;
+    if (flags != 0) return -1;
+
+    for (i = 0; i < RAMFS_NAME_MAX; i++) {
+        u8 c;
+        if (address_space_copyin(space, &c, user_path + (u32)i, 1) != 0)
+            return -1;
+        path[i] = (char)c;
+        if (c == 0) {
+            if (i == 0) return -1;
+            done = 1;
+            break;
+        }
+    }
+    if (!done) return -1;
+
+    file = ramfs_lookup(path);
+    if (!file) return -1;
+    for (fd = PROC_FD_FIRST; fd < PROC_FD_MAX; fd++)
+        if (table->entries[fd].kind == PROC_FD_CLOSED) break;
+    if (fd == PROC_FD_MAX) return -1;
+
+    table->entries[fd].pipe = 0;
+    table->entries[fd].file = file;
+    table->entries[fd].offset = 0;
+    table->entries[fd].kind = PROC_FD_RAMFS_FILE;
+    return (int)fd;
 }
 
 int proc_fd_snapshot(const struct proc_fd_table *table, int fd,
@@ -143,6 +194,16 @@ int proc_fd_read(struct proc_fd_table *table, struct address_space *space,
         return n;
     }
 
+    if (e->kind == PROC_FD_RAMFS_FILE) {
+        if (len > PIPE_CAPACITY) len = PIPE_CAPACITY;
+        if (!address_space_user_range_ok(space, user_buf, len, 1)) return -1;
+        n = ramfs_read(e->file, e->offset, buf, len);
+        if (n <= 0) return n;
+        if (address_space_copyout(space, user_buf, buf, (u32)n) != 0) return -1;
+        e->offset += (u32)n;
+        return n;
+    }
+
     if (e->kind != PROC_FD_PIPE_READ) return -1;
     if (len > PIPE_CAPACITY) len = PIPE_CAPACITY;
     if (!address_space_user_range_ok(space, user_buf, len, 1)) return -1;
@@ -171,6 +232,7 @@ int proc_fd_write(struct proc_fd_table *table, struct address_space *space,
         return console_write(buf, len);
     }
 
+    if (e->kind == PROC_FD_RAMFS_FILE) return -1;
     if (e->kind != PROC_FD_PIPE_WRITE) return -1;
     if (len > PIPE_CAPACITY) return -1;
     if (!address_space_user_range_ok(space, user_buf, len, 0)) return -1;
@@ -207,6 +269,16 @@ int proc_fd_read_block(struct proc_fd_table *table, struct address_space *space,
         return n;
     }
 
+    if (e->kind == PROC_FD_RAMFS_FILE) {
+        if (len > PIPE_CAPACITY) len = PIPE_CAPACITY;
+        if (!address_space_user_range_ok(space, user_buf, len, 1)) return -1;
+        n = ramfs_read(e->file, e->offset, buf, len);
+        if (n <= 0) return n;
+        if (address_space_copyout(space, user_buf, buf, (u32)n) != 0) return -1;
+        e->offset += (u32)n;
+        return n;
+    }
+
     if (e->kind != PROC_FD_PIPE_READ) return -1;
     if (len > PIPE_CAPACITY) len = PIPE_CAPACITY;
     if (!address_space_user_range_ok(space, user_buf, len, 1)) return -1;
@@ -235,6 +307,7 @@ int proc_fd_write_block(struct proc_fd_table *table, struct address_space *space
         return console_write(buf, len);
     }
 
+    if (e->kind == PROC_FD_RAMFS_FILE) return -1;
     if (e->kind != PROC_FD_PIPE_WRITE) return -1;
     if (len > PIPE_CAPACITY) return -1;
     if (!address_space_user_range_ok(space, user_buf, len, 0)) return -1;

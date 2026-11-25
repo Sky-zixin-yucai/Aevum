@@ -70,6 +70,7 @@ const char *ud_fd_kind(u32 kind)
     case PROC_FD_PIPE_WRITE:   return "PIPW";
     case PROC_FD_CONSOLE_READ: return "CONR";
     case PROC_FD_CONSOLE_WRITE:return "CONW";
+    case PROC_FD_RAMFS_FILE:   return "RAMF";
     default:                   return "----";
     }
 }

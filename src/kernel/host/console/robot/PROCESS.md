@@ -846,3 +846,45 @@ P11.7 只把 pending signal 变成阻塞 syscall 的 EINTR，没有用户态注�
 - pending 仍是进程级，没有 per-thread pending；多线程进程里任何线程都可能先看到同一个 pending。没有 `SA_SIGINFO`、`SA_NODEFER`、`sigprocmask` 用户 ABI；handler 期间 `sig_mask` 只保存/恢复 `sigaction.mask`。
 - `SA_RESTART` 只覆盖“阻塞 syscall 返回 -3、且返回点是 `int 0x80`”的用户 handler 场景；不重启被同步异常打断的指令，不覆盖 read/write 部分传输，也不改变 -1/-2 错误码。
 - 异步投递只在返回用户态前发生；纯内核线程没有 PCB，不参与。仍没有 poll/select、SMP、P12 文件系统/网络。
+
+## P12.1 只读 ramdisk 与最小文件 ABI
+
+P12.1 只做内核内嵌只读 ramdisk 和单层文件名读取，不接 ATA，不做写文件、目录、权限、cwd 或路径解析。旧 `read/close/write` 与 15/16/28/29 的 fd 语义保持不变，新增 `eax=32 open(path,flags)`。
+
+### ramdisk 镜像
+
+- `kernel/fs/ramfs/ramdisk.asm`：镜像头 16B，magic `AEVR`（`0x52564541`）、version 1、count 2、reserved；每个 entry 24B，16B NUL 结尾文件名 + 4B offset + 4B size。
+- 文件只有两个：`hello.txt` 26B（`Hello from Aevum ramdisk!\n`）、`motd.txt` 30B（`AEVUM P12.1 READ-ONLY RAMDISK\n`）。镜像总大小 120B，位于内核 rodata `0x93B54..0x93BCC`。
+- `kernel/fs/ramfs/ramfs.c`：`ramfs_init()` 校验 magic/version/count、文件名 NUL、offset/size 边界，把目录解析到静态 `ramfs_files[4]`；`ramfs_lookup()` 只做 16B 内精确匹配；`ramfs_read()` 按 offset/len 复制，EOF 返回 0，非法参数返回 -1。
+- `kernel/main/main.c` 在 `process_boot()` 之后、`arm_app_init()` 之前调用 `ramfs_init()`；镜像非法直接 `aevum_fail("ramfs","image","dependency",...)`，不进入用户态。
+
+### fd 与系统调用
+
+- `include/kernel/proc/fd.h` 新增 `PROC_FD_RAMFS_FILE=5`；`struct proc_fd_entry` 改为 8B union + 位域：`union { struct pipe *pipe; const struct ramfs_file *file; }`、`kind:3`、`offset:24`、`reserved:5`。之前按 `pipe/file/offset/kind` 直接扩展会把 `__bss_end` 推过 `AEVUM_KERNEL_END`，打包后才回到预算内。
+- `proc_fd_open_ramfs()`：flags 只接受 0；用户路径逐字节 copyin，最多 16B 且必须以 NUL 结束；空路径、超长、非 NUL、非法 flags、查不到文件全部返回 -1。成功从 fd 2 起分配，返回 fd 号。
+- `proc_fd_read`/`read_block` 增加 ramfs 分支：copyout 成功后才推进 `offset`；EOF 返回 0；非法 fd/缓冲区返回 -1。`write`/`write_block` 对 ramfs 返回 -1。`close` 走通用关闭，之后 `read` 返回 -1。
+- `arch/x86/cpu/syscall/syscall.c` 新增 `case 32: open(path,flags)`。`process.c` 增加 image4 的 `extern` 与 `image_id==4` 分支。
+- fork 复制 fd 表时保留 ramfs file 指针和当前 offset；父子 offset 各自独立，不是完整 POSIX 共享文件偏移语义。exec 保留 fd 表，exit/信号终止/reap 关闭全部 fd。
+- `app/user/render/draw.c` 增加 `RAMF`；`app/user/render/fd.c` 图例改为 `CONR/CONW console, PIPR/PIPW pipe, RAMF ramfs; CLOSED ----`。
+
+### image 3 / image 4 验收
+
+- `user/exec-ramfs/exec_ramfs.asm`：固定 `0x400000`，426B；验证 `open("hello.txt",0)` 得 fd 2、`read` 32B 返回 26、校验 `"Hell"` 与 offset25 换行、再次 `read` 返回 0 EOF、`write` 返回 -1、`close` 返回 0、关闭后 `read` 返回 -1、打开不存在文件返回 -1、`open(...,flags=1)` 返回 -1、打开 `motd.txt` 得 fd 2、`read` 30B、校验 `"AEVU"` 与 offset29 换行，最后输出 `P12.1 RAMFS OK` 并 exit 0。失败码 40..46。
+- ring3 代码页只剩约 5B，因此不在 ring3 里加 image4 分支；image3 在 P11.8 成功路径末尾 `spawn(image_id=4)` 并 `wait`，image4 非 0 时 image3 写失败码 30 退出。image3 由 3,208B 增至 3,285B，仍小于 4KB code VMA。
+- 同时修正用户镜像的绝对地址表达式：`intr_thread + 0x400000` 在最终内核链接后会把内核符号 `0x82045` 再加一次用户基址，得到 `0x482045`，被 clone 的入口范围检查拒绝；image4 的 `hello_path/missing_path/motd_path/ramfs_ok + 0x400000` 同样会落到 `0x48xxxx`，导致用户态 `#GP`。统一改成 `label - image_start + 0x400000`，入口回到 `0x400C6A`，路径回到 `0x40017C/0x40018F/0x400186`。
+
+### 构建与 QEMU 证据
+
+- clean build：`make clean && make` RC=0，无 warning/error。`kernel.bin=89,064B`（P11.8 87,080B，+1,984B）；`size kernel.elf`：text 88,811B、data 232B、bss 16,796B；`__bss_start=0x95C00`、`__bss_end=0x99D9C`，距 `AEVUM_KERNEL_END=0x9A000` 余 `0x264`（612B）；镜像距 106,496B 上限余 17,432B。image3 `0x813A0..0x82075` 共 3,285B；image4 `0x82080..0x8222A` 共 426B；ramdisk 120B。
+- SHA256：kernel `9bfec731755cdb27dbe5781f231d8a92f6ccf1f24045cf4507c79794c2667d6b`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `068e091ab58368ac728504e7fb286ed5077d667786ffd62b2f9c9faeb835b9b1`。
+- 主页面 `kt 4 s5 a1 OK`；P5.3 仍 `round 100/100 ... STRESS OK`、`PHYS 6/255`。V/ADDRESS 选中 userD：`REAP1 6 img 3 a0 e0`、`CHILDREN live 0 zomb 0 dead 0`、`SIG pending 00000000 last 17 count 11 child 11`；`THREAD tid 6 join 0 ... ok THRD`。
+- image3 只有在 image4 返回 0 时才以 0 退出；image4 内部失败 40..46 会被 image3 映射成 30。因此 `REAP1 6 img 3 a0 e0` 同时证明 image4 的 open/read/EOF/write 拒绝/close/非法 flags/不存在文件/motd 全链路通过。
+- `P12.1 RAMFS OK` 的 console 文本仍不能从 UART serial 直接抓取，因为串口同时承载高频二进制关节状态帧；用 image3 exit 0、父 wait 状态 0、V 页 `img 3 a0 e0` 和 FD 页 `RAMF` 图例间接证明。
+
+### 边界
+
+- 只有单层文件名；没有目录、`/`、`.`、`..`、cwd、路径规范化或长路径。名字最多 15 字符 + NUL。
+- 只读；没有 ATA、块设备、写文件、创建、删除、rename、追加、truncate、权限、uid/gid 或文件元数据。`flags` 只接受 0，不接受 `O_CREAT/O_TRUNC/O_APPEND`。
+- 没有 page cache、lseek、fstat、mmap、poll/select；`read` 只按 fd 当前 offset 顺序复制。`offset` 宽度 24 位，单文件上限受镜像和该字段约束。
+- fork 只复制 file 指针与当前 offset，父子之后各自推进，不共享 offset；这不是完整 POSIX 文件描述符语义。exec 保留 fd 表，exit/信号终止/reap 关闭。
+- 不跨 P12.2：不接 VFS、目录树、块设备、写路径、权限或 cwd；不引入 SMP、per-thread fd 表或网络文件系统。

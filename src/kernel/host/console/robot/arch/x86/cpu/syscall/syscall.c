@@ -195,6 +195,11 @@ u32 syscall_dispatch(struct irq_frame *frame)
                              ? 0u
                              : (u32)-1;
             break;
+        case 32:
+            /* P12.1：open(path, flags)；flags 只接受 0，只支持只读 ramfs。 */
+            frame->eax = (u32)proc_fd_open_ramfs(current_fds(), current_space(),
+                                                 frame->ebx, frame->ecx);
+            break;
         default:
             frame->eax = (u32)-1;
             break;

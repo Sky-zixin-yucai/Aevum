@@ -567,7 +567,7 @@ user_io_exec_start:
     mov [0x401150], eax
     push byte 19
     pop eax
-    mov ebx, intr_thread + 0x400000
+    mov ebx, intr_thread - user_io_exec_start + 0x400000
     mov ecx, 0x401F00
     mov edx, 0x10D00
     xor esi, esi
@@ -858,6 +858,28 @@ user_io_exec_start:
     push byte 14
     pop edx
     int 0x80
+
+    ; P12.1：image3 末尾拉起 image4 做只读 ramfs 验收；image4 非 0 则 image3 失败 30。
+    push byte 18
+    pop eax
+    push byte 4
+    pop ebx
+    xor ecx, ecx
+    xor edx, edx
+    int 0x80
+    cmp eax, -1
+    je .bad30
+    mov [0x401170], eax
+    push byte 4
+    pop eax
+    mov ebx, [0x401170]
+    mov ecx, 0x401174
+    int 0x80
+    cmp eax, [0x401170]
+    jne .bad30
+    cmp dword [0x401174], 0
+    jne .bad30
+
     push byte 3
     pop eax
     xor ebx, ebx
@@ -1102,6 +1124,9 @@ user_io_exec_start:
     jmp .fail
 .child_bad29:
     mov ebx, 29
+    jmp .fail
+.bad30:
+    mov ebx, 30
     jmp .fail
 .fail:
     push ebx

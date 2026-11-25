@@ -521,3 +521,19 @@ P11.8 在 P11.7 的 pending 位上补 `kill()`、返回用户态前的异步 han
 - clean build：`kernel.bin=87,080B`（+1,440B）；text 86,819B、`.data=232B`、`.bss=16,700B`；`__bss_start=0x95440`、`__bss_end=0x9957C`，BSS 余量 2,692B、镜像余量 19,416B；image 3 3,208B。SHA256 kernel `d5a505837bb2938b26f00332b728bd6c98b4b9e520956742414c8669593881fe`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `35928ba63ec756e7eba671227d98a8aabf7a6a355c792259eb644ac8a4bc9dc6`。
 - QEMU：主页面 `kt 4 s5 a1 OK`、control/render 57/43、idle 0%；V/ADDRESS userD `REAP1 6 img 3 a0 e0`、`SIG pending 00000000 last 17 count 11 child 11`；C 页 `EINTR 7`、`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`、`PREEMPTIONS 0 / EXP 0`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`。
 - 边界：`kill` 没有 uid/gid、进程组、会话、作业控制、`SIGSTOP/SIGCONT`、信号排队或实时信号；pending 是进程级，没有 per-thread pending、`SA_SIGINFO`、`SA_NODEFER` 或用户 `sigprocmask`；`SA_RESTART` 只覆盖阻塞 syscall 返回 -3 且返回点 `int 0x80` 的用户 handler 场景；不跨 P12。
+
+## P12.1 只读 ramdisk 与最小文件 ABI
+
+P12.1 在内核 rodata 内嵌一个只读 ramdisk，只提供单层文件名读取和 `open(path,flags=0)`；不接 ATA，不做写文件、目录、权限、cwd 或路径解析。旧 `read/close/write` 与 15/16/28/29 的 fd 语义不变。
+
+- `kernel/fs/ramfs/ramdisk.asm`：16B 镜像头（magic `AEVR`、version 1、count 2、reserved），24B entry（16B NUL 文件名 + 4B offset + 4B size）；`hello.txt` 26B、`motd.txt` 30B，总 120B。
+- `kernel/fs/ramfs/ramfs.c` + `include/kernel/fs/ramfs.h`：`ramfs_init()` 校验 magic/version/count/name NUL/offset/size 边界并解析到静态 `ramfs_files[4]`；`ramfs_lookup()` 16B 精确匹配；`ramfs_read()` 按 offset/len 复制，EOF 返回 0，非法参数 -1。
+- `kernel/main/main.c`：`process_boot()` 之后、`arm_app_init()` 之前调用 `ramfs_init()`；失败走 `aevum_fail("ramfs","image","dependency",...)`。
+- `include/kernel/proc/fd.h`：新增 `PROC_FD_RAMFS_FILE=5`；`struct proc_fd_entry` 改为 8B union + `kind:3/offset:24/reserved:5`，避免 BSS 越预算。
+- `kernel/proc/fd/fd.c`：新增 `proc_fd_open_ramfs()`，flags 只接受 0，路径最多 16B 且必须 NUL，成功从 fd2 起分配；`read/read_block` 增加 ramfs 分支，copyout 成功后才推进 offset；write/write_block 返回 -1；close 之后 read 返回 -1；fork/exec 保留 file 指针与当前 offset。
+- `arch/x86/cpu/syscall/syscall.c`：新增 `eax=32 open(ebx=path, ecx=flags)`。`kernel/proc/process.c`：新增 image4 extern 与 `image_id==4` 分支。`Makefile`：新增 ramfs.c、exec_ramfs.o、ramdisk.o 及汇编规则。
+- `user/exec-ramfs/exec_ramfs.asm`：固定 `0x400000`，426B；验收 open/read/EOF/write 拒绝/close/非法 flags/不存在文件/motd，失败码 40..46，成功输出 `P12.1 RAMFS OK` 并 exit 0。ring3 代码页只剩约 5B，因此由 image3 在 P11.8 成功路径末尾 `spawn(4)` + `wait`，image4 非 0 时 image3 以 30 退出；image3 3,285B。
+- 地址修正：用户镜像里的 `label + 0x400000` 会被最终链接解析成“内核符号 + 用户基址”，`intr_thread` 变成 `0x482045`、image4 路径变成 `0x48xxxx`；统一改为 `label - image_start + 0x400000`，入口回到 `0x400C6A`、路径回到 `0x40017C/0x40018F/0x400186`。
+- clean build：`kernel.bin=89,064B`（+1,984B）；text 88,811B、`.data=232B`、`.bss=16,796B`；`__bss_start=0x95C00`、`__bss_end=0x99D9C`，BSS 余量 612B、镜像余量 17,432B；image3 `0x813A0..0x82075`，image4 `0x82080..0x8222A`，ramdisk `0x93B54..0x93BCC`。SHA256 kernel `9bfec731755cdb27dbe5781f231d8a92f6ccf1f24045cf4507c79794c2667d6b`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `068e091ab58368ac728504e7fb286ed5077d667786ffd62b2f9c9faeb835b9b1`。
+- QEMU：主页面 `kt 4 s5 a1 OK`；V/ADDRESS userD `REAP1 6 img 3 a0 e0`、`CHILDREN live 0`、`SIG pending 00000000 last 17 count 11 child 11`；`THREAD tid 6 join 0 ... ok THRD`。image3 只有 image4 返回 0 才 exit 0，因此该证据覆盖 image4 全链路；console 文本无法从二进制 UART 直接抓取。
+- 边界：单层文件名、最多 15 字符 + NUL；没有目录、`/`、cwd、路径规范化、长路径、权限、uid/gid、元数据；只读，没有 ATA/写文件/创建/删除/rename/truncate；没有 page cache、lseek、fstat、mmap、poll/select；fork 复制 file 指针和当前 offset，但父子 offset 各自独立，不是完整 POSIX 共享偏移；不跨 P12.2。

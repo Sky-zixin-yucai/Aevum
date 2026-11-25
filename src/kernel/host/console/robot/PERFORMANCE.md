@@ -207,3 +207,16 @@ P11.8 clean 构建 `kernel.bin=87,080B`，`__bss_start=0x95440`、`__bss_end=0x9
 - image 3 代码从 P11.7 的 2,447B 增至 3,208B（+761B），仍小于 4KB code VMA；增加的是四段 kill/SA_RESTART/DFL/CPU-bound 用户态测试，不是内核镜像体积。
 - QEMU 实测主页面 `kt 4 s5 a1 OK`、control/render 57/43、idle 0%；C 页 `EINTR 7`、`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`、`PREEMPTIONS 0 / EXP 0`；V/ADDRESS `REAP1 6 img 3 a0 e0`、`SIG pending 00000000`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`。
 - 边界：这是 QEMU TCG 的功能计数，不是信号吞吐或唤醒时延基准；没有测 kill 到 handler 的端到端延迟，也没有测 CPU-bound 场景下 PIT 投递的抖动。`SA_RESTART` 只覆盖 `int 0x80` 返回点，不能代表完整 POSIX 重启语义。
+
+
+## 19. P12.1 只读 ramdisk 与最小文件 ABI 的体积和读取开销
+
+P12.1 clean 构建 `kernel.bin=89,064B`，`__bss_start=0x95C00`、`__bss_end=0x99D9C`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 镜像从 P11.8 的 87,080B 增至 89,064B（+1,984B）；`size` 的 text 列从 86,819B 增至 88,811B（+1,992B），`.data=232B` 不变，`.bss` 从 16,700B 增至 16,796B（+96B）。新增的是 ramfs 解析/查找/读取、`open` syscall、fd 分支、image4 分支、ramdisk 120B rodata 和 image4 426B 用户代码。
+- BSS 起点随 text 后移到 `0x95C00`，`__bss_end=0x99D9C`；BSS 距 `0x9A000` 余 612B，镜像距 106,496B 上限余 17,432B。`struct proc_fd_entry` 从原先直接扩展的 16B 压回 8B，避免 BSS 越 `AEVUM_KERNEL_END`；静态 ramfs 目录只有 4 项。
+- `proc_fd_open_ramfs()` 是一次 flags 检查 + 最多 16B copyin + 4 项目录顺序查找；没有分配、没有块 I/O、没有 page cache。`ramfs_read()` 是一次 offset/size 边界检查 + 按 len 的 byte copyout；成功才推进 fd offset，EOF 直接返回 0。`write` 在进入 copy 前拒绝。
+- 目录查找是 O(count)，当前 count=2、静态上限 4；文件名比较最多 16B。没有哈希表、inode、目录树或路径解析，因此单次 open/read 的固定成本很小。
+- image3 代码从 P11.8 的 3,208B 增至 3,285B（`0x813A0..0x82075`，+77B），仍小于 4KB code VMA；image4 `0x82080..0x8222A` 426B；ramdisk `0x93B54..0x93BCC` 120B。image3 增加的是一次 `spawn(4)` + `wait` 和失败码 30，image4 是独立 426B 镜像。
+- QEMU 实测主页面 `kt 4 s5 a1 OK`；V/ADDRESS userD `REAP1 6 img 3 a0 e0`、`CHILDREN live 0`、`SIG pending 00000000`；`THREAD tid 6 join 0 ... ok THRD`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`。image3 exit 0 只有在 image4 返回 0 时成立，因此该证据覆盖 image4 全链路。
+- 边界：这是 QEMU TCG 的功能与体积口径，不是文件读取吞吐基准；没有测 open/read 的端到端延迟、缓存命中、并发读或大文件读取。ramdisk 只有 120B，不能代表块设备或 VFS 性能。

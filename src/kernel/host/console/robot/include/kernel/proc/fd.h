@@ -5,10 +5,12 @@
 
 struct address_space;
 struct pipe;
+struct ramfs_file;
 
 /*
  * P4.4 每进程 fd 表的唯一 owner。fd 0/1 是 console 字符端点，pipe 从 2 起分配；
  * 表内 pipe 端点带引用，console 端点只记录 kind，close 仅关闭本进程句柄。
+ * P12.1 增加只读 ramfs 文件端点：file 指向静态镜像，offset 是每 fd 读偏移。
  */
 #define PROC_FD_MAX   8
 #define PROC_FD_FIRST 2
@@ -18,12 +20,18 @@ enum proc_fd_kind {
     PROC_FD_PIPE_READ = 1,
     PROC_FD_PIPE_WRITE = 2,
     PROC_FD_CONSOLE_READ = 3,
-    PROC_FD_CONSOLE_WRITE = 4
+    PROC_FD_CONSOLE_WRITE = 4,
+    PROC_FD_RAMFS_FILE = 5
 };
 
 struct proc_fd_entry {
-    struct pipe *pipe;
-    u32 kind;
+    union {
+        struct pipe *pipe;
+        const struct ramfs_file *file;
+    };
+    u32 kind : 3;
+    u32 offset : 24;
+    u32 reserved : 5;
 };
 
 struct proc_fd_table {
@@ -62,5 +70,12 @@ int proc_fd_read_block(struct proc_fd_table *table, struct address_space *space,
 int proc_fd_write_block(struct proc_fd_table *table, struct address_space *space,
                         u32 fd, u32 user_buf, u32 len, u32 ticks);
 int proc_fd_close(struct proc_fd_table *table, u32 fd);
+
+/*
+ * P12.1：从用户路径打开只读 ramfs 文件。flags 只接受 0（O_RDONLY）。
+ * 路径只支持单层文件名，最多 15 字符 + NUL；成功返回 fd，失败 -1。
+ */
+int proc_fd_open_ramfs(struct proc_fd_table *table, struct address_space *space,
+                       u32 user_path, u32 flags);
 
 #endif

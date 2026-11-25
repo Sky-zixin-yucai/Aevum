@@ -145,5 +145,5 @@ void ur_render_fd(void)
     vga_text(50, 18, kids_zomb ? "YES" : "NO", kids_zomb ? C_GREEN : C_GRAY);
 
     vga_text(2, 19, "SIG names: pending bits 0..31; SIGCHLD=17; handled is user frame count", C_GRAY);
-    vga_text(2, 20, "FD kinds: CONR/CONW console, PIPR/PIPW pipe; CLOSED shows ----", C_GRAY);
+    vga_text(2, 20, "FD kinds: CONR/CONW console, PIPR/PIPW pipe, RAMF ramfs; CLOSED ----", C_GRAY);
 }

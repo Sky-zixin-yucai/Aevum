@@ -26,6 +26,7 @@ SRCS = \
 	kernel/task/family/family.c \
 	kernel/proc/process.c \
 	kernel/proc/fd/fd.c \
+	kernel/fs/ramfs/ramfs.c \
 	kernel/ipc/pipe/pipe.c \
 	kernel/mm/address_space/address_space.c \
 	arch/x86/cpu/interrupt/interrupt.c \
@@ -61,7 +62,7 @@ SRCS = \
 	app/pool/demo/demo.c \
 	app/pool/render/render.c
 
-OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) build/user/ring3.o build/user/exec.o build/user/exec_pipe.o build/user/exec_io.o
+OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) build/user/ring3.o build/user/exec.o build/user/exec_pipe.o build/user/exec_io.o build/user/exec_ramfs.o build/kernel/fs/ramfs/ramdisk.o
 IMG     = os.img
 
 GENERATED = boot.bin $(IMG) disk.img kernel.bin kernel.elf $(BUILD)
@@ -96,6 +97,14 @@ $(BUILD)/user/exec_pipe.o: user/exec-pipe/exec_pipe.asm
 $(BUILD)/user/exec_io.o: user/exec-io/exec_io.asm
 	@mkdir -p $(BUILD)/user
 	$(AS) $(ASFLAGS_ELF32) user/exec-io/exec_io.asm -o $@
+
+$(BUILD)/user/exec_ramfs.o: user/exec-ramfs/exec_ramfs.asm
+	@mkdir -p $(BUILD)/user
+	$(AS) $(ASFLAGS_ELF32) user/exec-ramfs/exec_ramfs.asm -o $@
+
+$(BUILD)/kernel/fs/ramfs/ramdisk.o: kernel/fs/ramfs/ramdisk.asm
+	@mkdir -p $(BUILD)/kernel/fs/ramfs
+	$(AS) $(ASFLAGS_ELF32) kernel/fs/ramfs/ramdisk.asm -o $@
 
 kernel.elf: $(OBJS) $(BUILD)/loader.o $(LDSCRIPT)
 	$(LD) -m elf_i386 --gc-sections -T $(LDSCRIPT) $(BUILD)/loader.o $(OBJS) -o kernel.elf

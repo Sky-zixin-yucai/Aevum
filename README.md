@@ -312,6 +312,10 @@ V 页 ADDRESS 显示 `TEST ... det OK blk OK`、`blk 7 /1`；父在子进程仍 
 
 主页面显示 `kthr 4 s5 OK`、`TASK SCHED P3/31`；control 启动时创建 `kping`，它拿到 TID 4 和栈池槽，yield 192 次后退出 5；control 在 `kthread_join` 上阻塞，被唤醒后取回 status 5；join 释放动态栈、TID 和任务槽，页面右侧 PID 计数回到 3/31。
 
+**P12.1 只读 ramdisk 与最小文件 ABI**
+
+内核 rodata 内嵌 120B 只读 ramdisk，提供单层 `open(path, flags=0)`；`hello.txt` 26B、`motd.txt` 30B。image4 走 open/read/EOF/write 拒绝/close/非法 flags/不存在文件的全链路，image3 在 P11.8 成功后 spawn image4 并 wait；V/ADDRESS 显示 `REAP1 6 img 3 a0 e0`，FD 图例新增 `RAMF`。没有目录、写文件、权限或 ATA。
+
 #### 构建与运行
 
 需要 Linux 或 WSL2，以及 `nasm`、支持 `-m32` 的 `gcc`、`binutils`、`make`、`qemu-system-i386`：
@@ -347,11 +351,11 @@ make debug
 #### 当前边界
 
 - 单核、平坦段、固定 255 页物理池。
-- 没有文件系统、路径 `open`，也没有 ELF 加载；fd 表接匿名 pipe，fd 0/1 已接到全局 console。已有内嵌 flat 镜像 `exec`、`argv/envp`（最多 4 项、每串最多 31 字符）、用户态 handler/signal frame/`sigreturn`、`kill(pid,sig)` 与返回用户态前的异步投递；`wait`/`thread_join` 已是阻塞等待，不是 `task_yield()` 轮询。没有信号排队、per-thread pending、进程组/会话、作业控制或用户 `sigprocmask`；`SA_RESTART` 只覆盖用户 handler + `int 0x80` 返回点这一最小场景。
+- 只有一个 120B 的内嵌只读 ramdisk 和单层 `open(path, flags=0)`；没有目录、`/`、cwd、写文件、权限或 ATA，也没有 ELF 加载。fd 表接匿名 pipe 与 ramfs，fd 0/1 已接到全局 console。已有内嵌 flat 镜像 `exec`、`argv/envp`（最多 4 项、每串最多 31 字符）、用户态 handler/signal frame/`sigreturn`、`kill(pid,sig)` 与返回用户态前的异步投递；`wait`/`thread_join` 已是阻塞等待，不是 `task_yield()` 轮询。没有信号排队、per-thread pending、进程组/会话、作业控制或用户 `sigprocmask`；`SA_RESTART` 只覆盖用户 handler + `int 0x80` 返回点这一最小场景。
 - 进程上下文按当前边界已经闭环：GPR/iret、FPU/SSE、CR3、内核栈、fork/exec/信号/回收都有实现；通用 x86 的 FS/GS/TLS、AVX/XSAVE 和信号中的 FPU 现场仍未覆盖。
 - `TASK_MAX=16`、`PROC_MAX=12`、`AEVUM_AS_MAX=12`、`AEVUM_KSTACK_COUNT=12`；`V` 跑 A/B/C/D/F 五个用户任务，D 做四轮 fork/wait，第三轮 fork 子进程 exec 并传 `argv/envp`，第四轮用 pipe 证明 exec 后 fd 表仍保留；`Y` 跑 root + 8 个 LIVE 子进程并验证两轮槽位/栈复用；`S` 复用同一池页跑 100 轮 fork/wait，两轮都回到 `proc/AS/KSTK 1/12`。
 - P5.1 的 12 个 4KB 内核栈槽是固定池，不可按需增长，也没有 guard 页；4KB 槽含底部 512B FXSAVE 区，实际可用 3.5KB。
-- P5.2 的 `V` 页固定 4 页；原第 5 页 `DEMO` 因 `kernel.bin` 超过当时 65,536B 上限被删除，旧证据压进 `ADDRESS` 页。P11.8 clean 构建为 87,080B，上限 106,496B，余量 19,416B；BSS 到 `0x9957C`，距 `AEVUM_KERNEL_END=0x9A000` 约 2.7KB；`--gc-sections` 已回收不可达代码，但新增页面或长文案前仍必须先算镜像体积。
+- P5.2 的 `V` 页固定 4 页；原第 5 页 `DEMO` 因 `kernel.bin` 超过当时 65,536B 上限被删除，旧证据压进 `ADDRESS` 页。P12.1 clean 构建为 89,064B，上限 106,496B，余量 17,432B；BSS 到 `0x99D9C`，距 `AEVUM_KERNEL_END=0x9A000` 余 612B；`--gc-sections` 已回收不可达代码，但新增页面或长文案前仍必须先算镜像体积。
 - P5.3 的 `S` 与 `Y` 共用同一池页外壳并互斥。`S` 停止后再按 `Y` 可以进入，但首次进入明显变慢；目前作为观察项保留，未改代码。
 - `V` 页的页面状态是单个静态实例，四页共享选中槽；`process_slot_space()` / `process_slot_fd_info()` 是只读快照，没有 seqlock，PIT 切换窗口可能看到半更新字段。ZOMBIE 观察依赖 D lane 在 wait 前 yield 262144 次，属于演示时序，不改变 wait 语义。
 - fd/pipe 的旧 `read`/`write` 仍是非阻塞语义：空读且仍有写端返回 `-1`，写端全关返回 `0`，满写返回 `-1`；需要等待时用 `read_block`/`write_block`（`eax=28/29`），`ticks=0` 等价非阻塞，`ticks>0` 可返回 -2 超时或 -3 EINTR。`fork` 复制 fd 表并逐端点 acquire，`exec` 保留，`exit`/信号终止/`reap` 关闭全部 fd。

@@ -37,6 +37,8 @@ extern u8 user_pipe_exec_start[];
 extern u8 user_pipe_exec_end[];
 extern u8 user_io_exec_start[];
 extern u8 user_io_exec_end[];
+extern u8 user_ramfs_exec_start[];
+extern u8 user_ramfs_exec_end[];
 
 struct proc_sigaction {
     u32 handler;
@@ -868,6 +870,10 @@ static const u8 *proc_exec_image(int image_id, u32 *size)
     if (image_id == 3) {
         *size = (u32)((u32)user_io_exec_end - (u32)user_io_exec_start);
         return user_io_exec_start;
+    }
+    if (image_id == 4) {
+        *size = (u32)((u32)user_ramfs_exec_end - (u32)user_ramfs_exec_start);
+        return user_ramfs_exec_start;
     }
     return 0;
 }
