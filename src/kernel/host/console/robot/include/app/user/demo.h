@@ -88,6 +88,8 @@ u32 user_demo_thread_group_ok(int lane);
 u32 user_demo_block_ok(int lane);
 /* P11.1：D lane 的 sleep / wait_timeout 验收字，0x401250 = "TMR1"。 */
 u32 user_demo_timer_ok(int lane);
+/* P11.2：D lane 的 get/setpriority + fork/clone 继承验收字，0x401260 = "PRI1"。 */
+u32 user_demo_priority_ok(int lane);
 
 /* userA 的数据页是 brk/heap/guard 的证据。 */
 u32 user_demo_brk(int lane);

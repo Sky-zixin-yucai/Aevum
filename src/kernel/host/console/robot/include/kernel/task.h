@@ -5,6 +5,7 @@
 
 #define TASK_NAME_MAX 15
 #define TASK_MAX 16
+#define TASK_PRIORITY_MAX 3
 
 enum task_state {
     TASK_UNUSED = 0,
@@ -151,6 +152,13 @@ int task_block_until_timeout(task_block_check_t ready, void *ctx, u32 ticks);
 /* P11.1：按 100 Hz PIT tick 睡眠；0 立即返回，成功返回 0。 */
 int task_sleep_ticks(u32 ticks);
 void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts);
+/*
+ * P11.2：按 TID 读写调度优先级。tid=0 表示当前任务；0 最高、3 最低。
+ * get 成功返回 0..3，失败 -1；set 成功返回 0，失败 -1。
+ * 用户态只能操作 user 任务，不能改 control/render/idle；ZOMBIE 不接受 set。
+ */
+int task_priority_get(int tid);
+int task_priority_set(int tid, int priority);
 /* 唤醒同组所有 BLOCKED 任务；用于 wait/join 的退出通知。 */
 void task_wake_process(struct process *proc);
 

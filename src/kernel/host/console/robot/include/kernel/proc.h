@@ -137,8 +137,9 @@ struct process *process_spawn_current(int priority, const char *name,
 /*
  * P7.1 线程组最小闭环：clone 只接受 PROC_CLONE_THREAD_FLAGS，子任务共享
  * 当前 AS/fd/信号动作；成功返回 TID，失败返回 -1。entry 从 eax 收到 arg。
+ * P11.2：新线程继承当前线程的调度优先级。
  */
-int process_clone_thread_current(int priority, const char *name,
+int process_clone_thread_current(const char *name,
                                  u32 entry, u32 user_stack, u32 flags, u32 arg);
 
 /* 线程退出：只标当前任务；最后一个活线程退出时才把进程标 ZOMBIE。 */

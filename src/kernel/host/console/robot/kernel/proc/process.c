@@ -938,7 +938,7 @@ struct process *process_spawn_current(int priority, const char *name,
  * P7.1：clone 的受控线程子集。线程不分配 process 槽，不复制 AS/fd；
  * 只申请 TID 和内核栈，然后和当前进程共用地址空间。
  */
-int process_clone_thread_current(int priority, const char *name,
+int process_clone_thread_current(const char *name,
                                  u32 entry, u32 user_stack, u32 flags, u32 arg)
 {
     struct process *self;
@@ -949,7 +949,6 @@ int process_clone_thread_current(int priority, const char *name,
 
     if (!task_current() || !task_process_current()) return -1;
     self = task_process_current();
-    (void)priority;
     if (self->state != PROC_LIVE || !self->space) return -1;
     if ((flags & ~PROC_CLONE_THREAD_FLAGS) != 0) return -1;
     if ((flags & PROC_CLONE_THREAD_FLAGS) != PROC_CLONE_THREAD_FLAGS)

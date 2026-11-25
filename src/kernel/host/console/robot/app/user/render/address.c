@@ -43,6 +43,7 @@ static void vma_row(const struct address_space *space, int slot, int row)
 void ur_render_address(void)
 {
     struct process_info p;
+    struct task_info ti;
     struct address_space *space;
     struct address_space_cow_info ci;
     int slot = user_page_selected_slot();
@@ -52,7 +53,7 @@ void ur_render_address(void)
     u32 himg1 = 0, harg1 = 0, henp1 = 0;
     int r0 = -1, r1 = -1;
     u32 wait_magic, cow_ok, sig_ok, exec_ok, pipe_ok, spawn_ok, thread_ok, det_ok;
-    u32 block_ok, timer_ok, wait_blocks, wait_wakes, join_blocks, join_wakes;
+    u32 block_ok, timer_ok, priority_ok, wait_blocks, wait_wakes, join_blocks, join_wakes;
     u32 brk, poke, peek, guard, bad;
 
     if (!process_snapshot(slot, &p)) {
@@ -110,6 +111,10 @@ void ur_render_address(void)
 
     vga_text(2, 13, "TASK", C_GRAY);
     vga_text(7, 13, task_state_name(p.task_state), ud_proc_attr(&p));
+    if (task_snapshot_pid(p.pid, &ti)) {
+        vga_text(14, 13, "P", C_GRAY);
+        ud_put_dec(15, 13, (u32)ti.priority, C_YELLOW);
+    }
     vga_text(18, 13, "KSTACK", C_GRAY);
     ud_put_hex(25, 13, p.stack_top, C_CYAN);
     vga_text(34, 13, "SW", C_GRAY);
@@ -248,6 +253,7 @@ void ur_render_address(void)
     det_ok = user_demo_thread_det_ok(USER_DEMO_FORK_LANE);
     block_ok = user_demo_block_ok(USER_DEMO_FORK_LANE);
     timer_ok = user_demo_timer_ok(USER_DEMO_FORK_LANE);
+    priority_ok = user_demo_priority_ok(USER_DEMO_FORK_LANE);
     brk = user_demo_brk(0);
     poke = user_demo_heap_poke(0);
     peek = user_demo_heap_peek(0);
@@ -300,4 +306,8 @@ void ur_render_address(void)
     vga_text(64, 22,
              timer_ok == 0x544D5231u ? "OK" : "..",
              timer_ok == 0x544D5231u ? C_GREEN : C_YELLOW);
+    vga_text(68, 22, "pri", C_GRAY);
+    vga_text(72, 22,
+             priority_ok == 0x50524931u ? "OK" : "..",
+             priority_ok == 0x50524931u ? C_GREEN : C_YELLOW);
 }

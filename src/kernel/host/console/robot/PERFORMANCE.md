@@ -120,3 +120,15 @@ P11.1 clean 构建 `kernel.bin=78,536`，`__bss_start=0x932E0`、`__bss_end=0x97
 - `sleep/wait_timeout` 的 deadline 是绝对 tick，不随虚假唤醒重置；同一 tick 内条件满足优先返回 status，不误报 timeout。超时只负责把任务改 READY，不释放子进程、不改 PCB。
 - QEMU 计时证据：D lane `sleep(20)` 慢子、`sleep(1)` 快子，父 `wait_timeout(5)` 超时一次，C 页 `SLEEP b 2 w 2 tmo 3`。`tmo 3` = 2 次 sleep 到期 + 1 次 wait_timeout 超时。
 - 这不是实时定时器：100Hz PIT 下最小粒度 10ms，`ticks` 不是纳秒级 deadline；没有高精度时钟、没有 EINTR、没有多等待者队列。ring3 仍受 4KB code VMA 限制，P11.1 把 129 条 `mov eax, imm` 压成 `push byte imm; pop eax`，code_size 从 4,359B 降到 4,084B，避免 `address_space_create_user()` 拒绝镜像。
+
+## 12. P11.2 优先级读写体积与继承成本
+
+P11.2 clean 构建 `kernel.bin=79,016`，`__bss_start=0x934C0`、`__bss_end=0x974BC`，`AEVUM_KERNEL_END=0x98000`：
+
+- 镜像距 98,304B 上限余量 29,288B；BSS 距 `0x98000` 余量 2,884B。`struct task_struct` 仍为 108B，`tasks=0x6C0` 不变；P11.2 没有新增静态字段或数组。
+- `.text` 从 P11.1 的 `0x113A0` 增至 `0x11568`（+456B），`.rodata` 从 `0x1E38` 增至 `0x1E3C`（+4B），`.data=0xE8`、`.bss=0x3FFC` 不变；总镜像 +480B。新增代码主要是 `task_priority_get/set`、两个 syscall case、fork/clone 继承和 V 页优先级显示。
+- `task_priority_set()` 的查找是 16 槽线性扫描，写入在 `cli` 窗口内完成；`task_priority_get()` 只扫描读取、不关中断。没有重新计算 `vruntime`，所以一次 set 是 O(16) 查找 + 一次 u32 写，不做 64 位除法；代价与 `task_pick_next()` 同量级，未做 TSC 级测量。
+- setpriority 不触发立即抢占：当前任务改高优先级后仍按原时间片继续，下一次 IRQ0 `task_pick_next()` 才按新权重/`vruntime` 选择。不做历史 `vruntime` 重算，避免反复 setpriority 清零累计虚拟时间刷优势。
+- 继承路径只多一次 `current_task->priority` 读取：fork 与 clone 原本就要走 `task_create_common()`，没有额外的栈/AS/PCB 分配成本。
+- ring3 code 从 P11.1 的 4,084B 增至 4,091B，只增加 7B：P11.2 断言约 +185B，通过把 48 条小立即数加载改为 `push byte/pop`（省 96B）和多组零初始化改为 `xor eax,eax` + `mov [addr],eax`（省约 80B）抵消。4KB code VMA 余量仅 5B，下一次改 ring3 必须先算体积。
+- QEMU 证据：V 页 ADDRESS PID 7 显示 `TASK READY P1`、`tmr OK pri OK`；`pri OK` 同时要求默认 1、set 3、非法 4 返回 -1、内核任务拒绝、fork 子继承 3、clone 线程继承 2 全部成立。P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。该页是功能/生命周期验收，不是 setpriority 延迟测量。

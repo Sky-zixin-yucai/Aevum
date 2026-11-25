@@ -184,7 +184,7 @@ static const char *task_create_common(int priority, const char *name, u32 entry,
     *out = 0;
     if (!entry) return "entry";
     if (!space) return "space";
-    if (priority < 0 || priority > 3) return "priority";
+    if (priority < 0 || priority > TASK_PRIORITY_MAX) return "priority";
     if (stack_top < AEVUM_TASK_STACK_MIN || stack_top > AEVUM_TASK_STACK_MAX ||
         (stack_top & 0xFu))
         return "stack";
@@ -335,7 +335,9 @@ const char *task_create_thread_user(int tid, const char *name,
     const char *rc;
 
     if (!space || !proc || tid <= 0) return "space/proc/tid";
-    rc = task_create_common(1, name, user_eip, kernel_stack_top, space,
+    /* P11.2：clone 线程继承当前线程优先级，不再硬编码 1。 */
+    rc = task_create_common(current_task ? current_task->priority : 1,
+                            name, user_eip, kernel_stack_top, space,
                             1, user_stack_top, proc, tid, 0, 0, 0, out);
     if (rc) return rc;
 
@@ -382,7 +384,9 @@ const char *task_fork_user(int pid, const char *name, struct irq_frame *frame,
     int i;
 
     if (!frame || !space || !proc || pid <= 0) return "frame/space/proc/pid";
-    rc = task_create_common(1, name, frame->eip, kernel_stack_top, space,
+    /* P11.2：fork 子进程继承父进程优先级。 */
+    rc = task_create_common(current_task ? current_task->priority : 1,
+                            name, frame->eip, kernel_stack_top, space,
                             1, frame->user_esp, proc, pid, 0, 0, 0, out);
     if (rc) return rc;
     task = *out;
@@ -431,6 +435,53 @@ struct process *task_process_current(void)
 struct process *task_process_of(struct task_struct *task)
 {
     return task ? task->proc : 0;
+}
+
+static struct task_struct *task_find_pid(int tid)
+{
+    int i;
+
+    if (tid == 0) return current_task;
+    if (tid < 0) return 0;
+    for (i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].pid == tid)
+            return &tasks[i];
+    }
+    return 0;
+}
+
+int task_priority_get(int tid)
+{
+    struct task_struct *task = task_find_pid(tid);
+
+    if (!task || task->state == TASK_UNUSED) return -1;
+    /* 用户态不读取内核静态任务的调度参数。 */
+    if (current_task && current_task->user && !task->user) return -1;
+    return task->priority;
+}
+
+int task_priority_set(int tid, int priority)
+{
+    struct task_struct *task;
+    u32 flags;
+    int rc = -1;
+    int caller_user;
+
+    if (priority < 0 || priority > TASK_PRIORITY_MAX) return -1;
+    caller_user = current_task && current_task->user;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    task = task_find_pid(tid);
+    if (task && task->state != TASK_UNUSED && task->state != TASK_ZOMBIE &&
+        (!caller_user || task->user)) {
+        /*
+         * 只改后续 PIT 记账权重，不重算历史 vruntime。这样反复
+         * setpriority 不能把累计虚拟时间清零来刷调度优势。
+         */
+        task->priority = priority;
+        rc = 0;
+    }
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+    return rc;
 }
 
 void task_set_space(struct task_struct *task, struct address_space *space)

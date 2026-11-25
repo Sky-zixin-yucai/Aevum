@@ -133,7 +133,7 @@ u32 syscall_dispatch(struct irq_frame *frame)
                 struct process *self = task_process_current();
                 int tid = -1;
                 if ((frame->cs & 3u) == 3u && self) {
-                    tid = process_clone_thread_current(1, "userT",
+                    tid = process_clone_thread_current("userT",
                                                        frame->ebx, frame->ecx,
                                                        frame->edx, frame->esi);
                 }
@@ -163,6 +163,13 @@ u32 syscall_dispatch(struct irq_frame *frame)
         case 25:
             frame->eax = (u32)process_wait_timeout((int)frame->ebx,
                                                    frame->ecx, frame->edx);
+            break;
+        case 26:
+            frame->eax = (u32)task_priority_get((int)frame->ebx);
+            break;
+        case 27:
+            frame->eax = (u32)task_priority_set((int)frame->ebx,
+                                                (int)frame->ecx);
             break;
         default:
             frame->eax = (u32)-1;
