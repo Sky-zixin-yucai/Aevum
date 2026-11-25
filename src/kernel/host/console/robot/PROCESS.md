@@ -47,6 +47,7 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 | P11.5 显式时间片 | `TASK_SLICE_TICKS=4u`（100Hz 下 40ms）；`task_struct` 增加 `slice_left`，`task_boot/task_create_common/task_pick_next` 把它初始化为 4。IRQ0 每 tick 仍做 `tick_total++/task_wake_expired/cpu_ticks/vruntime`，之后递减 `slice_left`；片仍大于 0 时 `tick_defer_total++` 并直接返回当前 `irq_frame`，不调用 `task_pick_next()`；片到 0 时 `slice_expire_total++` 才进入原调度路径。`task_slice_stats()` 导出 quantum/expires/defers，C 页显示 `QUANTUM 4t` 与 `EXP <n>` | `include/kernel/task.h`、`kernel/task/task.c`、`app/arm/render/render.c` |
 | P11.6 等待队列 ticket FIFO | `struct wait_queue` 从 `u8 wake_seq` 改为 `u32 next_ticket + u32 wakes`；`task_struct` 增加 `u32 wait_ticket`。`wait_queue_init()` 把 `next_ticket` 初始化为 1，`wait_ticket_alloc()` 单调分配；`task_block_on()` 首次入队取票并统计队列深度，虚假唤醒后重查失败再次阻塞时保留原票据。`wait_queue_wake_one()` 线性扫 16 槽，用有符号差值比较票据、处理回绕，只把票据最小的 BLOCKED 成员置 READY，不清其票据；条件满足/超时/退出/广播时才清。pipe 读消费后定向唤醒写者、仍有数据再唤醒下一个读者，写入后只唤醒一个读者；console 输入只唤醒一个读者，仍有积压再唤醒下一个；pipe release 的关闭/EOF 继续 `wake_all`。`task_wq_stats(blocks,wake_one,wake_all,max_depth)` 导出 C 页 `WQ blk/one/all/dep` | `include/kernel/task.h`、`kernel/task/task.c`、`kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`、`app/arm/render/render.c`、`user/exec-io/exec_io.asm` |
 | P11.7 可中断阻塞 EINTR | 新增 `process_signal_take_current()`：按信号号取走当前进程最低位 pending 并清 bit，0 表示无信号。`task_block_until/task_block_until_timeout/task_block_on` 在条件不满足时检查 pending，命中则清 `waitq/wait_ticket/wake_tick`、递增 `eintr_total`、返回内部码 2；条件优先于 deadline，deadline 优先于信号。`task_sleep_ticks`、`pipe_read_block/write_block`、`console_read_block`、`process_wait_common`、`process_thread_join_current` 把内部码 2 映射为 -3；syscall case 22 保留 -3，不压成 -1。C 页第 22 行显示 `EINTR <n>`；image 3 用 SIGCHLD 分别打断 sleep/read_block/write_block/wait_timeout/thread_join | `include/kernel/task.h`、`include/kernel/proc.h`、`kernel/task/task.c`、`kernel/proc/process.c`、`kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`、`arch/x86/cpu/syscall/syscall.c`、`app/arm/render/render.c`、`user/exec-io/exec_io.asm` |
+| P11.8 kill 与异步信号投递 | 新增 `eax=30 kill(pid,sig)` 与 `eax=31 sigaction_flags(sig,handler,mask,flags)`；旧 `eax=11 sigaction` 等价 flags=0。`kill` 只允许 self 或直接子进程，`sig=0` 做存在性检查，拒绝 SIGSTOP；目标 LIVE 时置 pending + `task_wake_process()`。P11.7 的阻塞点改为 `process_signal_peek_current()`，只探测不清 bit；真正消费移到返回用户态前的 `process_signal_deliver_async()`，按 IGN/DFL/handler 处理，一次投递一个。`process_signal_restart_prepare()` 在阻塞 syscall 返回 -3 时，若最低位 pending 有用户 handler 且带 `SA_RESTART`（0x10000000），把 `eip-2` 的 `CD 80` 帧回退并把 `eax` 还原成原 syscall 号，sigreturn 后重执行。`loader.asm` 在 int80 和 PIT/task 返回用户态前各投递一次 | `include/kernel/proc.h`、`kernel/proc/process.c`、`kernel/task/task.c`、`arch/x86/cpu/syscall/syscall.c`、`loader.asm`、`user/exec-io/exec_io.asm` |
 | wait status | 正常退出保留原退出码（`exit(7) -> 7`）；信号终止为 `0x80000000` 按位或 `sig`（`#DE -> 0x80000008`） | `PROC_WAIT_STATUS()` |
 | PCB 信号字段 | `pending/last_sig/term_sig/sig_count/sigchld_count`；`process_info` 同步暴露 | `kernel/proc/process.c` |
 | pending 位图 | `pending |= 1u << (sig - 1)`；只记录 1..31 号信号，不在这里改进程状态 | `proc_signal_pending()` |
@@ -745,6 +746,8 @@ P11.3 的 16 槽等待队列只有广播：一次 `wake_all` 把所有 `waitq==q
 
 P11.6 补上了等待队列的 FIFO 与定向唤醒，但所有阻塞点仍只会返回“条件满足 / 超时 / 错误”。P11.7 把已有的进程 pending signal 接入阻塞判断：条件不满足且当前进程有 pending 信号时，不再继续睡，而是返回 -3（EINTR），让用户态能先处理信号或子进程退出，再决定是否重试。
 
+> P11.8 已改变这里的消费点：阻塞 helper 现在只 `peek`，不再在阻塞点清 pending；真正的消费与 handler 投递在返回用户态前由 `process_signal_deliver_async()` 完成。下面描述的是 P11.7 当时的行为，保留作历史记录。
+
 ### 内部返回码与信号消费
 
 - `process_signal_take_current()` 在 `kernel/proc/process.c` 中按信号号从 1 到 31 扫描 `process->pending`，取走最低位并清掉该 bit；没有 pending 返回 0。它不是新的异步投递器，只是把“有信号待处理”变成一个可消费的中断令牌。
@@ -795,3 +798,51 @@ P11.6 补上了等待队列的 FIFO 与定向唤醒，但所有阻塞点仍只�
 - EINTR 只验证 SIGCHLD；SIGINT/SIGTERM/同步 fault 的 EINTR 路径没有用户态注入手段，也没有重启系统调用的选项。
 - 同一 tick 的优先级是条件 > 超时 > 信号；如果用户要求“信号先于超时”，需要另改顺序，当前没有这样做。
 - 仍没有 poll/select、非阻塞标志位、部分写保证、等待延迟统计、per-object 链表、SMP；也不跨到 P12 文件系统/网络。
+
+## 十八、P11.8 kill 与异步信号投递
+
+P11.7 只把 pending signal 变成阻塞 syscall 的 EINTR，没有用户态注入手段，也没有真正的异步 handler。P11.8 补上 `kill()`、返回用户态前的异步投递，以及只针对用户 handler 的最小 `SA_RESTART`。
+
+### 用户 ABI
+
+- 新增 `eax=30 kill(ebx=pid, ecx=sig)`，成功 0，参数/权限/目标错误 -1。没有 uid/gid，只允许当前进程向自己或直接子进程发信号；`sig=0` 只做存在性检查；`SIGSTOP`（19）没有作业控制，直接拒绝；目标必须是 `PROC_LIVE`。
+- 新增 `eax=31 sigaction_flags(ebx=sig, ecx=handler, edx=mask, esi=flags)`；旧 `eax=11 sigaction` 仍等价 flags=0。`SIGKILL(9)`/`SIGSTOP(19)` 不能被覆盖，flags 只保留 `SA_RESTART=0x10000000`。
+- 已定义 `SIGINT=2`、`SIGKILL=9`、`SIGTERM=15`、`SIGSTOP=19`；signal frame、sigreturn、handler 表与 fork 继承规则沿用 P3.2。`fork` 不继承 pending。
+
+### pending 与异步投递
+
+- `process_signal_peek_current()` 只返回最低位可投递 pending，不清 bit；`process_signal_take_current()` 取走并清 bit，同时写 `last_sig`。两者都跳过当前 `sig_mask` 屏蔽位。
+- P11.7 的 `task_block_signal()` 改为 peek，只负责把阻塞 syscall 变成 -3；真正的消费移到 `process_signal_deliver_async()`。这样 EINTR 和 handler 投递不会各消费一次，也不会在阻塞点丢掉信号。
+- `process_signal_deliver_async(frame)` 只在 `frame->cs` 的 CPL=3 时工作：IGN 直接消费；`SIGCHLD` 的 DFL 视为忽略；其它 DFL 调 `process_terminate_current(sig)` 后 `task_exit()`；用户 handler 复用 `process_signal_deliver(frame,sig,0)` 构造 signal frame。一次只投递一个，下一次返回用户态再继续。
+- `loader.asm` 在 `int80_stub` 的 `syscall_dispatch` 返回后、以及 `task_common` 的 `task_schedule_irq` 返回后各调用一次 `process_signal_deliver_async`；覆盖 syscall 返回、PIT 抢占返回和 `task_yield` 三条回用户态路径。同步异常路径本轮不叠加异步投递。
+
+### 最小 SA_RESTART
+
+- `syscall_dispatch()` 进入时保存原 `nr`；阻塞 syscall 返回 -3 时调用 `process_signal_restart_prepare(frame,nr)`。
+- 只有同时满足：最低位可投递信号有用户 handler、handler flags 带 `SA_RESTART`、`frame->eip-2` 处确实是 `CD 80`，才把 `frame->eip -= 2`、`frame->eax = nr`。
+- 异步投递把这个“回到 int 0x80 入口”的帧存进 signal frame；handler 的 sigreturn 恢复后重新执行原 syscall。参数仍在 ebx/ecx/edx/esi，不额外保存。默认终止、IGN、无 handler 或非 `int 0x80` 返回点都不重启。
+
+### image 3 新增四段验收
+
+- 数据区新增子 PID `0x401164`、handler 计数 `0x401168`；失败码 26..29。成功在原有 `P11.3 IO OK`、`P11.6 WQ OK`、`P11.7 EINTR OK` 之后输出 `P11.8 KILL OK`，最后写 `IO13` 并 exit(0)。
+- 场景 6：子进程装 SIGINT handler（flags=0），`sleep(200)`；父 sleep20，先 `kill(pid,0)` 做存在性检查，再 `kill(pid,SIGINT)`。子 sleep 必须返回 -3、handler 计数为 1、exit(0)；父 wait 状态 0。
+- 场景 7：同场景但 handler flags=`SA_RESTART`；子 sleep 必须返回 0、handler 计数 1、exit(0)。证明 handler 执行后 sigreturn 重执行了 sleep，而不是直接返回 -3。
+- 场景 8：子进程不装 handler，`sleep(200)`；父 `kill(pid,SIGTERM)`。子必须在返回用户态前按 DFL 终止，父 wait 状态为 `0x8000000F`。
+- 场景 9：子进程装 SIGINT handler 后跑纯用户态 `200×2,000,000` 计数循环，不发 syscall；父 sleep20 后 `kill(pid,SIGINT)`。handler 只能在 PIT 返回用户态时异步执行，计数变 1 后子进程 exit(90)，父 wait 状态 90。
+- 失败码 26/27/28/29 分别对应 kill-EINTR、SA_RESTART、默认终止、CPU-bound 异步 handler 失败；子进程内部失败也用自己的 26/27/29 退出，父 wait 后映射到同名失败码。
+
+### 构建与 QEMU 证据
+
+- clean build：`make clean && make` RC=0，无 warning/error。`kernel.bin=87,080B`（P11.7 85,640B，+1,440B）；`size kernel.elf`：text 86,819B、data 232B、bss 16,700B；`__bss_start=0x95440`、`__bss_end=0x9957C`，距 `AEVUM_KERNEL_END=0x9A000` 余 `0xA84`（2,692B）；镜像距 106,496B 上限余 19,416B。image 3 代码 `0x400000..` 共 3,208B，仍小于 4KB code VMA。本轮未新增 task 字段，`sizeof(task_struct)=120B`、`sizeof(wait_queue)=8B` 沿用 P11.7 口径。
+- SHA256：kernel `d5a505837bb2938b26f00332b728bd6c98b4b9e520956742414c8669593881fe`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `35928ba63ec756e7eba671227d98a8aabf7a6a355c792259eb644ac8a4bc9dc6`。
+- 主页面 `kt 4 s5 a1 OK`，control/render 57/43，idle 0%。P5.3 按 `S` 进入后 `round 100/100 first 6 ->6 live 1 state STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`。
+- V/ADDRESS 选中 userD：`REAP1 6 img 3 a0 e0`、`CHILDREN live 0 zomb 0`、`SIG pending 00000000 last 17 count 11 child 11`，说明 image 3 以 0 退出、新增四段没有留下 pending。
+- C 页：`EINTR 7`、`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`、`PREEMPTIONS 0 / EXP 0`、`IDLE hlt 0`。`P11.8 KILL OK` 的 console 文本仍无法从 UART serial 直接抓取，因为串口同时承载高频二进制关节状态帧；用 image 3 exit 0、V 页 `img 3 a0 e0`、`SIG pending 0` 和 P5.3 复测间接证明。
+- 调试口径更正：V `SLOT` 页底部的 `exit 10 st 0` 是全局 exit ring 的历史记录，不是 userD 的退出码；P11.7 对照镜像同样显示该历史记录。P11.8 验收必须看 `ADDRESS` 页的 `REAP1 ... img 3 a0 e0`。
+
+### 边界
+
+- `kill` 只有 self/直接子进程权限，没有 uid/gid、进程组、会话、作业控制、`SIGSTOP/SIGCONT`、信号排队或实时信号；同一信号多次 pending 会合并成一位。
+- pending 仍是进程级，没有 per-thread pending；多线程进程里任何线程都可能先看到同一个 pending。没有 `SA_SIGINFO`、`SA_NODEFER`、`sigprocmask` 用户 ABI；handler 期间 `sig_mask` 只保存/恢复 `sigaction.mask`。
+- `SA_RESTART` 只覆盖“阻塞 syscall 返回 -3、且返回点是 `int 0x80`”的用户 handler 场景；不重启被同步异常打断的指令，不覆盖 read/write 部分传输，也不改变 -1/-2 错误码。
+- 异步投递只在返回用户态前发生；纯内核线程没有 PCB，不参与。仍没有 poll/select、SMP、P12 文件系统/网络。

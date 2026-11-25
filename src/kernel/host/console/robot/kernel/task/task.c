@@ -1103,12 +1103,12 @@ const char *task_wake(int pid)
 }
 
 /*
- * P11.7：条件不满足时检查 pending signal。只消费一个 pending 位；
- * 返回非 0 表示本次阻塞应立即以 EINTR 返回。
+ * P11.7/P11.8：条件不满足时检查 pending signal。只 peek，不消费；
+ * 返回用户态前由 process_signal_deliver_async() 统一消费/投递。
  */
 static int task_block_signal(void)
 {
-    if (!process_signal_take_current()) return 0;
+    if (!process_signal_peek_current()) return 0;
     eintr_total++;
     return 1;
 }

@@ -47,11 +47,17 @@ struct proc_orphan_event {
 #define PROC_NSIG    32
 #define PROC_SIG_DFL 0u
 #define PROC_SIG_IGN 1u
+#define PROC_SIGINT  2
+#define PROC_SIGKILL 9
+#define PROC_SIGTERM 15
+#define PROC_SIGSTOP 19
 #define PROC_SIGILL  4
 #define PROC_SIGTRAP 5
 #define PROC_SIGFPE  8
 #define PROC_SIGSEGV 11
 #define PROC_SIGCHLD 17
+/* P11.8：sigaction_flags 只认识 SA_RESTART；当前不做 SA_SIGINFO/SA_NODEFER。 */
+#define PROC_SA_RESTART 0x10000000u
 
 /*
  * P7.1 只接受线程组所需的 clone 子集。FS 目前没有 cwd/root 状态，
@@ -175,8 +181,40 @@ int process_terminate_current(int sig);
 /*
  * P3.2 每进程同步信号动作：handler=0 默认终止，1 忽略，其他值为用户 VA。
  * mask 只随 signal frame 保存/恢复，当前不做阻塞。
+ * P11.8：新增 flags 版本，仅支持 PROC_SA_RESTART；旧 3 参数入口保持 flags=0。
  */
 int process_sigaction_current(int sig, u32 handler, u32 mask);
+int process_sigaction_flags_current(int sig, u32 handler, u32 mask, u32 flags);
+
+/*
+ * P11.8：kill(pid,sig)。只允许当前进程向自己或直接子进程发送 1..31 号信号；
+ * sig=0 只做存在性检查。目标 LIVE 时置 pending 并唤醒其阻塞线程。
+ * 成功返回 0，参数/权限/目标错误返回 -1。
+ */
+int process_signal_send(int pid, int sig);
+
+/*
+ * P11.7/P11.8：peek 当前进程最低位可投递 pending，不清 bit；take 取走并清 bit。
+ * 两者都跳过当前 sig_mask 屏蔽的信号。阻塞点只 peek，真正消费在返回用户态前。
+ */
+int process_signal_peek_current(void);
+int process_signal_take_current(void);
+
+/*
+ * P11.8：在返回用户态前投递一个 pending signal。
+ * IGN 直接消费；SIGCHLD 的 DFL 视为忽略；其它 DFL 终止当前进程；
+ * 用户 handler 复用 process_signal_deliver(frame,sig,0) 构造 signal frame。
+ * 返回 1 表示消费了一个信号（可能已改写 frame），0 表示没有可投递信号。
+ */
+int process_signal_deliver_async(struct irq_frame *frame);
+
+/*
+ * P11.8：最小 SA_RESTART。阻塞 syscall 返回 -3 时，若最低位可投递信号有
+ * 用户 handler 且带 SA_RESTART，把 frame 改回 int 0x80 入口并把 eax 还原为
+ * 原 syscall 号；handler 的 sigreturn 之后会重新执行该系统调用。
+ * 只有确认 eip-2 处是 CD 80 时才改写，返回 1 表示已准备重启。
+ */
+int process_signal_restart_prepare(struct irq_frame *frame, u32 nr);
 
 /*
  * 用户态同步异常投递：有用户 handler 时在用户栈构造 signal frame，
@@ -191,13 +229,6 @@ int process_sigreturn_current(struct irq_frame *frame);
 
 /* 当前进程已执行 handler 的次数；异常记录在投递时取一次快照，避免 PID 复用后失真。 */
 u32 process_sig_handled_current(void);
-
-/*
- * P11.7：取走当前进程最低位的 pending signal，返回信号号；0 表示没有。
- * 阻塞点用它把“有信号待处理”变成 EINTR。当前内核还没有异步 handler 投递，
- * 所以这里消费一次 pending 位，避免同一个位让下一次阻塞立刻再次 EINTR。
- */
-int process_signal_take_current(void);
 
 /* wait 子进程：P7.5 用 BLOCKED/WAKE 等待，找到 ZOMBIE 后写 user status 并回收。
  * pid>0 只等指定直接子进程，不是当前进程的子进程立即返回 -1；

@@ -29,6 +29,7 @@ void syscall_init(void)
 
 u32 syscall_dispatch(struct irq_frame *frame)
 {
+    u32 nr = frame->eax;
     call_count++;
     last_cs = frame->cs;
     switch (frame->eax) {
@@ -182,10 +183,28 @@ u32 syscall_dispatch(struct irq_frame *frame)
                                                   frame->ebx, frame->ecx,
                                                   frame->edx, frame->esi);
             break;
+        case 30:
+            frame->eax = (u32)process_signal_send((int)frame->ebx,
+                                                  (int)frame->ecx);
+            break;
+        case 31:
+            frame->eax = (process_sigaction_flags_current((int)frame->ebx,
+                                                          frame->ecx,
+                                                          frame->edx,
+                                                          frame->esi) == 0)
+                             ? 0u
+                             : (u32)-1;
+            break;
         default:
             frame->eax = (u32)-1;
             break;
     }
+    /*
+     * P11.8：阻塞 syscall 的 -3 在这里先准备 SA_RESTART，再在 int80 返回前
+     * 由 process_signal_deliver_async() 投递 handler。nr 是进入时的系统调用号。
+     */
+    if ((int)frame->eax == -3)
+        process_signal_restart_prepare(frame, nr);
     return (u32)frame;
 }
 

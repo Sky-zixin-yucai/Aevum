@@ -256,7 +256,24 @@ static void proc_signal_pending(struct process *p, int sig)
     if (sig == PROC_SIGCHLD) p->sigchld_count++;
 }
 
-/* P11.7：阻塞点取走一个 pending 位，按信号号从小到大。 */
+/* P11.7/P11.8：阻塞点只 peek 一个可投递 pending，不清 bit；mask 中的信号不算。 */
+int process_signal_peek_current(void)
+{
+    struct process *self;
+    int sig;
+
+    if (!task_current() || !task_process_current()) return 0;
+    self = task_process_current();
+    if (self->state != PROC_LIVE) return 0;
+    for (sig = 1; sig < PROC_NSIG; sig++) {
+        u32 bit = 1u << (sig - 1);
+        if ((self->pending & bit) && !(self->sig_mask & bit))
+            return sig;
+    }
+    return 0;
+}
+
+/* P11.8：返回用户态前消费一个 pending；只取最低位可投递信号。 */
 int process_signal_take_current(void)
 {
     struct process *self;
@@ -267,11 +284,36 @@ int process_signal_take_current(void)
     if (self->state != PROC_LIVE) return 0;
     for (sig = 1; sig < PROC_NSIG; sig++) {
         u32 bit = 1u << (sig - 1);
-        if (self->pending & bit) {
+        if ((self->pending & bit) && !(self->sig_mask & bit)) {
             self->pending &= ~bit;
+            self->last_sig = (u32)sig;
             return sig;
         }
     }
+    return 0;
+}
+
+/*
+ * P11.8：kill 的最小权限模型。没有 uid/gid，只允许当前进程杀自己或直接子进程；
+ * sig=0 做存在性检查；SIGSTOP 没有作业控制，直接拒绝。目标 LIVE 时置 pending
+ * 并唤醒其阻塞线程，让阻塞 syscall 能走 P11.7 的 EINTR 出口。
+ */
+int process_signal_send(int pid, int sig)
+{
+    struct process *self;
+    struct process *target;
+
+    if (sig < 0 || sig >= PROC_NSIG) return -1;
+    if (sig == PROC_SIGSTOP) return -1;
+    if (!task_current() || !task_process_current()) return -1;
+    self = task_process_current();
+    if (self->state != PROC_LIVE || !self->space) return -1;
+    target = proc_find_active(pid);
+    if (!target || target->state != PROC_LIVE) return -1;
+    if (pid != self->pid && target->ppid != self->pid) return -1;
+    if (sig == 0) return 0;
+    proc_signal_pending(target, sig);
+    task_wake_process(target);
     return 0;
 }
 
@@ -320,11 +362,12 @@ static u32 proc_sigreturn_trampoline_va(void)
            (u32)((u32)user_sigreturn_trampoline - (u32)user_program_start);
 }
 
-int process_sigaction_current(int sig, u32 handler, u32 mask)
+int process_sigaction_flags_current(int sig, u32 handler, u32 mask, u32 flags)
 {
     struct process *self;
 
     if (sig <= 0 || sig >= PROC_NSIG) return -1;
+    if (sig == PROC_SIGKILL || sig == PROC_SIGSTOP) return -1;
     if (!task_current() || !task_process_current()) return -1;
     self = task_process_current();
     if (self->state != PROC_LIVE || !self->space) return -1;
@@ -334,8 +377,13 @@ int process_sigaction_current(int sig, u32 handler, u32 mask)
 
     self->sigactions[sig].handler = handler;
     self->sigactions[sig].mask = mask & 0x7FFFFFFFu;
-    self->sigactions[sig].flags = 0;
+    self->sigactions[sig].flags = flags & PROC_SA_RESTART;
     return 0;
+}
+
+int process_sigaction_current(int sig, u32 handler, u32 mask)
+{
+    return process_sigaction_flags_current(sig, handler, mask, 0);
 }
 
 int process_signal_deliver(struct irq_frame *frame, int sig, u32 vector)
@@ -412,6 +460,77 @@ int process_signal_deliver(struct irq_frame *frame, int sig, u32 vector)
     frame->ebx = frame_addr + 4;
     frame->eip = action->handler;
     frame->user_esp = frame_addr;
+    return 1;
+}
+
+/*
+ * P11.8：返回用户态前投递一个异步信号。IGN 直接消费；SIGCHLD 的 DFL 视为
+ * 忽略；其它 DFL 终止进程；用户 handler 复用同步投递的 signal frame 构造。
+ * 一次只投递一个，下一次返回用户态再继续消费，避免嵌套多个 handler。
+ */
+int process_signal_deliver_async(struct irq_frame *frame)
+{
+    struct process *self;
+    struct proc_sigaction *action;
+    int sig;
+
+    if (!frame) return 0;
+    if (!task_current() || !task_process_current()) return 0;
+    self = task_process_current();
+    if (self->state != PROC_LIVE || !self->space) return 0;
+    if ((frame->cs & 3u) != 3u) return 0;
+
+    sig = process_signal_take_current();
+    if (!sig) return 0;
+    action = &self->sigactions[sig];
+
+    if (action->handler == PROC_SIG_IGN) return 1;
+    if (action->handler == PROC_SIG_DFL) {
+        if (sig == PROC_SIGCHLD) return 1;
+        if (process_terminate_current(sig) == 0) task_exit();
+        return 1;
+    }
+
+    if (process_signal_deliver(frame, sig, 0)) return 1;
+    /* handler 地址/用户栈失效时，不能把坏 frame 交回 ring3。 */
+    if (process_terminate_current(sig) == 0) task_exit();
+    return 1;
+}
+
+/*
+ * P11.8：最小 SA_RESTART。目标 syscall 已经被 P11.7 的 EINTR 打断并返回 -3，
+ * 这里把 iret 帧改回 int 0x80 指令入口，eax 还原为原 syscall 号。随后异步
+ * 投递把该帧保存在 signal frame；handler sigreturn 后重新执行同一 syscall。
+ * 参数仍在 ebx/ecx/edx/esi，不需要额外保存。只处理用户 handler + SA_RESTART。
+ */
+int process_signal_restart_prepare(struct irq_frame *frame, u32 nr)
+{
+    struct process *self;
+    struct proc_sigaction *action;
+    u8 op[2];
+    int sig;
+
+    if (!frame) return 0;
+    if (!task_current() || !task_process_current()) return 0;
+    self = task_process_current();
+    if (self->state != PROC_LIVE || !self->space) return 0;
+    if ((frame->cs & 3u) != 3u) return 0;
+    if (frame->eip < 2) return 0;
+
+    sig = process_signal_peek_current();
+    if (!sig) return 0;
+    action = &self->sigactions[sig];
+    if (action->handler == PROC_SIG_DFL ||
+        action->handler == PROC_SIG_IGN)
+        return 0;
+    if (!(action->flags & PROC_SA_RESTART)) return 0;
+
+    if (address_space_copyin(self->space, op, frame->eip - 2, 2) != 0)
+        return 0;
+    if (op[0] != 0xCD || op[1] != 0x80) return 0;
+
+    frame->eip -= 2;
+    frame->eax = nr;
     return 1;
 }
 

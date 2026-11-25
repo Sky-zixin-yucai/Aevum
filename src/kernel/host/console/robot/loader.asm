@@ -13,6 +13,7 @@ global gdt_new
 extern kernel_main
 extern task_schedule_irq
 extern syscall_dispatch
+extern process_signal_deliver_async
 extern page_fault_dispatch
 extern exception_dispatch
 extern __bss_start
@@ -103,6 +104,11 @@ int80_stub:
     call syscall_dispatch
     add esp, 4
     mov esp, eax
+    mov eax, esp
+    push eax
+    call process_signal_deliver_async
+    add esp, 4
+    mov esp, eax
     RESTORE_CTX
 
 ; #PF：CPU 压 error code；C 侧记录 CR2/EIP/ERR，再决定杀用户任务或停机。
@@ -147,6 +153,11 @@ task_common:
     mov eax, esp
     push eax
     call task_schedule_irq
+    add esp, 4
+    mov esp, eax
+    mov eax, esp
+    push eax
+    call process_signal_deliver_async
     add esp, 4
     mov esp, eax
     RESTORE_CTX

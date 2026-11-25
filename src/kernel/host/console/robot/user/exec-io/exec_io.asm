@@ -601,6 +601,230 @@ user_io_exec_start:
     cmp dword [0x401158], 0
     jne .bad25
 
+    ; P11.8 (6)：kill(pid,SIGINT) 打断子进程 sleep；子进程 handler 必须执行一次，
+    ; sleep 返回 -3，handler 返回后子进程正常 exit(0)。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad26
+    jnz .kill_eintr_parent
+    push byte 31
+    pop eax
+    push byte 2
+    pop ebx
+    mov ecx, sig_handler + 0x400000
+    xor edx, edx
+    xor esi, esi
+    int 0x80
+    cmp eax, 0
+    jne .child_bad26
+    mov dword [0x401168], 0
+    push byte 24
+    pop eax
+    mov ebx, 200
+    int 0x80
+    cmp eax, -3
+    jne .child_bad26
+    cmp dword [0x401168], 1
+    jne .child_bad26
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.kill_eintr_parent:
+    mov [0x401164], eax
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    ; sig=0 只做存在性检查，必须成功。
+    push byte 30
+    pop eax
+    mov ebx, [0x401164]
+    xor ecx, ecx
+    int 0x80
+    cmp eax, 0
+    jne .bad26
+    push byte 30
+    pop eax
+    mov ebx, [0x401164]
+    push byte 2
+    pop ecx
+    int 0x80
+    cmp eax, 0
+    jne .bad26
+    push byte 4
+    pop eax
+    mov ebx, [0x401164]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401164]
+    jne .bad26
+    cmp dword [0x401158], 0
+    jne .bad26
+
+    ; P11.8 (7)：SIGINT handler 带 SA_RESTART；sleep 被打断后应重启并最终正常返回 0，
+    ; handler 仍执行一次。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad27
+    jnz .restart_parent
+    push byte 31
+    pop eax
+    push byte 2
+    pop ebx
+    mov ecx, sig_handler + 0x400000
+    xor edx, edx
+    mov esi, 0x10000000
+    int 0x80
+    cmp eax, 0
+    jne .child_bad27
+    mov dword [0x401168], 0
+    push byte 24
+    pop eax
+    mov ebx, 200
+    int 0x80
+    cmp eax, 0
+    jne .child_bad27
+    cmp dword [0x401168], 1
+    jne .child_bad27
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.restart_parent:
+    mov [0x401164], eax
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 30
+    pop eax
+    mov ebx, [0x401164]
+    push byte 2
+    pop ecx
+    int 0x80
+    cmp eax, 0
+    jne .bad27
+    push byte 4
+    pop eax
+    mov ebx, [0x401164]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401164]
+    jne .bad27
+    cmp dword [0x401158], 0
+    jne .bad27
+
+    ; P11.8 (8)：子进程没有 handler，kill(SIGTERM) 必须在返回用户态前按 DFL 终止；
+    ; 父 wait 看到信号终止 status = 0x8000000F。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad28
+    jnz .term_parent
+    push byte 24
+    pop eax
+    mov ebx, 200
+    int 0x80
+    push byte 3
+    pop eax
+    xor ebx, ebx
+    int 0x80
+    jmp $
+.term_parent:
+    mov [0x401164], eax
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 30
+    pop eax
+    mov ebx, [0x401164]
+    push byte 15
+    pop ecx
+    int 0x80
+    cmp eax, 0
+    jne .bad28
+    push byte 4
+    pop eax
+    mov ebx, [0x401164]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401164]
+    jne .bad28
+    cmp dword [0x401158], 0x8000000F
+    jne .bad28
+
+    ; P11.8 (9)：子进程纯用户态计数循环，不发系统调用；父 kill(SIGINT) 后，
+    ; 异步投递在 PIT 返回用户态时执行 handler，子进程最后 exit(90) 证明 handler 跑过。
+    push byte 6
+    pop eax
+    int 0x80
+    test eax, eax
+    js .bad29
+    jnz .async_parent
+    push byte 31
+    pop eax
+    push byte 2
+    pop ebx
+    mov ecx, sig_handler + 0x400000
+    xor edx, edx
+    xor esi, esi
+    int 0x80
+    cmp eax, 0
+    jne .child_bad29
+    mov dword [0x401168], 0
+    mov ecx, 200
+.async_outer:
+    mov edx, 2000000
+.async_inner:
+    dec edx
+    jnz .async_inner
+    dec ecx
+    jnz .async_outer
+    cmp dword [0x401168], 1
+    jne .child_bad29
+    push byte 3
+    pop eax
+    push byte 90
+    pop ebx
+    int 0x80
+    jmp $
+.async_parent:
+    mov [0x401164], eax
+    push byte 24
+    pop eax
+    push byte 20
+    pop ebx
+    int 0x80
+    push byte 30
+    pop eax
+    mov ebx, [0x401164]
+    push byte 2
+    pop ecx
+    int 0x80
+    cmp eax, 0
+    jne .bad29
+    push byte 4
+    pop eax
+    mov ebx, [0x401164]
+    mov ecx, 0x401158
+    int 0x80
+    cmp eax, [0x401164]
+    jne .bad29
+    cmp dword [0x401158], 90
+    jne .bad29
+
     mov dword [0x401040], 0x33314F49  ; "IO13"
     push byte 16
     pop eax
@@ -624,6 +848,14 @@ user_io_exec_start:
     pop ebx
     mov ecx, eintr_ok + 0x400000
     push byte 15
+    pop edx
+    int 0x80
+    push byte 16
+    pop eax
+    push byte 1
+    pop ebx
+    mov ecx, kill_ok + 0x400000
+    push byte 14
     pop edx
     int 0x80
     push byte 3
@@ -850,6 +1082,27 @@ user_io_exec_start:
 .bad25:
     mov ebx, 25
     jmp .fail
+.bad26:
+    mov ebx, 26
+    jmp .fail
+.bad27:
+    mov ebx, 27
+    jmp .fail
+.bad28:
+    mov ebx, 28
+    jmp .fail
+.bad29:
+    mov ebx, 29
+    jmp .fail
+.child_bad26:
+    mov ebx, 26
+    jmp .fail
+.child_bad27:
+    mov ebx, 27
+    jmp .fail
+.child_bad29:
+    mov ebx, 29
+    jmp .fail
 .fail:
     push ebx
     push byte 16
@@ -888,12 +1141,20 @@ io_word:
     db 'I', 'O', 'R', 'D'
 io_fill:
     db 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'
+
+; P11.8 用户态 SIGINT handler：只记录一次执行，然后 sigreturn 回原上下文。
+sig_handler:
+    mov dword [0x401168], 1
+    ret
+
 io_ok:
     db 'P11.3 IO OK', 10
 wq_ok:
     db 'P11.6 WQ OK', 10
 eintr_ok:
     db 'P11.7 EINTR OK', 10
+kill_ok:
+    db 'P11.8 KILL OK', 10
 io_bad:
     db 'IOBAD', 10
 

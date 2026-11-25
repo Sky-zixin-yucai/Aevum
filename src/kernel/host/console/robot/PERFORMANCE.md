@@ -194,3 +194,16 @@ P11.7 clean 构建 `kernel.bin=85,640B`，`__bss_start=0x94EA0`、`__bss_end=0x9
 - image 3 代码从 P11.6 的 644B 增至 2,447B（`0x81380..0x81D0F`，+1,803B），仍小于 4KB code VMA；增加的是五段 fork/sleep/pipe/join 用户态测试，不是内核镜像体积。
 - C 页实测 `EINTR 7`、`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`；P5.3 仍 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`，PIT 7222 tick 时 `PREEMPTIONS 0 / EXP 0`、idle 0%。
 - 边界：`EINTR` 是功能计数，不是延迟或吞吐基准；没有测“信号置位到阻塞返回”的时延，也没有测多线程争抢同一个进程 pending 位的分布。P11.7 没有引入 `kill()` 注入，不能用它评估完整信号吞吐。
+
+## 18. P11.8 kill、异步投递与 SA_RESTART 的开销
+
+P11.8 clean 构建 `kernel.bin=87,080B`，`__bss_start=0x95440`、`__bss_end=0x9957C`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 镜像从 P11.7 的 85,640B 增至 87,080B（+1,440B）；`size` 的 text 列从 85,369B 增至 86,819B（+1,450B），`.data=232B`、`.bss=16,700B` 不变。新增代码是 `kill`/`sigaction_flags` 两个 syscall、`process_signal_send()`、`process_signal_deliver_async()`、`process_signal_restart_prepare()`、`process_signal_peek_current()` 和 loader 两处投递调用。
+- BSS 起点随 text 后移到 `0x95440`，`__bss_end=0x9957C`；BSS 距 `0x9A000` 余 2,692B，镜像距 106,496B 上限余 19,416B。P11.8 没有新增静态计数器或 task 字段，BSS 总量不变；`sizeof(struct task_struct)=120B`、`sizeof(struct wait_queue)=8B` 沿用 P11.7。
+- `process_signal_peek_current()`/`take_current()` 最坏扫描 31 个 bit；每次返回用户态最多调用一次 `take`，只在有 pending 时才进入。`process_signal_deliver_async()` 在无 pending 时只有参数/CPL/进程状态检查，正常返回路径增加一次函数调用和一次 31 位扫描。
+- `process_signal_restart_prepare()` 只在阻塞 syscall 返回 -3 时调用；先 peek 一次，再读 2 字节用户代码验证 `CD 80`，命中才改帧。正常成功返回不进入该路径，非阻塞 syscall 也不进入。
+- `kill` 本身是一次 active 槽查找 + 置 pending + `task_wake_process()` 扫描；没有信号队列、分配或额外任务切换。目标已 READY 时唤醒扫描不改变状态，目标 BLOCKED 时只改 READY，仍由下一次调度决定。
+- image 3 代码从 P11.7 的 2,447B 增至 3,208B（+761B），仍小于 4KB code VMA；增加的是四段 kill/SA_RESTART/DFL/CPU-bound 用户态测试，不是内核镜像体积。
+- QEMU 实测主页面 `kt 4 s5 a1 OK`、control/render 57/43、idle 0%；C 页 `EINTR 7`、`SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`、`PREEMPTIONS 0 / EXP 0`；V/ADDRESS `REAP1 6 img 3 a0 e0`、`SIG pending 00000000`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`。
+- 边界：这是 QEMU TCG 的功能计数，不是信号吞吐或唤醒时延基准；没有测 kill 到 handler 的端到端延迟，也没有测 CPU-bound 场景下 PIT 投递的抖动。`SA_RESTART` 只覆盖 `int 0x80` 返回点，不能代表完整 POSIX 重启语义。
