@@ -314,7 +314,11 @@ V 页 ADDRESS 显示 `TEST ... det OK blk OK`、`blk 7 /1`；父在子进程仍 
 
 **P12.1 只读 ramdisk 与最小文件 ABI**
 
-内核 rodata 内嵌 120B 只读 ramdisk，提供单层 `open(path, flags=0)`；`hello.txt` 26B、`motd.txt` 30B。image4 走 open/read/EOF/write 拒绝/close/非法 flags/不存在文件的全链路，image3 在 P11.8 成功后 spawn image4 并 wait；V/ADDRESS 显示 `REAP1 6 img 3 a0 e0`，FD 图例新增 `RAMF`。没有目录、写文件、权限或 ATA。
+![P12.1 只读 ramdisk 与最小文件 ABI 验收](docs/assets/readme/kernel/kernel-p121-ramfs.png)
+
+内核 rodata 内嵌 120B 只读 ramdisk，头 16B（magic `AEVR`、version 1、count 2），每个 entry 24B（16B NUL 文件名 + 4B offset + 4B size），含 `hello.txt` 26B 与 `motd.txt` 30B。新增 `eax=32 open(ebx=path, ecx=flags)`，flags 只接受 0，成功从 fd2 起分配，失败 -1；`read` 按 fd offset 顺序复制，copyout 成功后才推进，EOF 返回 0；`write`/`write_block` 对 ramfs 返回 -1，`close` 后 `read` 返回 -1。fd 表新增 `RAMF`，`proc_fd_entry` 保持 8B；`fork` 保留 file 指针与当前 offset，但父子 offset 各自独立，`exec` 保留 fd 表。
+
+image4 验证 open/read/EOF/write 拒绝/close/非法 flags/不存在文件/motd 全链路，失败码 40..46；ring3 代码页余量不足，由 image3 在 P11.8 成功后 `spawn(4)` + `wait`，image4 非 0 时 image3 以 30 退出。V/ADDRESS 显示 `REAP1 6 img 3 a0 e0`、`CHILDREN live 0`、`SIG pending 00000000`；clean `kernel.bin=89,064B`，BSS 到 `0x99D9C`，距 `AEVUM_KERNEL_END=0x9A000` 余 612B。没有目录、`/`、cwd、写文件、权限、元数据或 ATA，也不跨 P12.2。
 
 #### 构建与运行
 
