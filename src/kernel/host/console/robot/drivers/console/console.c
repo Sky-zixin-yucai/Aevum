@@ -1,5 +1,6 @@
 #include "drivers/console/console.h"
 #include "drivers/serial/uart.h"
+#include "kernel/task.h"
 
 static u8 input_queue[CONSOLE_INPUT_MAX];
 static u32 input_head;
@@ -11,6 +12,7 @@ static u32 push_total;
 static u32 read_total;
 static u32 last_input;
 static u8 shift_down;
+static struct wait_queue input_wq;
 
 static char output_lines[CONSOLE_LINES][CONSOLE_LINE_MAX];
 static u32 output_line_count;
@@ -113,6 +115,7 @@ void console_reset(void)
     read_total = 0;
     last_input = 0;
     shift_down = 0;
+    wait_queue_init(&input_wq);
 
     output_line_count = 0;
     output_cursor = 0;
@@ -149,6 +152,7 @@ void console_input_push(u8 scan)
     input_tail = (input_tail + 1) % CONSOLE_INPUT_MAX;
     input_count++;
     push_total++;
+    wait_queue_wake_all(&input_wq);
 }
 
 int console_read(u8 *buf, u32 len)
@@ -165,6 +169,24 @@ int console_read(u8 *buf, u32 len)
     read_total += out;
     last_input = buf[out - 1];
     return (int)out;
+}
+
+static int console_read_ready(void *ctx)
+{
+    (void)ctx;
+    return input_count != 0;
+}
+
+int console_read_block(u8 *buf, u32 len, u32 ticks)
+{
+    int rc;
+
+    if (!buf || !len) return -1;
+    if (!ticks) return console_read(buf, len);
+    rc = task_block_on(&input_wq, console_read_ready, 0, ticks);
+    if (rc < 0) return -1;
+    if (rc > 0) return -2;
+    return console_read(buf, len);
 }
 
 u32 console_queue_count(void)

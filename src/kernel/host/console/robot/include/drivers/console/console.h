@@ -19,6 +19,8 @@ void console_reset(void);
 void console_input_push(u8 scan);
 /* 非阻塞读：返回 1..len，空队列返回 -1。 */
 int console_read(u8 *buf, u32 len);
+/* P11.3：最多等 ticks 个 PIT tick；返回字节数/-1/-2 超时，ticks=0 非阻塞。 */
+int console_read_block(u8 *buf, u32 len, u32 ticks);
 u32 console_queue_count(void);
 u32 console_input_dropped(void);
 u32 console_scan_total(void);

@@ -19,6 +19,12 @@ void pipe_release(struct pipe *p, int write_end);
 /* 非阻塞：空读且仍有写端返回 -1，写端已全关返回 0；满写返回 -1。 */
 int pipe_read(struct pipe *p, void *buf, u32 len);
 int pipe_write(struct pipe *p, const void *buf, u32 len);
+/*
+ * P11.3：对象等待队列版本。ticks>0 时最多等该 PIT tick 数；
+ * 返回字节数/0 EOF/-1 参数或端点错误/-2 超时。ticks=0 等价非阻塞。
+ */
+int pipe_read_block(struct pipe *p, void *buf, u32 len, u32 ticks);
+int pipe_write_block(struct pipe *p, const void *buf, u32 len, u32 ticks);
 
 /* 仍被 fd 引用的 pipe 对象数；用于验收关闭后无泄漏。 */
 u32 pipe_live_count(void);

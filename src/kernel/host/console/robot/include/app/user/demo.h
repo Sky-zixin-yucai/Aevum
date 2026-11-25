@@ -90,6 +90,8 @@ u32 user_demo_block_ok(int lane);
 u32 user_demo_timer_ok(int lane);
 /* P11.2：D lane 的 get/setpriority + fork/clone 继承验收字，0x401260 = "PRI1"。 */
 u32 user_demo_priority_ok(int lane);
+/* P11.3：D lane spawn image 3 完成阻塞 I/O 验收，0x4012A0 = "IOB1"。 */
+u32 user_demo_io_ok(int lane);
 
 /* userA 的数据页是 brk/heap/guard 的证据。 */
 u32 user_demo_brk(int lane);

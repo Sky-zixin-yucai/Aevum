@@ -185,3 +185,59 @@ int proc_fd_close(struct proc_fd_table *table, u32 fd)
     proc_fd_entry_close(&table->entries[fd]);
     return 0;
 }
+
+int proc_fd_read_block(struct proc_fd_table *table, struct address_space *space,
+                       u32 fd, u32 user_buf, u32 len, u32 ticks)
+{
+    struct proc_fd_entry *e;
+    u8 buf[PIPE_CAPACITY];
+    int n;
+
+    if (!table || !space || fd >= PROC_FD_MAX) return -1;
+    if (!len) return 0;
+    if (!user_buf) return -1;
+    e = &table->entries[fd];
+
+    if (e->kind == PROC_FD_CONSOLE_READ) {
+        if (len > CONSOLE_INPUT_MAX) len = CONSOLE_INPUT_MAX;
+        if (!address_space_user_range_ok(space, user_buf, len, 1)) return -1;
+        n = console_read_block(buf, len, ticks);
+        if (n <= 0) return n;
+        if (address_space_copyout(space, user_buf, buf, (u32)n) != 0) return -1;
+        return n;
+    }
+
+    if (e->kind != PROC_FD_PIPE_READ) return -1;
+    if (len > PIPE_CAPACITY) len = PIPE_CAPACITY;
+    if (!address_space_user_range_ok(space, user_buf, len, 1)) return -1;
+
+    n = pipe_read_block(e->pipe, buf, len, ticks);
+    if (n <= 0) return n;
+    if (address_space_copyout(space, user_buf, buf, (u32)n) != 0) return -1;
+    return n;
+}
+
+int proc_fd_write_block(struct proc_fd_table *table, struct address_space *space,
+                        u32 fd, u32 user_buf, u32 len, u32 ticks)
+{
+    struct proc_fd_entry *e;
+    u8 buf[PIPE_CAPACITY];
+
+    if (!table || !space || fd >= PROC_FD_MAX) return -1;
+    if (!len) return 0;
+    if (!user_buf) return -1;
+    e = &table->entries[fd];
+
+    if (e->kind == PROC_FD_CONSOLE_WRITE) {
+        if (len > CONSOLE_WRITE_MAX) return -1;
+        if (!address_space_user_range_ok(space, user_buf, len, 0)) return -1;
+        if (address_space_copyin(space, buf, user_buf, len) != 0) return -1;
+        return console_write(buf, len);
+    }
+
+    if (e->kind != PROC_FD_PIPE_WRITE) return -1;
+    if (len > PIPE_CAPACITY) return -1;
+    if (!address_space_user_range_ok(space, user_buf, len, 0)) return -1;
+    if (address_space_copyin(space, buf, user_buf, len) != 0) return -1;
+    return pipe_write_block(e->pipe, buf, len, ticks);
+}

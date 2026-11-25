@@ -171,6 +171,16 @@ u32 syscall_dispatch(struct irq_frame *frame)
             frame->eax = (u32)task_priority_set((int)frame->ebx,
                                                 (int)frame->ecx);
             break;
+        case 28:
+            frame->eax = (u32)proc_fd_read_block(current_fds(), current_space(),
+                                                 frame->ebx, frame->ecx,
+                                                 frame->edx, frame->esi);
+            break;
+        case 29:
+            frame->eax = (u32)proc_fd_write_block(current_fds(), current_space(),
+                                                  frame->ebx, frame->ecx,
+                                                  frame->edx, frame->esi);
+            break;
         default:
             frame->eax = (u32)-1;
             break;

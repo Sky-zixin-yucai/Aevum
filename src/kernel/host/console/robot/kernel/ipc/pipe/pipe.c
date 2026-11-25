@@ -1,4 +1,5 @@
 #include "kernel/ipc/pipe.h"
+#include "kernel/task.h"
 
 struct pipe {
     u32 head;
@@ -8,6 +9,8 @@ struct pipe {
     u32 readers;
     u32 writers;
     u32 used;
+    struct wait_queue read_wq;
+    struct wait_queue write_wq;
     u8 buf[PIPE_CAPACITY];
 };
 
@@ -27,6 +30,8 @@ struct pipe *pipe_create(void)
         p->readers = 0;
         p->writers = 0;
         p->used = 1;
+        wait_queue_init(&p->read_wq);
+        wait_queue_init(&p->write_wq);
         return p;
     }
     return 0;
@@ -51,12 +56,17 @@ void pipe_release(struct pipe *p, int write_end)
     }
     if (p->refs) p->refs--;
     if (!p->refs) {
+        wait_queue_wake_all(&p->read_wq);
+        wait_queue_wake_all(&p->write_wq);
         p->used = 0;
         p->head = 0;
         p->tail = 0;
         p->count = 0;
         p->readers = 0;
         p->writers = 0;
+    } else {
+        if (write_end && !p->writers) wait_queue_wake_all(&p->read_wq);
+        if (!write_end && !p->readers) wait_queue_wake_all(&p->write_wq);
     }
 }
 
@@ -77,6 +87,7 @@ int pipe_read(struct pipe *p, void *buf, u32 len)
         p->tail = (p->tail + 1u) % PIPE_CAPACITY;
     }
     p->count -= n;
+    wait_queue_wake_all(&p->write_wq);
     return (int)n;
 }
 
@@ -95,7 +106,57 @@ int pipe_write(struct pipe *p, const void *buf, u32 len)
         p->head = (p->head + 1u) % PIPE_CAPACITY;
     }
     p->count += len;
+    wait_queue_wake_all(&p->read_wq);
     return (int)len;
+}
+
+static int pipe_read_ready(void *ctx)
+{
+    struct pipe *p = (struct pipe *)ctx;
+    return !p || !p->used || p->count || !p->writers;
+}
+
+struct pipe_write_wait {
+    struct pipe *p;
+    u32 len;
+};
+
+static int pipe_write_ready(void *ctx)
+{
+    struct pipe_write_wait *w = (struct pipe_write_wait *)ctx;
+    struct pipe *p = w->p;
+    return !p || !p->used || !p->readers ||
+           w->len <= PIPE_CAPACITY - p->count;
+}
+
+int pipe_read_block(struct pipe *p, void *buf, u32 len, u32 ticks)
+{
+    int rc;
+
+    if (!p || !p->used || !buf) return -1;
+    if (!len) return 0;
+    if (!ticks) return pipe_read(p, buf, len);
+    rc = task_block_on(&p->read_wq, pipe_read_ready, p, ticks);
+    if (rc < 0) return -1;
+    if (rc > 0) return -2;
+    return pipe_read(p, buf, len);
+}
+
+int pipe_write_block(struct pipe *p, const void *buf, u32 len, u32 ticks)
+{
+    struct pipe_write_wait wait;
+    int rc;
+
+    if (!p || !p->used || !buf) return -1;
+    if (!len) return 0;
+    if (!p->readers || len > PIPE_CAPACITY) return -1;
+    if (!ticks) return pipe_write(p, buf, len);
+    wait.p = p;
+    wait.len = len;
+    rc = task_block_on(&p->write_wq, pipe_write_ready, &wait, ticks);
+    if (rc < 0) return -1;
+    if (rc > 0) return -2;
+    return pipe_write(p, buf, len);
 }
 
 u32 pipe_live_count(void)

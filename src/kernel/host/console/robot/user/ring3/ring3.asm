@@ -92,7 +92,7 @@ user_program_start:
     ; 模式 0：只做一次 heap/guard 指针验收。
     cmp dword [0x401030], 0
     jne .yield
-    mov dword [0x401030], 1
+    inc dword [0x401030]
 
     push byte 8              ; syscall: brk(0x406000)
     pop eax
@@ -149,7 +149,7 @@ user_program_start:
 
     ; 第一轮：fork 前先写父侧魔数；fork 后父子共享同一数据物理页。
     mov dword [0x401038], 0x50415041   ; "PAPA"
-    mov dword [0x401008], 1
+    inc dword [0x401008]
     push byte 6              ; syscall: fork
     pop eax
     int 0x80
@@ -217,7 +217,7 @@ user_program_start:
     ; 最后 exit(10)；父进程 wait 到 10 后写 EXEC 验收字。
     cmp dword [0x401068], 0
     jne .pipe_round
-    mov dword [0x401068], 1
+    inc dword [0x401068]
     push byte 6              ; syscall: fork
     pop eax
     int 0x80
@@ -240,7 +240,7 @@ user_program_start:
 .pipe_round:
     cmp dword [0x40108C], 0
     jne .spawn_round
-    mov dword [0x40108C], 1
+    inc dword [0x40108C]
     push byte 14             ; syscall: pipe(&read_fd)
     pop eax
     mov ebx, 0x40106C
@@ -303,7 +303,7 @@ user_program_start:
 .spawn_round:
     cmp dword [0x401140], 0
     jne .thread_round
-    mov dword [0x401140], 1
+    inc dword [0x401140]
     push byte 18             ; syscall: spawn(1, argv, envp)
     pop eax
     push byte 1
@@ -334,7 +334,7 @@ user_program_start:
 .thread_round:
     cmp dword [0x401154], 0
     jne .yield
-    mov dword [0x401154], 1
+    inc dword [0x401154]
     xor eax, eax
     mov [0x401160], eax
     mov [0x401164], eax
@@ -533,7 +533,7 @@ user_program_start:
 .main_exit_round:
     cmp dword [0x4011C0], 0
     jne .yield
-    mov dword [0x4011C0], 1
+    inc dword [0x4011C0]
 
     push byte 6              ; syscall: fork
     pop eax
@@ -565,7 +565,7 @@ user_program_start:
 .thread_group_round:
     cmp dword [0x4011F4], 0
     jne .yield
-    mov dword [0x4011F4], 1
+    inc dword [0x4011F4]
 
     push byte 6              ; syscall: fork
     pop eax
@@ -599,7 +599,7 @@ user_program_start:
 .block_round:
     cmp dword [0x4011FC], 0
     jne .yield
-    mov dword [0x4011FC], 1
+    inc dword [0x4011FC]
 
     push byte 6              ; syscall: fork
     pop eax
@@ -751,7 +751,7 @@ user_program_start:
     jne .timer_bad
     mov dword [0x401250], 0x544D5231 ; "TMR1"
     mov dword [0x401260], 0x50524931 ; "PRI1"
-    jmp .yield
+    jmp .io_round
 
 .timer_bad:
     mov dword [0x401250], 0x424144 ; "BAD"
@@ -784,6 +784,35 @@ user_program_start:
     int 0x80
 .hang_timer_fast:
     jmp .hang_timer_fast
+
+; P11.3：spawn 独立 image 3 做阻塞 I/O 验收。镜像内部用 fork 子进程
+; sleep 后写/读 pipe，验证 read_block/write_block 的等待、唤醒与超时。
+; 父只检查 image 退出码，成功写 0x4012A0="IOB1"。
+.io_round:
+    cmp dword [0x4012A0], 0
+    jne .yield
+    push byte 18
+    pop eax
+    push byte 3
+    pop ebx
+    xor ecx, ecx
+    xor edx, edx
+    int 0x80
+    cmp eax, 0xFFFFFFFF
+    je .io_bad
+    mov ebx, eax
+    mov ecx, 0x4012A4
+    push byte 4
+    pop eax
+    int 0x80
+    cmp dword [0x4012A4], 0
+    jne .io_bad
+    mov dword [0x4012A0], 0x31424F49 ; "IOB1"
+    jmp .yield
+
+.io_bad:
+    mov dword [0x4012A0], 0x424144 ; "BAD"
+    jmp .yield
 
 ; P7.5 子进程：主线程 clone worker 后立刻 thread_join，worker 尚 LIVE。
 .child_block_exit:
@@ -961,14 +990,15 @@ user_program_start:
 
 ; P7.3 子进程：主线程 clone worker 后先 thread_exit，worker 继续执行。
 .child_main_exit:
-    mov dword [0x401190], 0
-    mov dword [0x401194], 0
-    mov dword [0x401198], 0
-    mov dword [0x40119C], 0
-    mov dword [0x4011A0], 0
-    mov dword [0x4011A4], 0
-    mov dword [0x4011A8], 0
-    mov dword [0x4011AC], 0
+    xor eax, eax
+    mov [0x401190], eax
+    mov [0x401194], eax
+    mov [0x401198], eax
+    mov [0x40119C], eax
+    mov [0x4011A0], eax
+    mov [0x4011A4], eax
+    mov [0x4011A8], eax
+    mov [0x4011AC], eax
 
     push byte 8              ; syscall: brk(0x406000)，worker 复用 heap 第一页
     pop eax
@@ -1023,7 +1053,7 @@ user_program_start:
 .console_mode:
     cmp dword [0x4010F0], 0
     jne .yield
-    mov dword [0x4010F0], 1
+    inc dword [0x4010F0]
 
     push byte 6              ; syscall: fork
     pop eax
@@ -1156,7 +1186,7 @@ user_program_start:
 .pool_mode:
     cmp dword [0x4010C8], 0
     jne .yield              ; 父子都只执行一次；孩子 fork 返回后直接进 hold
-    mov dword [0x4010C8], 1
+    inc dword [0x4010C8]
     mov dword [0x4010C0], 0
 
 .pool_fork:
@@ -1211,11 +1241,12 @@ user_program_start:
 .stress_mode:
     cmp dword [0x4010C8], 0
     jne .stress_hold
-    mov dword [0x4010C8], 1
-    mov dword [0x4010C0], 0
-    mov dword [0x4010C4], 0
-    mov dword [0x401100], 0
-    mov dword [0x401104], 0
+    inc dword [0x4010C8]
+    xor eax, eax
+    mov [0x4010C0], eax
+    mov [0x4010C4], eax
+    mov [0x401100], eax
+    mov [0x401104], eax
 .stress_loop:
     cmp dword [0x4010C0], 100
     jae .stress_done

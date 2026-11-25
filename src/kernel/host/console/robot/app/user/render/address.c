@@ -53,7 +53,7 @@ void ur_render_address(void)
     u32 himg1 = 0, harg1 = 0, henp1 = 0;
     int r0 = -1, r1 = -1;
     u32 wait_magic, cow_ok, sig_ok, exec_ok, pipe_ok, spawn_ok, thread_ok, det_ok;
-    u32 block_ok, timer_ok, priority_ok, wait_blocks, wait_wakes, join_blocks, join_wakes;
+    u32 block_ok, timer_ok, priority_ok, io_ok, wait_blocks, wait_wakes, join_blocks, join_wakes;
     u32 brk, poke, peek, guard, bad;
 
     if (!process_snapshot(slot, &p)) {
@@ -254,6 +254,7 @@ void ur_render_address(void)
     block_ok = user_demo_block_ok(USER_DEMO_FORK_LANE);
     timer_ok = user_demo_timer_ok(USER_DEMO_FORK_LANE);
     priority_ok = user_demo_priority_ok(USER_DEMO_FORK_LANE);
+    io_ok = user_demo_io_ok(USER_DEMO_FORK_LANE);
     brk = user_demo_brk(0);
     poke = user_demo_heap_poke(0);
     peek = user_demo_heap_peek(0);
@@ -310,4 +311,8 @@ void ur_render_address(void)
     vga_text(72, 22,
              priority_ok == 0x50524931u ? "OK" : "..",
              priority_ok == 0x50524931u ? C_GREEN : C_YELLOW);
+    vga_text(75, 22, "io", C_GRAY);
+    vga_text(78, 22,
+             io_ok == 0x31424F49u ? "OK" : "..",
+             io_ok == 0x31424F49u ? C_GREEN : C_YELLOW);
 }

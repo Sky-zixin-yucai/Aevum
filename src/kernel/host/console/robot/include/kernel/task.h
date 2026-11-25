@@ -142,6 +142,25 @@ const char *task_wake(int pid);
  * 这样 wait/join 的“重查”和“进入 BLOCKED”之间不会丢唤醒。
  */
 typedef int (*task_block_check_t)(void *ctx);
+
+/*
+ * P11.3：对象等待队列的逻辑成员集。队列本身只保存唤醒代次；真正的
+ * BLOCKED 成员由 task_struct.waitq 指向这里，调度器仍是 16 槽扫描。
+ * 采用条件重查 + 关中断入队，wake 只负责置 READY，不直接切任务。
+ */
+struct wait_queue {
+    u8 wake_seq;
+};
+void wait_queue_init(struct wait_queue *q);
+void wait_queue_wake_all(struct wait_queue *q);
+/*
+ * P11.3：加入对象等待队列并按 tick 超时阻塞。ready 为 NULL 时只看超时。
+ * 返回 0 条件满足、1 超时、-1 状态/调度失败；ticks=0 只查询一次。
+ */
+int task_block_on(struct wait_queue *q, task_block_check_t ready,
+                  void *ctx, u32 ticks);
+void task_io_stats(u32 *blocks, u32 *wakes, u32 *timeouts);
+
 int task_block_until(task_block_check_t ready, void *ctx);
 /*
  * P11.1：带 PIT tick 超时的阻塞。返回 0 表示条件已满足，1 表示超时，

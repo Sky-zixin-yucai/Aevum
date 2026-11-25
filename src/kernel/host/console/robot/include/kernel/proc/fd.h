@@ -56,6 +56,11 @@ int proc_fd_read(struct proc_fd_table *table, struct address_space *space,
                  u32 fd, u32 user_buf, u32 len);
 int proc_fd_write(struct proc_fd_table *table, struct address_space *space,
                   u32 fd, u32 user_buf, u32 len);
+/* P11.3：带 PIT tick 上限的阻塞读写；ticks=0 等价原非阻塞语义。 */
+int proc_fd_read_block(struct proc_fd_table *table, struct address_space *space,
+                       u32 fd, u32 user_buf, u32 len, u32 ticks);
+int proc_fd_write_block(struct proc_fd_table *table, struct address_space *space,
+                        u32 fd, u32 user_buf, u32 len, u32 ticks);
 int proc_fd_close(struct proc_fd_table *table, u32 fd);
 
 #endif

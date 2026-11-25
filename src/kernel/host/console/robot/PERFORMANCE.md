@@ -132,3 +132,14 @@ P11.2 clean 构建 `kernel.bin=79,016`，`__bss_start=0x934C0`、`__bss_end=0x97
 - 继承路径只多一次 `current_task->priority` 读取：fork 与 clone 原本就要走 `task_create_common()`，没有额外的栈/AS/PCB 分配成本。
 - ring3 code 从 P11.1 的 4,084B 增至 4,091B，只增加 7B：P11.2 断言约 +185B，通过把 48 条小立即数加载改为 `push byte/pop`（省 96B）和多组零初始化改为 `xor eax,eax` + `mov [addr],eax`（省约 80B）抵消。4KB code VMA 余量仅 5B，下一次改 ring3 必须先算体积。
 - QEMU 证据：V 页 ADDRESS PID 7 显示 `TASK READY P1`、`tmr OK pri OK`；`pri OK` 同时要求默认 1、set 3、非法 4 返回 -1、内核任务拒绝、fork 子继承 3、clone 线程继承 2 全部成立。P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1 OK`；串口无 fault/panic。该页是功能/生命周期验收，不是 setpriority 延迟测量。
+
+## 13. P11.3 等待队列与阻塞 I/O 体积
+
+P11.3 clean 构建 `kernel.bin=81,768`，`__bss_start=0x93F80`、`__bss_end=0x97FDC`，`AEVUM_KERNEL_END=0x98000`：
+
+- 镜像距 98,304B 上限余量 16,536B；BSS 距 `0x98000` 余量仅 36B。`sizeof(struct task_struct)` 从 108B 增至 112B（新增 `waitq` 指针），16 槽 `tasks` 从 1,728B 增至 1,792B，净增 64B；`struct pipe` 每个对象新增两个 1B 等待队列，4 个对象共 8B。BSS 从 `0x3FFC` 增至 `0x405C`（+96B）。
+- `.text` 从 P11.2 的 `0x11568` 增至 `0x12029`（+2,753B），`.rodata` 从 `0x1E3C` 增至 `0x1E40`（+4B），`.data=0xE8` 不变；总镜像从 79,016B 增至 81,768B（+2,752B）。新增代码主要是 `task_block_on`/广播唤醒、pipe/console 阻塞接口、fd 阻塞包装、两个 syscall case、image3 与 ring3 lane。
+- `wait_queue_wake_all()` 一次广播是 O(TASK_MAX=16) 线性扫描，没有 per-object 等待链表；`task_block_on()` 每次唤醒也重查条件，最坏是一次阻塞对应一次 16 槽唤醒 + 一次条件检查。当前单核 16 槽规模可接受，未做 TSC 级测量。
+- `ticks` 是 100Hz PIT 粒度；QEMU TCG 下 guest tick 推进远慢于 wall clock，image3 的 2 tick 超时、20/500 tick 读等待与 100/500 tick 写等待都是功能验收，不是延迟基准。最终 C 页 `IO b 3 w 2 tmo 1` 表示 image3 三次对象阻塞中两次被条件唤醒、一次按 tick 超时返回 -2；`SLEEP b 4 w 4 tmo 6` 是 P11.1 总口径，image3 的超时也计入其中。
+- image3 独立镜像 `exec_io.asm` 最终 644B，固定 4KB code VMA，不占 ring3 的 code_size；ring3 本体为 4,061B，比 P11.2 的 4,091B 少 30B，距 4KB 上限余量 35B。原因是新增 lane 的同时复用了零初始化、短立即数和 `xor` 归零压缩。
+- QEMU 证据：V 页 ADDRESS PID 7 `io OK`、`REAP1 6 img3 a0 e0`、`CHILDREN live 0 zomb 0`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`；主页面 `kt 4 s5 a1`。该页证明阻塞/唤醒/超时与 fork 继承路径成立，不是吞吐基准。

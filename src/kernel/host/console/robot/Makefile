@@ -61,7 +61,7 @@ SRCS = \
 	app/pool/demo/demo.c \
 	app/pool/render/render.c
 
-OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) build/user/ring3.o build/user/exec.o build/user/exec_pipe.o
+OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) build/user/ring3.o build/user/exec.o build/user/exec_pipe.o build/user/exec_io.o
 IMG     = os.img
 
 GENERATED = boot.bin $(IMG) disk.img kernel.bin kernel.elf $(BUILD)
@@ -92,6 +92,10 @@ $(BUILD)/user/exec.o: user/exec/exec.asm
 $(BUILD)/user/exec_pipe.o: user/exec-pipe/exec_pipe.asm
 	@mkdir -p $(BUILD)/user
 	$(AS) $(ASFLAGS_ELF32) user/exec-pipe/exec_pipe.asm -o $@
+
+$(BUILD)/user/exec_io.o: user/exec-io/exec_io.asm
+	@mkdir -p $(BUILD)/user
+	$(AS) $(ASFLAGS_ELF32) user/exec-io/exec_io.asm -o $@
 
 kernel.elf: $(OBJS) $(BUILD)/loader.o $(LDSCRIPT)
 	$(LD) -m elf_i386 --gc-sections -T $(LDSCRIPT) $(BUILD)/loader.o $(OBJS) -o kernel.elf
