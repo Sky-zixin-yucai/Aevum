@@ -108,3 +108,15 @@ P10 clean 构建 `kernel.bin=77,544`，`__bss_start=0x92F00`、`__bss_end=0x96EB
 - `struct process` 删除每进程 `reaped[2]`（12×32B=384B），新增全局 `exit_ring[4]`（4×48B=192B），BSS 净减 192B；但 `.text/.rodata` 增长 384B，所以 `__bss_start` 前移 384B、`__bss_end` 后移 192B。
 - 回收路径多一次 `proc_exit_push()` 的 48B 摘要复制和一次 `proc_zero()`；没有新增锁、没有动态分配。退出 ring 是固定槽，不随进程数增长。
 - QEMU 实测 slot 4 从 `PID 8 / ZOMB` 变 `FREE`，`POOL proc 3/12 live 3 zomb 0 dead 0`；`exit 8 st 9` 来自 ring。该页只证明清零和摘要保留，不测 `process_reap()` 的单次周期成本。
+
+## 11. P11.1 定时阻塞体积与 tick 开销
+
+P11.1 clean 构建 `kernel.bin=78,536`，`__bss_start=0x932E0`、`__bss_end=0x972DC`，`AEVUM_KERNEL_END=0x98000`：
+
+- 镜像距 98,304B 上限余量 29,768B；BSS 距 `0x98000` 余量 3,364B。`AEVUM_KERNEL_END` 从 `0x97000` 修正为 boot 实际读取的 `0x98000`；此前 324B 余量是按 `0x97000` 算的保守口径。
+- `struct task_struct` 从 104B 增至 108B（新增 `u32 wake_tick`），16 槽共增加 64B；`tasks=0x6C0`。全局新增 3 个 u32 计数，BSS 总量 `0x3FFC`，比 P10 只多 64B。
+- `.text` 从 P10 的 `0x10FC9` 增至 `0x113A0`（+983B），`.rodata=0x1E38`（+36B），`.data=0xE8` 不变。新增代码主要是 `task_block_until_timeout()`、`task_wake_expired()`、`process_wait_common()` 的 timed 分支和 D lane timer 轮。
+- PIT 路径每 tick 多一次 16 槽线性扫描；只有 `TASK_BLOCKED && wake_tick` 的任务才做 `(int)(now-wake_tick)>=0`。当前最多 16 个任务，未做 TSC 级测量；`task_pick_next()` 本身也是 16 槽线性扫描，二者同量级。
+- `sleep/wait_timeout` 的 deadline 是绝对 tick，不随虚假唤醒重置；同一 tick 内条件满足优先返回 status，不误报 timeout。超时只负责把任务改 READY，不释放子进程、不改 PCB。
+- QEMU 计时证据：D lane `sleep(20)` 慢子、`sleep(1)` 快子，父 `wait_timeout(5)` 超时一次，C 页 `SLEEP b 2 w 2 tmo 3`。`tmo 3` = 2 次 sleep 到期 + 1 次 wait_timeout 超时。
+- 这不是实时定时器：100Hz PIT 下最小粒度 10ms，`ticks` 不是纳秒级 deadline；没有高精度时钟、没有 EINTR、没有多等待者队列。ring3 仍受 4KB code VMA 限制，P11.1 把 129 条 `mov eax, imm` 压成 `push byte imm; pop eax`，code_size 从 4,359B 降到 4,084B，避免 `address_space_create_user()` 拒绝镜像。

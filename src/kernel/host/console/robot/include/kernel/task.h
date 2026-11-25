@@ -142,6 +142,15 @@ const char *task_wake(int pid);
  */
 typedef int (*task_block_check_t)(void *ctx);
 int task_block_until(task_block_check_t ready, void *ctx);
+/*
+ * P11.1：带 PIT tick 超时的阻塞。返回 0 表示条件已满足，1 表示超时，
+ * -1 表示状态/调度失败。ready 为 NULL 时等价于纯 sleep。
+ * ticks=0 只做一次条件查询，不进入 BLOCKED。
+ */
+int task_block_until_timeout(task_block_check_t ready, void *ctx, u32 ticks);
+/* P11.1：按 100 Hz PIT tick 睡眠；0 立即返回，成功返回 0。 */
+int task_sleep_ticks(u32 ticks);
+void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts);
 /* 唤醒同组所有 BLOCKED 任务；用于 wait/join 的退出通知。 */
 void task_wake_process(struct process *proc);
 

@@ -22,7 +22,7 @@
 >
 > `interface/desktop/main.js` 优先启动本目录的 `disk.img`；`kernel.bin` 上限
 > 98,304 字节（192 个扇区；`boot.asm` 分两段 LBA 读：128 扇区到 `0x80000`，64 扇区到 `0x90000`）。
-> 当前构建 68,264 字节，BSS 结束于 `0x9493C`。串口快照放在 `0x30000`，
+> 当前构建 78,536 字节，BSS 结束于 `0x972DC`（`AEVUM_KERNEL_END=0x98000`）。串口快照放在 `0x30000`，
 > 不占内核镜像窗口。模块归属、结构化错误和验收流程见 `CONSTRUCTION.md`，进程上下文完整化路线见 `PROCESS.md`。
 
 一个用 NASM + C 写的 32 位裸机内核：从软盘镜像启动，进入保护模式、建立自己的 GDT 和分页，
@@ -32,7 +32,7 @@
 
 ## 一、功能简介
 
-- **启动流程**：BIOS 把引导扇区加载到 `0x7C00` → `boot.asm` 用 `INT 13h` 的 LBA 扩展分两段读盘（128 扇区到 `0x80000`，2 扇区到 `0x90000`）
+- **启动流程**：BIOS 把引导扇区加载到 `0x7C00` → `boot.asm` 用 `INT 13h` 的 LBA 扩展分两段读盘（128 扇区到 `0x80000`，64 扇区到 `0x90000`）
   → 装载 GDT 进入保护模式 → 建立 0~4MB 恒等分页 → 跳到 `0x80000`。
 - **内核入口**：`loader.asm` 加载内核自己的 6 项 GDT、清 BSS、把主栈设为 `0xC000`（启动镜像里不再需要尾部搬运），再调用 C 的 `kernel_main`；`tss_init()` 写 TSS 描述符并 `ltr 0x28`。
 - **多进程**：`kernel_main` 通过 `task_create` 为 `control` / `render` / `idle` 构造独立内核栈；PID 由 `task.c` 的位图自动分配，应用不再硬编码，再用 `task_start` 切入第一个任务。
@@ -50,6 +50,7 @@
 - **V 页 4 页观测面（P5.2）**：按 `V`（扫描码 `0x2F`）进入后，`V` 页由 `app/user/page/page.c` 唯一持有页面模式、选中 PCB 槽和 10 行滑动窗口；`app/arm/app/app.c` 在 `user_live` 时把扫描码交给 `user_page_key()`，不再散落翻页分支。`Tab` 循环换页，数字 `1..4` 直达 `SLOTS/TREE/ADDRESS/FD+SIG`，`Up/Down` 移动选中槽，`PgUp/PgDn` 整窗滚动，`Home/End` 跳首尾；`keyboard_poll()` 的 `0xE0` 前缀由 page 模块吞掉，方向键要下一帧才生效。渲染拆成 `render.c`（公共标题/页签/slot 状态/底栏/分派）、`draw.c`（统一的十进制/十六进制与状态名颜色）、`slots.c`、`tree.c`、`address.c`、`fd.c`，每个页面只负责自己的行布局，不再复制格式化代码。
 - **只读观测 API（P5.2）**：`include/kernel/proc/fd.h` 增加 `struct proc_fd_info { int used; u32 kind; }` 与 `proc_fd_snapshot()`，逐 fd 返回 kind，不暴露 pipe 指针；`include/kernel/proc.h` 增加 `process_slot_space()`、`process_slot_fd_info()`，由 PCB 槽直接取 AS/fd，FREE 槽返回空；`process_slot_used()` 只数 LIVE/ZOMBIE，P10 后回收槽直接 FREE，`dead` 固定为 0。
 - **100 轮 fork/wait 压测（P5.3）**：按 `S`（扫描码 `0x1F`）复用 P5.1 池页外壳进入 `AEVUM / P5.3 FORK/WAIT STRESS`。父进程 `stressA` 连续 100 轮 `fork`，子进程执行 `exit(7)`，父进程每轮 `wait` 并校验返回 PID 等于本轮子 PID、status 等于 7；首轮子 PID 记入 `0x401100`，后续 99 轮必须复用同一 PID。全部通过后父进程写 `0x4010C4` 的 `POOL` 魔数并保持存活供观察，按 `S` 停止时 `exit(18)`。页面复用 `0x4010C0` 作为轮次、`0x401100/0x401104` 作为首/末 PID，不新增独立页，也不复制池统计：`round 100/100 first 5 -> 5 live 1 state STRESS OK`，第二行显示 `PHYS 6/255 proc 1/12 AS 1/12 KSTK 1/12`。两轮独立 `S` 实测均为 `PID 5`、`PHYS 6/255`、`proc/AS/KSTK 1/12`，ASID 从 1 换到 102 后继续复用；证明 100 次子进程回收后 PID、地址空间槽、内核栈槽与物理页都回到单父进程基线。
+- **P11.1 定时阻塞（sleep / wait_timeout）**：`task_struct` 新增 `wake_tick`；`task_block_until_timeout(ready,ctx,ticks)` 进入时固定绝对 tick deadline，PIT 每 tick 扫描 BLOCKED 任务，到期改 READY。用户 ABI：`eax=24 sleep(ebx=ticks)` 返回 0/-1；`eax=25 wait_timeout(ebx=pid,ecx=user_status,edx=ticks)` 返回子 PID/0 超时/-1，`ticks=0` 只做一次非阻塞查询。D lane 慢子 `sleep(20)` 后 exit(7)，父 `wait_timeout(5)` 必须超时返回 0、再 `wait_timeout(50)` 拿到 PID/7；快子 `sleep(1)` 后 exit(9)，父 `wait_timeout(20)` 拿到 PID/9，全部通过写 `0x401250="TMR1"`，V 页 ADDRESS 显示 `tmr OK`。C 页底部显示 `SLEEP b <blocks> w <wakes> tmo <timeouts>`；实测 `b 2 w 2 tmo 3`。PIT 100Hz 下 1 tick=10ms，超时不是高精度定时器。
 - **构建裁剪（P5.3）**：所有 C 目标加 `-ffunction-sections -fdata-sections`，链接加 `--gc-sections`，只保留从 `start` 可达的函数/数据。P5.2 单体链接里有约 1.3KB 不可达代码；P5.3 新增代码后仍把 clean `kernel.bin` 控制在 64,808 字节。P6.0 收口后 clean `kernel.bin=64,488`，余量 1,048 字节，BSS 结束于 `0x9387C`。手动关节模式与 19 字段状态帧加入后 clean `kernel.bin=66,248`；2–8 关节通用身体描述、动态状态帧和通用 VGA 加入后 clean `kernel.bin=68,264`，上限提高到 98,304。
 - **P6.0 细节收口**：`process_wait()` 的 `pid>0` 分支先校验当前进程的直接子进程，非子进程或不存在立即返回 -1；`pid<=0` 等任意直接子进程，`waitpid(0)` 不再误等 PID 0。父进程退出/异常终止时，`proc_orphan_children()` 同时重挂 LIVE 和 ZOMBIE 直接子进程，并记录 `from/to/children[]` 最近事件；V 页 TREE 第 20/21 行显示 `ORPHAN` 与 `kids`，G 页 reparent 面板显示 4 个子进程，超过 4 个时显示 `+N more`。速度基线见 `PERFORMANCE.md`。
 - **进程地址空间 / COW fork / VMA / 物理页池**：按 `V`（扫描码 `0x2F`）启动五个用户进程：`userA` / `userB` 做独立地址空间计数、`brk` 扩堆与 heap `peek/poke`，`userC` 做用户态 `#PF` 样本，`userD` 做四轮 fork/wait，`userF` 直接写 guard。每个进程有自己的页目录和 CR3，PD/PT/code/data/stack/control 全部从 `0x100000..0x1FEFFF` 的 255 页位图池分配，每页带引用计数；用户 VA 固定为 code `0x400000`、data `0x401000`、guard `0x402000`（VMA 存在但无 PTE）、stack `0x403000`、control `0x404000`、heap `0x405000..0x410000`。全屏页显示 `PID PPID ST EXIT CR3 AS PGS/C BRK COMM`、6 个 VMA 的地址/权限、`brk/peek/poke/guard` 结果、COW 统计、`PHYS PAGES used/total`、`pipe obj`，另有 `int 0x80`、fork/wait、#PF、#DE 与 SIGCHLD 面板。D 的四次 fork 都返回 8；第一轮子进程写 `CHLD` 后 `exit(7)`，父 wait 得到 status 7 并显示 `WAIT OK 7 / COW OK`；第二轮子进程先 `sigaction(SIGFPE, handler, 0)`，再 `1/0` 触发 `#DE`，signal frame 进入 handler、`sigreturn` 返回除零后的指令，写 `HAND` 后 `in al,0x60` 触发 `#GP -> SIGSEGV(11)`，父 wait 得到 status `0x8000000B` 并显示 `HAND OK`；第三轮子进程 `exec(1, argv, envp)`，参数为 `alpha/beta/NULL` 与 `MODE=p42/LEVEL=2/NULL`；新镜像从新栈校验四串后写 `ARGV/ENVP` 并 `exit(10)`，父 wait 得到 10 并显示 `P4 exec 8 wait 8 st 0000000A img 1 EXEC OK arg 2 env 2`。第四轮父 `pipe()` 得到 fd 2 读 / fd 3 写，fork 后父关写端、子关读端并 `exec(2)`；镜像在 exec 后仍通过 fd 3 写 `PIPE` 并 `exit(12)`，父 wait 得到 12 后从 fd 2 读回 4 字节，校验 `0x45505049`，关闭读端，显示 `P4.3 pipe 8 wait 8 st 0000000C fd 2>3 r4 PIPE OK`。

@@ -1206,7 +1206,7 @@ static int proc_is_direct_child(const struct process *self, int pid)
     return 0;
 }
 
-int process_wait(int pid, u32 user_status)
+static int process_wait_common(int pid, u32 user_status, u32 ticks, int timed)
 {
     struct process *self;
     struct proc_wait_ctx block_ctx;
@@ -1243,15 +1243,32 @@ int process_wait(int pid, u32 user_status)
             }
         }
 
-        /* 指定 PID 已经不存在：不要永久等一个永远不会退出的子进程。 */
+        /* 指定 PID 已经不存在或所有子进程都没了：不要永久等。 */
         if (pid > 0 && !proc_is_direct_child(self, pid)) return -1;
-        block_rc = task_block_until(proc_wait_ready, &block_ctx);
-        if (block_rc < 0) return -1;
-        if (block_rc > 0) {
-            wait_block_total++;
-            wait_wake_total++;
+        if (!proc_has_children(self)) return -1;
+        if (timed) {
+            block_rc = task_block_until_timeout(proc_wait_ready, &block_ctx, ticks);
+            if (block_rc < 0) return -1;
+            if (block_rc > 0) return 0;      /* P11.1：timeout */
+        } else {
+            block_rc = task_block_until(proc_wait_ready, &block_ctx);
+            if (block_rc < 0) return -1;
+            if (block_rc > 0) {
+                wait_block_total++;
+                wait_wake_total++;
+            }
         }
     }
+}
+
+int process_wait(int pid, u32 user_status)
+{
+    return process_wait_common(pid, user_status, 0, 0);
+}
+
+int process_wait_timeout(int pid, u32 user_status, u32 ticks)
+{
+    return process_wait_common(pid, user_status, ticks, 1);
 }
 
 int process_getpid_current(void)

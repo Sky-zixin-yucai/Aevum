@@ -195,6 +195,10 @@ u32 process_sig_handled_current(void);
  * pid<=0 等任意直接子进程。 */
 int process_wait(int pid, u32 user_status);
 
+/* P11.1：带 PIT tick 超时的 wait；返回子 PID，超时返回 0，错误返回 -1。
+ * ticks=0 只做一次非阻塞查询，语义接近 WNOHANG。 */
+int process_wait_timeout(int pid, u32 user_status, u32 ticks);
+
 /* 最近一次 orphan/reparent 事件；没有发生过返回 0。 */
 int process_last_orphan(struct proc_orphan_event *out);
 

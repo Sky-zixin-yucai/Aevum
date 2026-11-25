@@ -321,6 +321,7 @@ void arm_render_cpu_frame(void)
     struct task_info info;
     int slot, row = 5, i, p;
     u32 total = task_cpu_total();
+    u32 sleep_blocks, sleep_wakes, timeouts;
 
     vga_clear(0x00);
     vga_text(16, 0, "AEVUM / CPU TIME ACCOUNTING", 0x1F);
@@ -393,6 +394,23 @@ void arm_render_cpu_frame(void)
     vga_text(64, 18, buf, C_WHITE);
 
     vga_text(2, 20, "C = RETURN TO ARM", 0x1E);
+    task_timer_stats(&sleep_blocks, &sleep_wakes, &timeouts);
+    vga_text(22, 20, "SLEEP", C_GRAY);
+    vga_text(28, 20, "b", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, sleep_blocks);
+    buf[p] = 0;
+    vga_text(30, 20, buf, C_WHITE);
+    vga_text(34, 20, "w", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, sleep_wakes);
+    buf[p] = 0;
+    vga_text(36, 20, buf, C_WHITE);
+    vga_text(40, 20, "tmo", C_GRAY);
+    p = 0;
+    p += fmt_dec(buf, timeouts);
+    buf[p] = 0;
+    vga_text(44, 20, buf, timeouts ? C_GREEN : C_GRAY);
     vga_text(2, 22, "priority 0..3 -> weight 1..4; smallest vruntime runs next", 0x18);
     vga_text(2, 23, "CPU% = this task's PIT ticks / total PIT ticks", 0x18);
 }

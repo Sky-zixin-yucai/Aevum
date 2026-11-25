@@ -157,6 +157,13 @@ u32 syscall_dispatch(struct irq_frame *frame)
                              ? 0u
                              : (u32)-1;
             break;
+        case 24:
+            frame->eax = (u32)task_sleep_ticks(frame->ebx);
+            break;
+        case 25:
+            frame->eax = (u32)process_wait_timeout((int)frame->ebx,
+                                                   frame->ecx, frame->edx);
+            break;
         default:
             frame->eax = (u32)-1;
             break;

@@ -37,6 +37,7 @@ struct task_struct {
     int  detached;  /* 1：线程退出后由调度器自动回收，不等待 join */
     int  kthread;   /* 1：P8 动态内核线程，ZOMBIE 由 join 或调度器兜底回收 */
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
+    u32  wake_tick;         /* P11.1：定时阻塞的到期 PIT tick；0 表示无限等待 */
     u32  zombie_ticks;     /* 进入 ZOMBIE 时的 PIT tick，供未 join kthread 计龄 */
     u32  kernel_entry;     /* kthread 入口函数指针 */
     u32  kernel_arg;       /* kthread 入口参数 */
@@ -71,6 +72,10 @@ static u32 switch_total;
 static u32 trace_total;
 static u32 pid_map;
 static u32 preempt_total;
+/* P11.1：只统计显式 sleep 和所有定时阻塞到期唤醒。 */
+static u32 sleep_block_total;
+static u32 sleep_wake_total;
+static u32 timeout_wake_total;
 #define WEIGHT_QUANTUM 64u
 
 /* FXSAVE 区域必须 16 字节对齐；模板只用于新任务的初始 FPU/SSE 状态。 */
@@ -126,6 +131,7 @@ static void task_zero(struct task_struct *task)
     task->detached = 0;
     task->kthread = 0;
     task->kthread_wait_tid = 0;
+    task->wake_tick = 0;
     task->zombie_ticks = 0;
     task->kernel_entry = 0;
     task->kernel_arg = 0;
@@ -522,6 +528,21 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
     return best;
 }
 
+/* P11.1：每个 PIT tick 扫描一次定时阻塞；tick 是 32 位，比较用有符号差值防回绕。 */
+static void task_wake_expired(u32 now)
+{
+    int i;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task_struct *t = &tasks[i];
+        if (t->state != TASK_BLOCKED || !t->wake_tick) continue;
+        if ((int)(now - t->wake_tick) < 0) continue;
+        t->wake_tick = 0;
+        t->state = TASK_READY;
+        timeout_wake_total++;
+    }
+}
+
 static void task_reap(void)
 {
     int i;
@@ -556,6 +577,7 @@ void task_wake_kthread_waiters(int tid)
     for (i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_BLOCKED &&
             tasks[i].kthread_wait_tid == tid) {
+            tasks[i].wake_tick = 0;
             tasks[i].state = TASK_READY;
         }
     }
@@ -812,6 +834,7 @@ u32 task_schedule_irq(struct irq_frame *frame)
         interrupt_eoi();
         reason = SCHED_TICK;
         tick_total++;
+        task_wake_expired(tick_total);
         if (prev->state == TASK_RUNNING) {
             prev->cpu_ticks++;
             prev->vruntime += WEIGHT_QUANTUM / task_weight(prev);
@@ -920,6 +943,7 @@ const char *task_set_current_state(int state)
 
     if (!prev || prev->state != TASK_RUNNING) return "state";
     if (state == TASK_RUNNING) return 0;
+    prev->wake_tick = 0;
 
     if (state == TASK_READY) {
         sched_reason = SCHED_YIELD;
@@ -956,6 +980,7 @@ const char *task_wake(int pid)
     int i;
     for (i = 0; i < TASK_MAX; i++) {
         if (tasks[i].pid == pid && tasks[i].state == TASK_BLOCKED) {
+            tasks[i].wake_tick = 0;
             tasks[i].state = TASK_READY;
             return 0;
         }
@@ -969,6 +994,7 @@ int task_block_until(task_block_check_t ready, void *ctx)
 
     if (!current_task || current_task->state != TASK_RUNNING) return -1;
     __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    current_task->wake_tick = 0;
     if (ready && ready(ctx)) {
         __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
         return 0;
@@ -987,13 +1013,77 @@ int task_block_until(task_block_check_t ready, void *ctx)
     return sched_failed ? -1 : 1;
 }
 
+/*
+ * P11.1：定时阻塞。deadline 在进入时固定，不因虚假唤醒重置；条件优先于超时，
+ * 同一 tick 内子进程退出时 wait_timeout 必须返回 status，而不是误报 timeout。
+ */
+int task_block_until_timeout(task_block_check_t ready, void *ctx, u32 ticks)
+{
+    u32 flags;
+    u32 deadline;
+
+    if (!current_task || current_task->state != TASK_RUNNING) return -1;
+    if (ticks > 0x7FFFFFFFu) ticks = 0x7FFFFFFFu;
+    if (!ticks) return (ready && ready(ctx)) ? 0 : 1;
+    deadline = tick_total + ticks;
+    if (!deadline) deadline = 1;
+
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    for (;;) {
+        if (ready && ready(ctx)) {
+            current_task->wake_tick = 0;
+            __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+            return 0;
+        }
+        if ((int)(tick_total - deadline) >= 0) {
+            current_task->wake_tick = 0;
+            __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+            return 1;
+        }
+        current_task->state = TASK_BLOCKED;
+        current_task->wake_tick = deadline;
+        sched_reason = SCHED_BLOCK;
+        sched_failed = 0;
+        __asm__ __volatile__("int $0x40");
+        if (sched_failed) {
+            current_task->wake_tick = 0;
+            __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+            return -1;
+        }
+    }
+}
+
+int task_sleep_ticks(u32 ticks)
+{
+    int rc;
+
+    if (ticks > 0x7FFFFFFFu) ticks = 0x7FFFFFFFu;
+    if (!ticks) return 0;
+    sleep_block_total++;
+    rc = task_block_until_timeout(0, 0, ticks);
+    if (rc == 1) {
+        sleep_wake_total++;
+        return 0;
+    }
+    return rc < 0 ? -1 : 0;
+}
+
+void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts)
+{
+    if (sleep_blocks) *sleep_blocks = sleep_block_total;
+    if (sleep_wakes) *sleep_wakes = sleep_wake_total;
+    if (timeouts) *timeouts = timeout_wake_total;
+}
+
 void task_wake_process(struct process *proc)
 {
     int i;
     if (!proc) return;
     for (i = 0; i < TASK_MAX; i++) {
-        if (tasks[i].proc == proc && tasks[i].state == TASK_BLOCKED)
+        if (tasks[i].proc == proc && tasks[i].state == TASK_BLOCKED) {
+            tasks[i].wake_tick = 0;
             tasks[i].state = TASK_READY;
+        }
     }
 }
 

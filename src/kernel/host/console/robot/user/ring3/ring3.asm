@@ -20,6 +20,9 @@
 ; 0x401120 console 输入缓冲，0x401130 console 输出构造缓冲；
 ; 0x4010C0 pool 子进程数量，0x4010C4 "POOL" 魔数，0x4010C8 pool 只执行一次标记，
 ; 0x4010D0 P5.2 fork/wait 前的 yield 计数，让子进程 ZOMBIE 可被 V 页观察；
+; P11.1 timer：0x401234 慢子 PID、0x401238 慢子 status、0x40123C 第一次超时返回、
+; 0x401240 第二次 wait_timeout 返回、0x401244 快子 PID、0x401248 快子 status、
+; 0x40124C 快子 wait_timeout 返回、0x401250 "TMR1"/"BAD" 验收字；
 ; 0x401140 spawn 只执行一次，0x401144 spawn 子 PID，0x401148 spawn wait status，
 ; 0x40114C spawn wait 返回值，0x401150 spawn 验收字；
 ; 0x401154 thread 只执行一次，0x401158 thread TID，0x40115C thread join status，
@@ -55,6 +58,10 @@
 ; 模式 6：P5.3 压测；父进程连续 100 轮 fork，子进程 exit(7)，父 wait 校验
 ;         返回 PID 与 status，首末 PID 应相同（PID 复用），轮次/首末 PID 写 0x4010C0/0x401100/0x401104；
 ;         完成后保持存活供页面读取，停止时父 exit(18)。
+; 模式 2 末尾追加 P11.1：sleep + wait_timeout。慢子进程 sleep(20) 后 exit(7)，
+;         父先 wait_timeout(5) 必须超时返回 0，再 wait_timeout(50) 拿到 PID/7；
+;         快子进程 sleep(1) 后 exit(9)，父 wait_timeout(20) 直接拿到 PID/9。
+;         0x401250 写 "TMR1" 表示全部通过。
 [bits 32]
 section .text
 global user_program_start
@@ -87,35 +94,41 @@ user_program_start:
     jne .yield
     mov dword [0x401030], 1
 
-    mov eax, 8              ; syscall: brk(0x406000)
+    push byte 8              ; syscall: brk(0x406000)
+    pop eax
     mov ebx, 0x406000
     int 0x80
     mov [0x401020], eax
 
-    mov eax, 10             ; syscall: poke(0x405800, "HELP")
+    push byte 10             ; syscall: poke(0x405800, "HELP")
+    pop eax
     mov ebx, 0x405800
     mov ecx, 0x48454C50
     int 0x80
     mov [0x401028], eax
 
-    mov eax, 9              ; syscall: peek(0x405800)
+    push byte 9              ; syscall: peek(0x405800)
+    pop eax
     mov ebx, 0x405800
     int 0x80
     mov [0x401024], eax
 
-    mov eax, 8              ; syscall: brk(0x500000) must fail
+    push byte 8              ; syscall: brk(0x500000) must fail
+    pop eax
     mov ebx, 0x500000
     int 0x80
     mov [0x401034], eax
 
-    mov eax, 10             ; syscall: poke(guard 0x402000)
+    push byte 10             ; syscall: poke(guard 0x402000)
+    pop eax
     mov ebx, 0x402000
     mov ecx, 0xDEADBEEF
     int 0x80
     mov [0x40102C], eax
 
 .yield:
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp user_program_start
 
@@ -137,7 +150,8 @@ user_program_start:
     ; 第一轮：fork 前先写父侧魔数；fork 后父子共享同一数据物理页。
     mov dword [0x401038], 0x50415041   ; "PAPA"
     mov dword [0x401008], 1
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_exit
@@ -147,12 +161,14 @@ user_program_start:
     mov ebx, eax
     mov dword [0x4010D0], 262144
 .wait_gap:
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     dec dword [0x4010D0]
     jnz .wait_gap
     mov ecx, 0x401010
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x401014], eax
 
@@ -175,7 +191,8 @@ user_program_start:
 
     ; 第二轮：fork 第二个子进程，让它安装 SIGFPE handler 后执行 1/0。
     mov dword [0x401008], 2
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_de
@@ -183,7 +200,8 @@ user_program_start:
     mov ebx, eax
     mov [0x401044], ebx             ; signal child pid
     mov ecx, 0x401048
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x401050], eax
 
@@ -200,7 +218,8 @@ user_program_start:
     cmp dword [0x401068], 0
     jne .pipe_round
     mov dword [0x401068], 1
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_exec
@@ -208,7 +227,8 @@ user_program_start:
     mov ebx, eax
     mov [0x401058], ebx             ; exec child pid
     mov ecx, 0x40105C
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x401064], eax
     cmp dword [0x40105C], 10
@@ -221,7 +241,8 @@ user_program_start:
     cmp dword [0x40108C], 0
     jne .spawn_round
     mov dword [0x40108C], 1
-    mov eax, 14             ; syscall: pipe(&read_fd)
+    push byte 14             ; syscall: pipe(&read_fd)
+    pop eax
     mov ebx, 0x40106C
     int 0x80
     mov [0x401074], eax
@@ -232,26 +253,30 @@ user_program_start:
     cmp dword [0x401070], 3
     jne .pipe_bad
 
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_pipe_exec
 
     mov [0x401080], eax             ; pipe child pid
-    mov eax, 17             ; 父关闭写端 3
+    push byte 17             ; 父关闭写端 3
+    pop eax
     mov ebx, [0x401070]
     int 0x80
     mov [0x401090], eax
 
     mov ebx, [0x401080]
     mov ecx, 0x401084
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x401088], eax
     cmp dword [0x401084], 12
     jne .pipe_bad
 
-    mov eax, 15             ; syscall: read(read_fd, buf, 4)
+    push byte 15             ; syscall: read(read_fd, buf, 4)
+    pop eax
     mov ebx, [0x40106C]
     mov ecx, 0x401078
     mov edx, 4
@@ -262,7 +287,8 @@ user_program_start:
     cmp dword [0x401078], 0x45505049 ; "PIPE"
     jne .pipe_bad
 
-    mov eax, 17             ; 父关闭读端
+    push byte 17             ; 父关闭读端
+    pop eax
     mov ebx, [0x40106C]
     int 0x80
     mov [0x401094], eax
@@ -277,7 +303,8 @@ user_program_start:
     cmp dword [0x401140], 0
     jne .thread_round
     mov dword [0x401140], 1
-    mov eax, 18             ; syscall: spawn(1, argv, envp)
+    push byte 18             ; syscall: spawn(1, argv, envp)
+    pop eax
     mov ebx, 1
     mov ecx, exec_argv - user_program_start + 0x400000
     mov edx, exec_envp - user_program_start + 0x400000
@@ -287,7 +314,8 @@ user_program_start:
     mov [0x401144], eax
     mov ebx, eax
     mov ecx, 0x401148
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x40114C], eax
     cmp dword [0x401148], 10
@@ -312,13 +340,15 @@ user_program_start:
     mov dword [0x401170], 0
 
     ; 线程栈放在 heap 第一页：brk(0x406000) 映射 0x405000..0x405FFF。
-    mov eax, 8              ; syscall: brk
+    push byte 8              ; syscall: brk
+    pop eax
     mov ebx, 0x406000
     int 0x80
     cmp eax, 0x406000
     jne .thread_bad
 
-    mov eax, 19             ; syscall: clone(entry, stack, flags, arg)
+    push byte 19             ; syscall: clone(entry, stack, flags, arg)
+    pop eax
     mov ebx, user_thread_entry - user_program_start + 0x400000
     mov ecx, 0x406000
     mov edx, 0x00010D00     ; VM|FILES|SIGHAND|THREAD
@@ -331,14 +361,16 @@ user_program_start:
 .thread_wait:
     cmp dword [0x401168], 0
     jne .thread_join
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp .thread_wait
 
 .thread_join:
     mov ebx, [0x401158]
     mov ecx, 0x40115C
-    mov eax, 22             ; syscall: thread_join(TID, &status)
+    push byte 22             ; syscall: thread_join(TID, &status)
+    pop eax
     int 0x80
     mov [0x40116C], eax
     test eax, eax
@@ -359,7 +391,8 @@ user_program_start:
     mov dword [0x401188], 0
     mov dword [0x40118C], 0
 
-    mov eax, 19             ; syscall: clone(detached entry, stack, flags, arg)
+    push byte 19             ; syscall: clone(detached entry, stack, flags, arg)
+    pop eax
     mov ebx, user_detached_entry - user_program_start + 0x400000
     mov ecx, 0x406000
     mov edx, 0x00010D00     ; VM|FILES|SIGHAND|THREAD
@@ -372,14 +405,16 @@ user_program_start:
 .thread_det_wait:
     cmp dword [0x401180], 0
     jne .thread_det_join
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp .thread_det_wait
 
 .thread_det_join:
     mov ebx, [0x401174]
     xor ecx, ecx            ; status 传 0，避免不需要的 copyout
-    mov eax, 22             ; syscall: thread_join(detached TID)
+    push byte 22             ; syscall: thread_join(detached TID)
+    pop eax
     int 0x80
     mov [0x401188], eax
     cmp eax, 0xFFFFFFFF
@@ -400,49 +435,57 @@ user_program_start:
 ; P7.3：非法参数矩阵。join 0/-1/self/不存在 TID、detach 0/-1/不存在 TID
 ; 都必须返回 -1，不能把当前线程或线程组弄成异常状态。
 .thread_edge_round:
-    mov eax, 22             ; thread_join(0, 0)
+    push byte 22             ; thread_join(0, 0)
+    pop eax
     xor ebx, ebx
     xor ecx, ecx
     int 0x80
     cmp eax, 0xFFFFFFFF
     jne .thread_edge_bad
 
-    mov eax, 22             ; thread_join(-1, 0)
+    push byte 22             ; thread_join(-1, 0)
+    pop eax
     mov ebx, 0xFFFFFFFF
     xor ecx, ecx
     int 0x80
     cmp eax, 0xFFFFFFFF
     jne .thread_edge_bad
 
-    mov eax, 21             ; gettid
+    push byte 21             ; gettid
+    pop eax
     int 0x80
     mov ebx, eax
-    mov eax, 22             ; thread_join(self, 0)
+    push byte 22             ; thread_join(self, 0)
+    pop eax
     xor ecx, ecx
     int 0x80
     cmp eax, 0xFFFFFFFF
     jne .thread_edge_bad
 
-    mov eax, 22             ; thread_join(99, 0)
+    push byte 22             ; thread_join(99, 0)
+    pop eax
     mov ebx, 99
     xor ecx, ecx
     int 0x80
     cmp eax, 0xFFFFFFFF
     jne .thread_edge_bad
 
-    mov eax, 23             ; thread_detach(0)
+    push byte 23             ; thread_detach(0)
+    pop eax
     xor ebx, ebx
     int 0x80
     cmp eax, 0xFFFFFFFF
     jne .thread_edge_bad
 
-    mov eax, 23             ; thread_detach(-1)
+    push byte 23             ; thread_detach(-1)
+    pop eax
     mov ebx, 0xFFFFFFFF
     int 0x80
     cmp eax, 0xFFFFFFFF
     jne .thread_edge_bad
 
-    mov eax, 23             ; thread_detach(99)
+    push byte 23             ; thread_detach(99)
+    pop eax
     mov ebx, 99
     int 0x80
     cmp eax, 0xFFFFFFFF
@@ -461,7 +504,8 @@ user_program_start:
     jne .yield
     mov dword [0x4011C0], 1
 
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_main_exit
@@ -469,7 +513,8 @@ user_program_start:
     mov [0x4011B0], eax             ; child pid
     mov ebx, eax
     mov ecx, 0x4011B4
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x4011B8], eax
     cmp dword [0x4011B4], 7
@@ -491,7 +536,8 @@ user_program_start:
     jne .yield
     mov dword [0x4011F4], 1
 
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_group_exit
@@ -501,7 +547,8 @@ user_program_start:
     mov [0x4011E8], eax             ; child pid
     mov ebx, eax
     mov ecx, 0x4011EC
-    mov eax, 4              ; syscall: wait
+    push byte 4              ; syscall: wait
+    pop eax
     int 0x80
     mov [0x4011F0], eax
     cmp dword [0x4011EC], 7
@@ -523,7 +570,8 @@ user_program_start:
     jne .yield
     mov dword [0x4011FC], 1
 
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .child_block_exit
@@ -533,7 +581,8 @@ user_program_start:
     mov [0x401220], eax             ; child pid
     mov ebx, eax
     mov ecx, 0x401224
-    mov eax, 4              ; syscall: wait，子进程仍在运行时阻塞
+    push byte 4              ; syscall: wait，子进程仍在运行时阻塞
+    pop eax
     int 0x80
     mov [0x401228], eax
     cmp dword [0x401224], 9
@@ -541,25 +590,117 @@ user_program_start:
     cmp eax, [0x401220]
     jne .block_bad
     mov dword [0x40122C], 0x57424C4B ; "WBLK"
-    jmp .yield
+    jmp .timer_round
 
 .block_bad:
     mov dword [0x40122C], 0x424144 ; "BAD"
     jmp .yield
 
+; P11.1：慢子进程 sleep(20) 后 exit(7)，父先 5 tick 超时、再 50 tick 取 status；
+; 快子进程 sleep(1) 后 exit(9)，父 20 tick 内直接取 status。结果写 0x401250。
+.timer_round:
+    cmp dword [0x401250], 0
+    jne .yield
+
+    push byte 6              ; syscall: fork
+    pop eax
+    int 0x80
+    test eax, eax
+    jz .child_timer_slow
+    cmp eax, 0xFFFFFFFF
+    je .timer_bad
+    mov [0x401234], eax
+
+    mov ebx, eax
+    mov ecx, 0x401238
+    mov edx, 5
+    push byte 25             ; syscall: wait_timeout(pid, status, 5)
+    pop eax
+    int 0x80
+    mov [0x40123C], eax
+    test eax, eax
+    jnz .timer_bad          ; 子进程还在 sleep，必须返回 0 timeout
+
+    mov ebx, [0x401234]
+    mov ecx, 0x401238
+    mov edx, 50
+    push byte 25             ; syscall: wait_timeout(pid, status, 50)
+    pop eax
+    int 0x80
+    mov [0x401240], eax
+    cmp eax, [0x401234]
+    jne .timer_bad
+    cmp dword [0x401238], 7
+    jne .timer_bad
+
+    push byte 6              ; syscall: fork
+    pop eax
+    int 0x80
+    test eax, eax
+    jz .child_timer_fast
+    cmp eax, 0xFFFFFFFF
+    je .timer_bad
+    mov [0x401244], eax
+
+    mov ebx, eax
+    mov ecx, 0x401248
+    mov edx, 20
+    push byte 25             ; syscall: wait_timeout(pid, status, 20)
+    pop eax
+    int 0x80
+    mov [0x40124C], eax
+    cmp eax, [0x401244]
+    jne .timer_bad
+    cmp dword [0x401248], 9
+    jne .timer_bad
+
+    mov dword [0x401250], 0x544D5231 ; "TMR1"
+    jmp .yield
+
+.timer_bad:
+    mov dword [0x401250], 0x424144 ; "BAD"
+    jmp .yield
+
+.child_timer_slow:
+    push byte 24             ; syscall: sleep(20 ticks)
+    pop eax
+    mov ebx, 20
+    int 0x80
+    push byte 3              ; syscall: exit(7)
+    pop eax
+    mov ebx, 7
+    int 0x80
+.hang_timer_slow:
+    jmp .hang_timer_slow
+
+.child_timer_fast:
+    push byte 24             ; syscall: sleep(1 tick)
+    pop eax
+    mov ebx, 1
+    int 0x80
+    push byte 3              ; syscall: exit(9)
+    pop eax
+    mov ebx, 9
+    int 0x80
+.hang_timer_fast:
+    jmp .hang_timer_fast
+
 ; P7.5 子进程：主线程 clone worker 后立刻 thread_join，worker 尚 LIVE。
 .child_block_exit:
-    mov eax, 8              ; syscall: brk(0x407000)
+    push byte 8              ; syscall: brk(0x407000)
+    pop eax
     mov ebx, 0x407000
     int 0x80
     cmp eax, 0x407000
     jne .child_block_bad
 
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x401200], eax
 
-    mov eax, 19             ; clone(worker, 0x407000)
+    push byte 19             ; clone(worker, 0x407000)
+    pop eax
     mov ebx, user_block_worker - user_program_start + 0x400000
     mov ecx, 0x407000
     mov edx, 0x00010D00     ; VM|FILES|SIGHAND|THREAD
@@ -572,7 +713,8 @@ user_program_start:
     mov dword [0x401208], 1 ; 释放 worker；主线程紧接着 join
     mov ebx, [0x401204]
     mov ecx, 0x401214
-    mov eax, 22             ; syscall: thread_join，worker 仍 LIVE -> BLOCKED
+    push byte 22             ; syscall: thread_join，worker 仍 LIVE -> BLOCKED
+    pop eax
     int 0x80
     mov [0x401218], eax
     test eax, eax
@@ -580,14 +722,16 @@ user_program_start:
     cmp dword [0x401214], 4
     jne .child_block_bad
     mov dword [0x40121C], 0x424C4B35 ; "BLK5"
-    mov eax, 20             ; syscall: thread_exit(9)
+    push byte 20             ; syscall: thread_exit(9)
+    pop eax
     mov ebx, 9
     int 0x80
     jmp .hang_block_child
 
 .child_block_bad:
     mov dword [0x40121C], 0x424144 ; "BAD"
-    mov eax, 20
+    push byte 20
+    pop eax
     mov ebx, 8
     int 0x80
     jmp .hang_block_child
@@ -606,17 +750,20 @@ user_program_start:
     mov dword [0x4011E0], 0
     mov dword [0x4011E4], 0
 
-    mov eax, 8              ; syscall: brk(0x407000)，两个 worker 各用一页栈
+    push byte 8              ; syscall: brk(0x407000)，两个 worker 各用一页栈
+    pop eax
     mov ebx, 0x407000
     int 0x80
     cmp eax, 0x407000
     jne .child_group_bad
 
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x4011C8], eax
 
-    mov eax, 19             ; clone(worker A, 0x406000)
+    push byte 19             ; clone(worker A, 0x406000)
+    pop eax
     mov ebx, user_group_first_worker - user_program_start + 0x400000
     mov ecx, 0x406000
     mov edx, 0x00010D00     ; VM|FILES|SIGHAND|THREAD
@@ -626,7 +773,8 @@ user_program_start:
     je .child_group_bad
     mov [0x4011CC], eax
 
-    mov eax, 19             ; clone(worker B, 0x407000)
+    push byte 19             ; clone(worker B, 0x407000)
+    pop eax
     mov ebx, user_group_last_worker - user_program_start + 0x400000
     mov ecx, 0x407000
     mov edx, 0x00010D00     ; VM|FILES|SIGHAND|THREAD
@@ -637,14 +785,16 @@ user_program_start:
     mov [0x4011D0], eax
 
     mov dword [0x4011D4], 1 ; 三个任务共享同一 AS，最后一个共享写
-    mov eax, 20             ; syscall: thread_exit(0)，主线程不 join
+    push byte 20             ; syscall: thread_exit(0)，主线程不 join
+    pop eax
     xor ebx, ebx
     int 0x80
     jmp .hang_group_main
 
 .child_group_bad:
     mov dword [0x4011E4], 0x424144 ; "BAD"
-    mov eax, 20             ; 单线程失败路径，父 wait 得到 8
+    push byte 20             ; 单线程失败路径，父 wait 得到 8
+    pop eax
     mov ebx, 8
     int 0x80
     jmp .hang_group_child
@@ -668,21 +818,25 @@ user_program_start:
     jmp .yield
 
 .child_pipe_exec:
-    mov eax, 17             ; 子关闭继承来的读端 2
+    push byte 17             ; 子关闭继承来的读端 2
+    pop eax
     mov ebx, [0x40106C]
     int 0x80
-    mov eax, 13             ; syscall: exec(2, pipe_argv, NULL)
+    push byte 13             ; syscall: exec(2, pipe_argv, NULL)
+    pop eax
     mov ebx, 2
     mov ecx, pipe_exec_argv - user_program_start + 0x400000
     xor edx, edx
     int 0x80
-    mov eax, 3              ; exec 失败 exit(13)
+    push byte 3              ; exec 失败 exit(13)
+    pop eax
     mov ebx, 13
     int 0x80
     jmp $
 
 .child_exec:
-    mov eax, 13             ; syscall: exec(1, argv, envp)
+    push byte 13             ; syscall: exec(1, argv, envp)
+    pop eax
     mov ebx, 1
     mov ecx, exec_argv - user_program_start + 0x400000
     mov edx, exec_envp - user_program_start + 0x400000
@@ -692,7 +846,8 @@ user_program_start:
     jmp $                   ; exec 成功不会返回
 
 .child_exec_bad:
-    mov eax, 3              ; syscall: exit(11)
+    push byte 3              ; syscall: exit(11)
+    pop eax
     mov ebx, 11
     int 0x80
 
@@ -707,17 +862,20 @@ user_program_start:
     mov dword [0x4011A8], 0
     mov dword [0x4011AC], 0
 
-    mov eax, 8              ; syscall: brk(0x406000)，worker 复用 heap 第一页
+    push byte 8              ; syscall: brk(0x406000)，worker 复用 heap 第一页
+    pop eax
     mov ebx, 0x406000
     int 0x80
     cmp eax, 0x406000
     jne .child_main_exit_bad
 
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x401190], eax
 
-    mov eax, 19             ; syscall: clone(worker, stack, flags, main_tid)
+    push byte 19             ; syscall: clone(worker, stack, flags, main_tid)
+    pop eax
     mov ebx, user_main_first_worker - user_program_start + 0x400000
     mov ecx, 0x406000
     mov edx, 0x00010D00     ; VM|FILES|SIGHAND|THREAD
@@ -728,14 +886,16 @@ user_program_start:
     mov [0x401194], eax
 
     mov dword [0x40119C], 1 ; 最后一道共享写：通知 worker 主线程即将退出
-    mov eax, 20             ; syscall: thread_exit(0)
+    push byte 20             ; syscall: thread_exit(0)
+    pop eax
     xor ebx, ebx
     int 0x80
     jmp .hang_main_first
 
 .child_main_exit_bad:
     mov dword [0x4011AC], 0x424144 ; "BAD"
-    mov eax, 20             ; 唯一线程直接退出 8，父进程 wait 可判定失败
+    push byte 20             ; 唯一线程直接退出 8，父进程 wait 可判定失败
+    pop eax
     mov ebx, 8
     int 0x80
 
@@ -756,31 +916,36 @@ user_program_start:
     jne .yield
     mov dword [0x4010F0], 1
 
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .console_child
 
     ; 父进程：关闭自己的 0/1 后，read/write 必须失败，但子句柄不受影响。
     mov [0x4010A0], eax
-    mov eax, 17
+    push byte 17
+    pop eax
     xor ebx, ebx
     int 0x80
     mov [0x4010A4], eax
 
-    mov eax, 17
+    push byte 17
+    pop eax
     mov ebx, 1
     int 0x80
     mov [0x4010A8], eax
 
-    mov eax, 15
+    push byte 15
+    pop eax
     xor ebx, ebx
     mov ecx, 0x401120
     mov edx, 1
     int 0x80
     mov [0x4010AC], eax
 
-    mov eax, 16
+    push byte 16
+    pop eax
     mov ebx, 1
     mov ecx, console_text - user_program_start + 0x400000
     mov edx, console_text_end - console_text
@@ -792,18 +957,21 @@ user_program_start:
 .console_parent_hold:
     cmp dword [0x404000], 0
     jne .console_parent_stop
-    mov eax, 2
+    push byte 2
+    pop eax
     int 0x80
     jmp .console_parent_hold
 
 .console_parent_stop:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 16
     int 0x80
     jmp .hang
 
 .console_child:
-    mov eax, 15             ; syscall: read(fd0, buf, 1)
+    push byte 15             ; syscall: read(fd0, buf, 1)
+    pop eax
     xor ebx, ebx
     mov ecx, 0x401120
     mov edx, 1
@@ -812,7 +980,8 @@ user_program_start:
     je .console_child_got
     cmp dword [0x404000], 0
     jne .console_child_stop
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp .console_child
 
@@ -824,7 +993,8 @@ user_program_start:
     mov al, [0x401120]
     mov [0x401134], al
     mov byte [0x401135], 10
-    mov eax, 16             ; syscall: write(fd1, "CON:<key>\n", 6)
+    push byte 16             ; syscall: write(fd1, "CON:<key>\n", 6)
+    pop eax
     mov ebx, 1
     mov ecx, 0x401130
     mov edx, 6
@@ -832,7 +1002,8 @@ user_program_start:
     cmp eax, 6
     jne .console_child_bad
 
-    mov eax, 16             ; syscall: write(fd1, "FD01 OK\n", 8)
+    push byte 16             ; syscall: write(fd1, "FD01 OK\n", 8)
+    pop eax
     mov ebx, 1
     mov ecx, console_tail - user_program_start + 0x400000
     mov edx, console_tail_end - console_tail
@@ -840,19 +1011,22 @@ user_program_start:
     cmp eax, 8
     jne .console_child_bad
 
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 14
     int 0x80
     jmp .hang
 
 .console_child_bad:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 15
     int 0x80
     jmp .hang
 
 .console_child_stop:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 16
     int 0x80
     jmp .hang
@@ -868,7 +1042,8 @@ user_program_start:
 .pool_fork:
     cmp dword [0x4010C0], 8
     jae .pool_parent
-    mov eax, 6              ; syscall: fork
+    push byte 6              ; syscall: fork
+    pop eax
     int 0x80
     test eax, eax
     jz .pool_child
@@ -882,12 +1057,14 @@ user_program_start:
 .pool_parent_hold:
     cmp dword [0x404000], 0
     jne .pool_parent_stop
-    mov eax, 2
+    push byte 2
+    pop eax
     int 0x80
     jmp .pool_parent_hold
 
 .pool_parent_stop:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 16
     int 0x80
     jmp .hang
@@ -895,12 +1072,14 @@ user_program_start:
 .pool_child:
     cmp dword [0x404000], 0
     jne .pool_child_stop
-    mov eax, 2
+    push byte 2
+    pop eax
     int 0x80
     jmp .pool_child
 
 .pool_child_stop:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 17
     int 0x80
     jmp .hang
@@ -918,14 +1097,16 @@ user_program_start:
 .stress_loop:
     cmp dword [0x4010C0], 100
     jae .stress_done
-    mov eax, 6              ; fork
+    push byte 6              ; fork
+    pop eax
     int 0x80
     test eax, eax
     jz .stress_child
     mov [0x401104], eax
     mov ebx, eax
     mov ecx, 0x401108
-    mov eax, 4              ; wait: return child PID, status in 0x401108
+    push byte 4              ; wait: return child PID, status in 0x401108
+    pop eax
     int 0x80
     cmp eax, ebx
     jne .stress_hold        ; wait did not reap this child
@@ -944,23 +1125,27 @@ user_program_start:
 .stress_hold:
     cmp dword [0x404000], 0
     jne .stress_stop
-    mov eax, 2
+    push byte 2
+    pop eax
     int 0x80
     jmp .stress_hold
 .stress_stop:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 18
     int 0x80
     jmp .hang
 .stress_child:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 7
     int 0x80
     jmp .hang
 
 .child_exit:
     mov dword [0x401038], 0x43484C44   ; "CHLD"，触发子侧 COW 拆分
-    mov eax, 3              ; syscall: exit
+    push byte 3              ; syscall: exit
+    pop eax
     mov ebx, 7
     int 0x80
 .hang_child:
@@ -968,7 +1153,8 @@ user_program_start:
 
 .child_de:
     mov dword [0x401038], 0x53494746   ; "SIGF"，写父页后触发 COW
-    mov eax, 11             ; syscall: sigaction(SIGFPE, handler, 0)
+    push byte 11             ; syscall: sigaction(SIGFPE, handler, 0)
+    pop eax
     mov ebx, 8
     mov ecx, user_fpe_handler - user_program_start + 0x400000
     xor edx, edx
@@ -977,7 +1163,8 @@ user_program_start:
     jnz .sig_install_bad
 
     xor edx, edx
-    mov eax, 1
+    push byte 1
+    pop eax
     xor ecx, ecx
     div ecx                 ; #DE -> 内核投递 signal frame
     cmp dword [0x401054], 1 ; handler 已执行一次
@@ -989,20 +1176,24 @@ user_program_start:
     cmp eax, 0x00000200     ; 期望恰好 IOPL=0 且 IF=1
     jne .sig_handler_bad    ; IOPL 残留或 IF 被清：白名单失效
     in al, 0x60             ; IOPL=0 必 #GP->SIGSEGV；IOPL=3 放行则 exit(12)
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 12
     int 0x80
 .sig_install_bad:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 10
     int 0x80
 .sig_handler_bad:
-    mov eax, 3
+    push byte 3
+    pop eax
     mov ebx, 11
     int 0x80
 
 .done:
-    mov eax, 3              ; syscall: exit
+    push byte 3              ; syscall: exit
+    pop eax
     xor ebx, ebx
     int 0x80
 .hang:
@@ -1023,7 +1214,8 @@ user_fpe_handler:
     ret
 
 user_sigreturn_trampoline:
-    mov eax, 12             ; syscall: sigreturn
+    push byte 12             ; syscall: sigreturn
+    pop eax
     int 0x80
 .hang_sigreturn:
     jmp .hang_sigreturn
@@ -1072,11 +1264,13 @@ console_tail_end:
 user_thread_entry:
     mov ebx, eax
     inc dword [ebx]
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x401164], eax
     mov dword [0x401168], 1
-    mov eax, 20             ; syscall: thread_exit(0)
+    push byte 20             ; syscall: thread_exit(0)
+    pop eax
     xor ebx, ebx
     int 0x80
 .hang_thread:
@@ -1086,16 +1280,19 @@ user_thread_entry:
 ; edx 保存 clone 传入的共享计数地址；gettid/detach 只改 eax/ebx。
 user_detached_entry:
     mov edx, eax
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x401184], eax
     mov ebx, eax
-    mov eax, 23             ; syscall: thread_detach(self)
+    push byte 23             ; syscall: thread_detach(self)
+    pop eax
     int 0x80
     mov [0x40117C], eax
     inc dword [edx]
     mov dword [0x401180], 1
-    mov eax, 20             ; syscall: thread_exit(0)
+    push byte 20             ; syscall: thread_exit(0)
+    pop eax
     xor ebx, ebx
     int 0x80
 .hang_detached:
@@ -1105,7 +1302,8 @@ user_detached_entry:
 ; 校验主线程退出码 0 后作为最后活线程 thread_exit(7)。
 user_main_first_worker:
     mov [0x401190], eax     ; clone arg = 主线程 TID
-    mov eax, 21              ; syscall: gettid
+    push byte 21              ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x4011A8], eax
     cmp eax, [0x401190]
@@ -1114,14 +1312,16 @@ user_main_first_worker:
 .main_first_wait:
     cmp dword [0x40119C], 1
     je .main_first_join
-    mov eax, 2              ; 主线程尚未执行最后的 thread_exit
+    push byte 2              ; 主线程尚未执行最后的 thread_exit
+    pop eax
     int 0x80
     jmp .main_first_wait
 
 .main_first_join:
     mov ebx, [0x401190]     ; 主线程 TID
     mov ecx, 0x4011A0
-    mov eax, 22              ; syscall: thread_join(main_tid, &status)
+    push byte 22              ; syscall: thread_join(main_tid, &status)
+    pop eax
     int 0x80
     mov [0x4011A4], eax
     test eax, eax
@@ -1129,14 +1329,16 @@ user_main_first_worker:
     cmp dword [0x4011A0], 0 ; 主线程 thread_exit(0)
     jne .main_first_fail
     mov dword [0x4011AC], 0x4D41494E ; "MAIN"
-    mov eax, 20              ; syscall: 最后线程 thread_exit(7)
+    push byte 20              ; syscall: 最后线程 thread_exit(7)
+    pop eax
     mov ebx, 7
     int 0x80
     jmp .hang_main_worker
 
 .main_first_fail:
     mov dword [0x4011AC], 0x424144 ; "BAD"
-    mov eax, 20
+    push byte 20
+    pop eax
     mov ebx, 8
     int 0x80
     jmp .hang_main_worker
@@ -1147,7 +1349,8 @@ user_main_first_worker:
 ; P7.4 worker A：等主线程退出标记后直接 thread_exit(5)。它不 join 主线程，
 ; 退出后留在组内成为 ZOMBIE，等待 worker B 回收。
 user_group_first_worker:
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     cmp eax, [0x4011C8]
     je .group_first_fail
@@ -1155,18 +1358,21 @@ user_group_first_worker:
 .group_first_wait:
     cmp dword [0x4011D4], 1
     je .group_first_exit
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp .group_first_wait
 
 .group_first_exit:
-    mov eax, 20             ; syscall: thread_exit(5)
+    push byte 20             ; syscall: thread_exit(5)
+    pop eax
     mov ebx, 5
     int 0x80
     jmp .hang_group_first
 
 .group_first_fail:
-    mov eax, 20
+    push byte 20
+    pop eax
     mov ebx, 8
     int 0x80
     jmp .hang_group_first
@@ -1177,7 +1383,8 @@ user_group_first_worker:
 ; P7.4 worker B：等主线程退出后 join worker A，确认 status 5；随后作为最后
 ; 活线程 thread_exit(7)，触发整组 process_exit/reap，包括未 join 的主线程。
 user_group_last_worker:
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x4011E0], eax
     cmp eax, [0x4011C8]
@@ -1188,14 +1395,16 @@ user_group_last_worker:
 .group_last_wait:
     cmp dword [0x4011D4], 1
     je .group_last_join
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp .group_last_wait
 
 .group_last_join:
     mov ebx, [0x4011CC]     ; worker A TID
     mov ecx, 0x4011D8
-    mov eax, 22             ; syscall: thread_join(A, &status)
+    push byte 22             ; syscall: thread_join(A, &status)
+    pop eax
     int 0x80
     mov [0x4011DC], eax
     test eax, eax
@@ -1203,14 +1412,16 @@ user_group_last_worker:
     cmp dword [0x4011D8], 5
     jne .group_last_fail
     mov dword [0x4011E4], 0x47525034 ; "GRP4"
-    mov eax, 20             ; syscall: 最后线程 thread_exit(7)
+    push byte 20             ; syscall: 最后线程 thread_exit(7)
+    pop eax
     mov ebx, 7
     int 0x80
     jmp .hang_group_last
 
 .group_last_fail:
     mov dword [0x4011E4], 0x424144 ; "BAD"
-    mov eax, 20
+    push byte 20
+    pop eax
     mov ebx, 8
     int 0x80
     jmp .hang_group_last
@@ -1221,7 +1432,8 @@ user_group_last_worker:
 ; P7.5 worker：等主线程释放 start 后先 yield 一小段，再 thread_exit(4)。
 ; 主线程 join 时 worker 仍 LIVE，因此必须走 BLOCKED 而不是直接看到 ZOMBIE。
 user_block_worker:
-    mov eax, 21             ; syscall: gettid
+    push byte 21             ; syscall: gettid
+    pop eax
     int 0x80
     mov [0x401210], eax
     cmp eax, [0x401200]
@@ -1230,25 +1442,29 @@ user_block_worker:
 .block_worker_wait:
     cmp dword [0x401208], 1
     je .block_worker_delay
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     jmp .block_worker_wait
 
 .block_worker_delay:
     mov ecx, 1024
 .block_worker_loop:
-    mov eax, 2              ; syscall: yield
+    push byte 2              ; syscall: yield
+    pop eax
     int 0x80
     dec ecx
     jnz .block_worker_loop
-    mov eax, 20             ; syscall: thread_exit(4)
+    push byte 20             ; syscall: thread_exit(4)
+    pop eax
     mov ebx, 4
     int 0x80
     jmp .hang_block_worker
 
 .block_worker_fail:
     mov dword [0x40121C], 0x424144 ; "BAD"
-    mov eax, 20
+    push byte 20
+    pop eax
     mov ebx, 8
     int 0x80
     jmp .hang_block_worker
