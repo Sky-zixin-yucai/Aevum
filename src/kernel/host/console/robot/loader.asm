@@ -104,11 +104,12 @@ int80_stub:
     call syscall_dispatch
     add esp, 4
     mov esp, eax
+    mov ebx, eax            ; 保存帧指针；signal 投递返回的是 int，不是帧
     mov eax, esp
     push eax
     call process_signal_deliver_async
     add esp, 4
-    mov esp, eax
+    mov esp, ebx
     RESTORE_CTX
 
 ; #PF：CPU 压 error code；C 侧记录 CR2/EIP/ERR，再决定杀用户任务或停机。
@@ -155,11 +156,12 @@ task_common:
     call task_schedule_irq
     add esp, 4
     mov esp, eax
+    mov ebx, eax            ; 保存帧指针；signal 投递返回的是 int，不是帧
     mov eax, esp
     push eax
     call process_signal_deliver_async
     add esp, 4
-    mov esp, eax
+    mov esp, ebx
     RESTORE_CTX
 
 ; 内核 GDT 位于内核映像 .data，任务栈从 0x8000 起，不会覆盖。
