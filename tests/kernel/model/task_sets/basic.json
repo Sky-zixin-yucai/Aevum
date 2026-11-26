@@ -1,0 +1,9 @@
+{
+  "name": "basic-fairness",
+  "tick_hz": 100,
+  "duration_ticks": 2000,
+  "tasks": [
+    {"id": "T0", "priority": 0, "period": 0, "cost": 1},
+    {"id": "T3", "priority": 3, "period": 0, "cost": 1}
+  ]
+}

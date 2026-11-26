@@ -13,10 +13,13 @@
 #include "drivers/video/vga.h"
 #include "drivers/serial/uart.h"
 #include "app/arm/app.h"
+#include "app/bench/bench.h"
 
 void kernel_main(void)
 {
+#ifndef AEVUM_SCHED_BENCH
     const char *rc;
+#endif
 
     vga_init();
     uart_init();
@@ -36,6 +39,7 @@ void kernel_main(void)
     }
     tss_init();
 
+#ifndef AEVUM_SCHED_BENCH
     rc = arm_app_init();
     if (rc) {
         struct aevum_error e = {
@@ -47,6 +51,7 @@ void kernel_main(void)
         };
         aevum_fail(&e);
     }
+#endif
 
     /* 先装 IDT/PIC/PIT，再让第一个任务 iret 打开 IF；定时抢占从此刻开始。 */
     __asm__ __volatile__("cli");
@@ -54,6 +59,10 @@ void kernel_main(void)
     syscall_init();
     exception_init();
     page_fault_init();
+#ifdef AEVUM_SCHED_BENCH
+    bench_start();
+#else
     arm_app_start();
+#endif
     for (;;) __asm__ __volatile__("cli; hlt");
 }

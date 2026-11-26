@@ -88,6 +88,8 @@ user_program_start:
     je .pool_mode
     cmp dword [0x401004], 6
     je .stress_mode
+    cmp dword [0x401004], 7
+    je .bench_mode
 
     ; 模式 0：只做一次 heap/guard 指针验收。
     cmp dword [0x401030], 0
@@ -125,6 +127,11 @@ user_program_start:
     mov ecx, 0xDEADBEEF
     int 0x80
     mov [0x40102C], eax
+
+.bench_mode:
+    ; 模式 7：只自增自己的计数页，不 yield；PIT 抢占后由 A0 调度器记账。
+    inc dword [0x401000]
+    jmp .bench_mode
 
 .yield:
     push byte 2              ; syscall: yield

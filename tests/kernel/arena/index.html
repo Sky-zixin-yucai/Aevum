@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aevum 调度基准场</title>
+  <style>
+    :root {
+      --bg: #161513;
+      --panel: #1f1d19;
+      --line: #34302a;
+      --text: #e8e0cf;
+      --muted: #9a917f;
+      --amber: #d6a45c;
+      --green: #8fbf7a;
+      --red: #d47a63;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 0%, #26231d 0, var(--bg) 55%);
+      color: var(--text);
+      font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: .04em; }
+    .sub { color: var(--muted); margin-top: 6px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    select, button, input[type="range"] {
+      background: var(--panel); color: var(--text); border: 1px solid var(--line);
+      border-radius: 6px; padding: 8px 10px; font: inherit;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--amber); }
+    button.primary { border-color: var(--amber); color: var(--amber); }
+    .canvas-box {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px; overflow: hidden;
+    }
+    canvas { display: block; width: 100%; height: auto; }
+    .stats {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+      margin-top: 14px;
+    }
+    .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+    .stat .k { color: var(--muted); font-size: 12px; }
+    .stat .v { font-size: 20px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-weight: 500; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 12px; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 10px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Aevum 调度基准场</h1>
+        <div class="sub">用引擎循环驱动同一份任务集，先看份额、片长和等待；QEMU 实测再从结果目录读入。</div>
+      </div>
+      <div class="controls">
+        <select id="tasks" aria-label="任务数">
+          <option value="2">2 任务</option>
+          <option value="4" selected>4 任务</option>
+          <option value="8">8 任务</option>
+          <option value="12">12 任务</option>
+        </select>
+        <select id="policy" aria-label="调度策略">
+          <option value="a0" selected>A0 当前内核</option>
+          <option value="cfs">Linux CFS 模型</option>
+          <option value="fifo">Linux SCHED_FIFO 模型</option>
+        </select>
+        <label>速度 <input id="speed" type="range" min="1" max="8" value="3"></label>
+        <button id="run" class="primary">运行</button>
+        <button id="pause">暂停</button>
+        <button id="reset">重置</button>
+      </div>
+    </header>
+
+    <div class="canvas-box">
+      <canvas id="arena" height="460"></canvas>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">策略</div><div class="v" id="stat-policy">A0</div></div>
+      <div class="stat"><div class="k">模拟 tick</div><div class="v" id="stat-ticks">0 / 1000</div></div>
+      <div class="stat"><div class="k">切换</div><div class="v" id="stat-switches">0</div></div>
+      <div class="stat"><div class="k">最大等待</div><div class="v" id="stat-wait">0</div></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>任务</th><th>priority</th><th>weight</th><th>CPU tick</th><th>share</th><th>理论 share</th><th>max wait</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="hint" id="hint"></div>
+  </div>
+
+  <script src="../../../engine/core/index.js"></script>
+  <script src="arena.js"></script>
+</body>
+</html>

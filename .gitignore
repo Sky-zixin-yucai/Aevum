@@ -59,3 +59,11 @@ labs/reference/
 runtime/
 # 本地运行配置，按 configs/ 样例生成
 /config.yaml
+
+# 内核测试本地产出与外部源码
+.excluded/
+tests/kernel/results/*
+!tests/kernel/results/README.md
+tests/kernel/linux/rootfs/
+tests/kernel/linux/.config
+src/kernel/host/console/robot/build-bench/

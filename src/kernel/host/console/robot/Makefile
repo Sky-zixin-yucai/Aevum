@@ -7,12 +7,13 @@ LD      = ld
 QEMU    = qemu-system-i386
 
 BUILD   = build
+DEFS    =
 # 非 FPU 模块禁止编译器生成 SSE 暂存，避免打乱 fxsave 捕获任务 XMM 状态；
 # FPU 演示对象单独追加 -msse2（见下方 target-specific CFLAGS）。
 CFLAGS  = -m32 -mno-sse -ffreestanding -c -Os -g -fno-tree-loop-distribute-patterns -fno-pic -fno-pie \
           -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables \
           -falign-functions=1 -falign-jumps=1 -falign-loops=1 \
-          -ffunction-sections -fdata-sections -Wall -Wextra -Iinclude -I.
+          -ffunction-sections -fdata-sections -Wall -Wextra -Iinclude -I. $(DEFS)
 ASFLAGS_BIN   = -f bin
 ASFLAGS_ELF32 = -f elf32
 LDSCRIPT = kernel.ld
@@ -60,9 +61,10 @@ SRCS = \
 	app/console/demo/demo.c \
 	app/console/render/render.c \
 	app/pool/demo/demo.c \
-	app/pool/render/render.c
+	app/pool/render/render.c \
+	app/bench/bench.c
 
-OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) build/user/ring3.o build/user/exec.o build/user/exec_pipe.o build/user/exec_io.o build/user/exec_ramfs.o build/kernel/fs/ramfs/ramdisk.o
+OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) $(BUILD)/user/ring3.o $(BUILD)/user/exec.o $(BUILD)/user/exec_pipe.o $(BUILD)/user/exec_io.o $(BUILD)/user/exec_ramfs.o $(BUILD)/kernel/fs/ramfs/ramdisk.o
 IMG     = os.img
 
 GENERATED = boot.bin $(IMG) disk.img kernel.bin kernel.elf $(BUILD)
