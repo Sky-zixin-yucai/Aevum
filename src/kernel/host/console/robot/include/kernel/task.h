@@ -185,6 +185,11 @@ u32 task_eintr_total(void);
 void task_set_idle_task(struct task_struct *task);
 void task_note_idle_hlt(void);
 u32 task_idle_hlt_total(void);
+/*
+ * B 键阻塞/唤醒演示：P11.4 之后 idle 不再参与普通竞争，必须显式让调度器
+ * 选中它一次，proc_idle() 才有机会执行 task_block()。
+ */
+void task_force_idle_demo(void);
 
 /*
  * P11.5：显式时间片。IRQ0 只在 slice_left 归零时重选任务；片未尽的

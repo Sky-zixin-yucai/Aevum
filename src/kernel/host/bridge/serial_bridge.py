@@ -239,13 +239,9 @@ async def main():
             # 新订阅者补最近一次完整状态，避免等下一次 8 帧扫描。
             if last_status["frame"] is not None:
                 await send_status(ws, last_status["frame"])
-            # 让内核下一次扫描发送完整 VGA，补齐窗口连接前就已经存在的静态单元。
-            if link["writer"]:
-                try:
-                    link["writer"].write(b"F")
-                    await link["writer"].drain()
-                except Exception:
-                    pass
+            # 不在连接瞬间发 F：全量 VGA 扫描会占住串口/桥接，
+            # 把紧随其后的第一条 J 手动命令拖到 5 秒保持窗口之外。
+            # 内核自身每 120 次扫描会补一帧全量，静态单元仍能补齐。
             async for raw in ws:
                 try:
                     msg = json.loads(raw)

@@ -401,6 +401,9 @@ static void proc_render(void)
 
         if (key == 0x2F && !duel_live && !cpu_live && !probe_live && !fpu_demo_live() && !tree_live) { /* V：ring3 进程上下文 */
             if (user_live) {
+                /* UI 先退出，不能把返回主画面绑在 demo 进程死亡上；
+                 * 停止字和任务唤醒由 user_demo_stop() 异步收尾。 */
+                user_live = 0;
                 user_demo_stop();
             } else {
                 const char *rc = user_demo_start();
@@ -432,8 +435,14 @@ static void proc_render(void)
                 idle_probe_phase = 1u;
             }
             if (key == 0x30) {
-                if (idle_blocked) (void)task_wake(idle_pid);
-                else idle_block_req = 1;
+                if (idle_blocked) {
+                    (void)task_wake(idle_pid);
+                    idle_blocked = 0;
+                } else {
+                    idle_block_req = 1;
+                    /* P11.4 后 idle 平时不会被选中，必须放行一次让它执行 task_block()。 */
+                    task_force_idle_demo();
+                }
             }
         }
 

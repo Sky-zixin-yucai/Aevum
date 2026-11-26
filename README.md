@@ -28,6 +28,12 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 
 > The repository separates the render engine, the runnable bare-metal kernel, the Fortuna kernel skeleton, the serial bridge and the presentation layer. The engine and the robot kernel are the two parts with runnable entry points today.
 
+## 测试记录 / Testing Log
+
+每次内核或 Forge 测试都必须留下记录，统一写在 [`TESTING.md`](TESTING.md)。记录至少包含测试对象、QEMU 启动命令、串口/桥端口、操作步骤、QEMU VGA 与 Forge 两侧证据、结论和发现的问题。
+
+> Every kernel or Forge test must leave a record in [`TESTING.md`](TESTING.md), including the exact QEMU instance, ports, steps, evidence from both QEMU VGA and Forge, conclusions and issues.
+
 ## 渲染引擎 / Render Engine
 
 ### 定位

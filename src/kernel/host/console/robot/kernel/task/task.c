@@ -102,6 +102,8 @@ static u32 wq_max_depth;
 /* P11.4：idle 只在没有其它 READY 任务时被选中；hlt 次数单独记账。 */
 static struct task_struct *idle_task;
 static u32 idle_hlt_total;
+/* B 键演示：绕过“有非 idle READY 就不选 idle”的规则，强制选中 idle 一次。 */
+static volatile u32 idle_demo_pick;
 /* P11.5：显式时间片的到期与“片未尽、跳过重选”计数。 */
 static u32 slice_expire_total;
 static u32 tick_defer_total;
@@ -692,6 +694,16 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
             best = t;
             best_v = t->vruntime;
         }
+    }
+    /*
+     * B 键演示：P11.4 的规则会让 idle 永远轮不到，proc_idle() 也就永远
+     * 消费不到 idle_block_req。这里只放行一次，让 idle 真正执行
+     * task_block()，状态行才会出现 BLOCKED / 3id B。
+     */
+    if (idle_demo_pick && idle_best) {
+        idle_demo_pick = 0;
+        idle_best->slice_left = TASK_SLICE_TICKS;
+        return idle_best;
     }
     if (rt_best) {
         rt_best->slice_left = TASK_SLICE_TICKS;
@@ -1575,6 +1587,11 @@ u32 task_eintr_total(void)
 void task_set_idle_task(struct task_struct *task)
 {
     idle_task = task;
+}
+
+void task_force_idle_demo(void)
+{
+    idle_demo_pick = 1;
 }
 
 void task_note_idle_hlt(void)

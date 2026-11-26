@@ -452,7 +452,7 @@ P11.4 把 idle 从“普通 READY 任务”改成真正的空闲任务。P11.3 �
 
 - `include/kernel/task.h` 增加 `task_set_idle_task()`、`task_note_idle_hlt()`、`task_idle_hlt_total()`；`kernel/task/task.c` 增加静态 `idle_task` 与 `idle_hlt_total`。`arm_app_init()` 在 `task_create(0,"idle",proc_idle,AEVUM_STACK_IDLE,&p_idle)` 后调用 `task_set_idle_task(p_idle)`，登记唯一 idle。
 - `task_pick_next()` 同时收集非 idle `best` 与 `idle_best`。存在任意非 idle READY 时返回 `best`；只有非 idle READY 为空时才返回 `idle_best`。选择仍按 `vruntime` 最小、同值按 `prev` 之后轮转；idle 不再参与这套比较。
-- `proc_idle()` 被选中后执行 `task_note_idle_hlt(); __asm__("sti; hlt")`；`sti` 保证 PIT 可再次抢占，`hlt` 在 halt 状态等待中断。K 键 `idle_block_req/task_block()` 的原调试路径保留，I 键探针不复用它。
+- `proc_idle()` 被选中后执行 `task_note_idle_hlt(); __asm__("sti; hlt")`；`sti` 保证 PIT 可再次抢占，`hlt` 在 halt 状态等待中断。B 键（扫描码 `0x30`）的 `idle_block_req/task_block()` 调试路径保留；因为 P11.4 后 idle 平时不会被选中，B 键会调用 `task_force_idle_demo()` 强制选中 idle 一次，确保 `task_block()` 真正执行。I 键探针不复用它。
 - I 键（扫描码 `0x17`）在无 demo、idle 未 block、phase=0 时设置 `idle_probe_until=tick_total+40`、`idle_probe_phase=1`；control 与 render 在循环顶部检测 phase=1 后调用 `task_block()`。idle 在到期后 `task_wake(control)`、`task_wake(render)`、清 phase、`task_yield()`，把执行权交回非 idle READY。
 - C 页 `app/arm/render/render.c` 增加 `IDLE hlt`：第 21 行 x=26 标签、x=35 计数，非零绿色；计数来自 `task_idle_hlt_total()`，不是渲染层估算。
 - 构建：新增代码第一次 clean build 把 BSS 推到 `0x981FC`，越过旧 `0x98000` 0x1FC。按既有预算约定扩 boot 窗口：`boot.asm` 192→208 扇区（第二段 64→80），`kernel.ld` 与 `config/memory.h` 同步到 `0x9A000`。
