@@ -17,6 +17,12 @@
 | [architecture/code-map.md](architecture/code-map.md) | 入口、领域模块与拆分规则 |
 | [audit/2026-11-18-code-audit.md](audit/2026-11-18-code-audit.md) | 本轮全仓审计、指标与风险 |
 
+## 机器人控制
+
+| 文档 | 内容 |
+| --- | --- |
+| [design/robot-control-philosophy.md](design/robot-control-philosophy.md) | 身体自描述、几何能力与参数化动作的设计哲学和工程经验 |
+
 ## 目录说明
 
 | 目录 | 存放 |
