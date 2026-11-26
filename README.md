@@ -50,10 +50,11 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 
 ### Forge 3R 抓取与 VGA
 
-| 阶段 | 结果 |
+| 初始场景：方块在 1.30 m | GRAB 后：工具尖端对齐 1.2396 m |
 | --- | --- |
-| 初始场景 | 方块在 `x=1.30 m`，左端面 `1.24 m` |
-| GRAB 后 | 工具尖端对齐 `1.2396 m`，方块标记为 `held` |
+| ![Forge 3R 初始场景](docs/assets/readme/kernel/forge-v26-initial.png) | ![Forge 3R GRAB](docs/assets/readme/kernel/forge-v26-grab.png) |
+
+![内核 VGA 3R 抓取姿态](docs/assets/readme/kernel/kernel-vga-v26.png)
 
 内核 VGA 现在显示 `±1.45 m` 工作空间、base 十字、`L/R/U/D` 四向标记、关节方向标签、左上小地图、目标/实际轨迹和 `vx/vy` 速度分解。
 
