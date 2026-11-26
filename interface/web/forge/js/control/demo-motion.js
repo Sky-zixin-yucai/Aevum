@@ -68,8 +68,9 @@
     }
 
     /*
-     * 3R 抓取：工具保持水平，前两关节解到方块左侧面，第三关节回正。
-     * 只服务当前默认 3R 示例；2R/4R–8R 仍保留建模和手动控制。
+     * 3R 抓取：工具保持水平，L1+L2 解到“工具尖端后退 L3+tool”的腕点，
+     * J3 回正把 L3 和工具一起水平送到方块左侧面。只服务当前默认 3R 示例；
+     * 2R/4R–8R 仍保留建模和手动控制。
      */
     function solve3R() {
       const segs = state.doc.segments;
@@ -79,11 +80,16 @@
       const size = prop.size || [0.12, 0.12, 0.12];
       const L1 = Number(segs[0].length) || 0;
       const L2 = Number(segs[1].length) || 0;
+      const L3 = Number(segs[2].length) || 0;
       const tool = Number(state.doc.tool && state.doc.tool.length) || 0;
       const baseY = Number(state.doc.base && state.doc.base.h) || 0;
       const tipX = Number(prop.pos[0]) - size[0] / 2;
       const tipY = Number(prop.pos[1]);
-      const wx = tipX - tool;
+      /*
+       * 3R 的第三段 L3 和工具都水平时，腕关节（L1+L2 末端）要在
+       * 工具尖端后退 L3 + tool；之前只减 tool，会把方块压进 J3 段。
+       */
+      const wx = tipX - tool - L3;
       const wy = tipY;
       const dx = wx;
       const dy = wy - baseY;

@@ -367,32 +367,35 @@ python src/kernel/host/bridge/serial_bridge.py
 - 边界：小地图分辨率约 0.26 m/格，J2 的局部左右弧线可能只占一格；A 方案只摆 J2 仍不能实际走遍四个象限，完整四向需要 J1 大范围扫或 J1+J2 合成路径。
 - 说明：轨迹是渲染层的历史采样，不是控制层动作语义；`@` 是当前 tip，`o` 是目标，`*` 是历史。
 
-## 2026-11-26 / Forge 方块 0.80 m 与 3R GRAB 演示
+## 2026-11-26 / Forge 3R 抓取几何与 1.30 m 方块
 
 ### 对象
 - QEMU：Windows QEMU 11.1.0，`-display gtk`，串口 5555 / monitor 5556；本轮 PID 199064
 - 桥：`serial_bridge.py`，`ws://127.0.0.1:8765` → QEMU serial 5555
 - `kernel.bin`：90,312 bytes（177 扇区，上限 208，余量 16,184 bytes）
-- 页面：`http://127.0.0.1:8766/interface/web/forge/?v=22`
-- 方块：`doc.prop` 默认与 3R preset 均为 `size [0.12,0.12,0.12]`、`pos [0.80,0.06,0]`
+- 页面：`http://127.0.0.1:8766/interface/web/forge/?v=26`
+- 方块：`doc.prop` 默认与 3R preset 均为 `size [0.12,0.12,0.12]`、`pos [1.30,0.06,0]`
 
 ### 步骤
-1. 把方块中心从 `x=0.90` 改到 `x=0.80`，保持中心高度 `y=0.06`、底面贴地；方块左端面为 `0.74`。
-2. 3R 抓取几何：工具长 `0.20`，wrist 为 `[0.54,0.06]`，base 高 `0.24`；IK 目标 `q=[33.2°,-120.8°,87.6°]`。
-3. 页面缓存参数升到 `?v=22`；重启 QEMU 和桥，Forge 点 Connect 进入 `KERNEL / MANUAL HOLD`。
-4. 点 GRAB，等待 `GRAB 完成：方块已夹住`，再点 RELEASE 确认方块回到 `x=0.80`。
+1. 修正 3R 抓取几何：L1/L2 解到的腕点必须从工具尖端后退 `L3 + tool = 0.24 + 0.20 = 0.44`，不是只后退 tool；否则 J3 段会压在方块上。
+2. 方块中心放到 `x=1.30`，中心高度 `y=0.06`、底面贴地；左端面为 `1.24`，3R 工具尖端为 `1.2396`，几何上对齐。默认姿态的 tool tip 约 `1.19`，方块在默认姿态下也不再被 J3 覆盖。
+3. Forge 相机 `fitCamera` 增加取景余量，页面缓存参数升到 `?v=26`；QEMU 与桥保持连接，点 Connect 进入 `KERNEL / MANUAL HOLD`。
+4. 给桥接控制加 2 秒手动目标续期，避免拖完目标 5 秒后内核回 AUTO 穿过方块导致的错误“重叠”；页面持续打开时保持 MANUAL HOLD，桥断开才走 5 秒兜底。
+5. 点 GRAB，等待 `GRAB 完成：方块已夹住`，保持超过 5 秒后再检查状态；点 RELEASE 检查方块回到 `x=1.30`。
 
 ### 证据
-- Forge GRAB：`tests/kernel/results/2026-11-26/windows-forge-v22-grab.png`
-- Forge RELEASE：`tests/kernel/results/2026-11-26/windows-forge-v22-released.png`
-- 内核 VGA：`tests/kernel/results/2026-11-26/viz-forge-grab.png`
-- Forge `0x03`：`q1 33.2° / q2 -121.3° / q3 88.3°`，`END ERROR 0.25 mm`
-- VGA：`q1 33.2° / q2 -120.8° / q3 87.6°`，`tip 0.250 mm`
+- 初始：`tests/kernel/results/2026-11-26/windows-forge-v26-initial.png`
+- Forge GRAB：`tests/kernel/results/2026-11-26/windows-forge-v26-grab.png`
+- 超过 5 秒仍保持：`tests/kernel/results/2026-11-26/windows-forge-v26-hold.png`
+- 内核 VGA：`tests/kernel/results/2026-11-26/viz-v26-grab.png`
+- Forge `0x03`：`q1 26.7° / q2 -88.0° / q3 62.0°`，`END ERROR 0.06 mm`
+- VGA：`q1 26.6° / q2 -88.4° / q3 61.7°`，`tip 0.060 mm`
+- 手动保持：GRAB 后 7 秒，`MODE MANUAL HOLD`，`q` 未回 AUTO。
 
 ### 结论
-- 通过：方块左端面与 3R 工具尖端对齐；GRAB 后夹爪闭合、方块随工具；RELEASE 后回到 `0.80`，页面不再在右边缘裁切。
+- 通过：方块左端面与 3R 工具尖端几何对齐；默认姿态和 GRAB 姿态都不再出现 J3 覆盖方块；GRAB 后保持超过 5 秒仍是 `MANUAL HOLD`。
 - 边界：本轮“抓取”是 Forge 夹爪状态加内核关节到点，没有内核夹爪命令，不能说成真机夹爪控制。
-- 说明：`x=0.80` 是当前演示的舒适中距位置；`0.90` 在几何上也能解，但会贴近视口右缘。
+- 说明：`x=1.30` 是靠近默认 tool tip 的取物位置，避免方块落在 J3 段下方；`x=0.80` 的旧解忽略了 L3，是“机械臂和方块重叠”的根因。
 
 ## 九、讨论问题
 

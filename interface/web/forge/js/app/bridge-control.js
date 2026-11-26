@@ -12,6 +12,26 @@
     const onKernelState = opts.onKernelState || function () {};
     const updateKernelStatus = opts.updateKernelStatus || function () {};
     const toast = opts.toast || function () {};
+    let manualHoldTimer = null;
+
+    /*
+     * 内核手动目标有 5 秒保持窗口。页面打开时每 2 秒重发当前目标，
+     * 让 MANUAL HOLD 不会因为“没有再拖滑块”自动掉回 AUTO；
+     * 只有页面/桥真正断开时才走 5 秒兜底。
+     */
+    function stopManualHold() {
+      if (manualHoldTimer) {
+        clearInterval(manualHoldTimer);
+        manualHoldTimer = null;
+      }
+    }
+
+    function startManualHold() {
+      stopManualHold();
+      manualHoldTimer = setInterval(function () {
+        if (state.sim.kernel && state.sim.manual) sendManual();
+      }, 2000);
+    }
 
     function q16(v) {
       return (Number(v) || 0) / Q16;
@@ -63,6 +83,7 @@
       if (mode === 0 && state.sim.manual &&
           performance.now() - (state.sim.manualSince || 0) > 1500) {
         state.sim.manual = false;
+        stopManualHold();
       }
 
       q.forEach(function (v, i) {
@@ -161,8 +182,10 @@
         /* 从 AUTO 进入手动时先锁当前 q，避免跳到上一条 q_target。 */
         state.doc.segments.forEach(function (s) { s.target = s.q; });
         sendManual();
-        toast("MANUAL 保持已开启；释放后立即回 AUTO，桥接断开时 5 秒兜底");
+        startManualHold();
+        toast("MANUAL 保持已开启；页面每 2 秒续期，桥接断开时 5 秒兜底");
       } else {
+        stopManualHold();
         sendRelease();
         toast("MANUAL 已释放；内核立即回 AUTO");
       }
@@ -175,10 +198,12 @@
       state.sim.manual = true;
       state.sim.manualSince = performance.now();
       sendManual();
+      startManualHold();
       syncControls();
     }
 
     function resetLink() {
+      stopManualHold();
       setKernelPill(false);
       state.sim.kernel = false;
       state.sim.manual = false;

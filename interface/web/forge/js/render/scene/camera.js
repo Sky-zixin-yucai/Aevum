@@ -121,7 +121,7 @@
     const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2, cz = (mnz + mxz) / 2;
     const span = Math.max(mxx - mnx, mxy - mny, mxz - mnz, 0.5);
     cam.goalTarget = [cx, cy, cz];
-    cam.goalDist = Math.max(1.1, span * 1.55);
+    cam.goalDist = Math.max(1.1, span * 1.9);
     if (immediate) {
       cam.target = [cx, cy, cz];
       cam.dist = cam.goalDist;
