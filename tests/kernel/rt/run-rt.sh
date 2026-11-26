@@ -11,6 +11,9 @@ REPS="${REPS:-3}"
 TIMEOUT="${TIMEOUT:-300}"
 ICOUNT="${RT_ICOUNT:-0}"
 STRICT="${RT_STRICT:-0}"
+BUDGET="${RT_BUDGET:-0}"
+ONESHOT="${RT_BUDGET_ONESHOT:-0}"
+WORK_US="${RT_WORK_US:-1800}"
 OUT="${1:-$ROOT/tests/kernel/results/2026-11-26/rt-bg$BG}"
 
 case "$BG" in
@@ -20,7 +23,7 @@ esac
 
 cd "$ROBOT"
 make clean BUILD=build-rt
-make BUILD=build-rt DEFS="-DAEVUM_RT_BENCH -DRT_BG_TASKS=$BG" all
+make BUILD=build-rt DEFS="-DAEVUM_RT_BENCH -DRT_BG_TASKS=$BG -DRT_BUDGET=$BUDGET -DRT_BUDGET_ONESHOT=$ONESHOT -DRT_WORK_US=$WORK_US" all
 mkdir -p "$OUT"
 
 QEMU=(qemu-system-i386

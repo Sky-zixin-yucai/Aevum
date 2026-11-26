@@ -240,4 +240,21 @@ u32 task_rt_probe_wake_tsc(void);
 void task_set_rt(struct task_struct *task);
 u32 task_wake_resched_total(void);
 
+/*
+ * RT-2：CBS 预算。budget_cycles 是每周期可消费的 TSC 周期，period_ticks
+ * 是补满周期（100Hz 下 10ms=1 tick）。预算耗尽后任务 throttle 到下一个
+ * period_ticks 边界；调用 task_rt_budget_begin() 进入新周期。
+ */
+void task_set_rt_budget(struct task_struct *task, u32 budget_cycles,
+                        u32 period_ticks);
+void task_rt_budget_begin(void);
+/* 控制工作结束：把本段运行时间结清，后续统计/睡眠不再消费预算。 */
+void task_rt_budget_end(void);
+/* 预算到期中断调用：只对当前 RUNNING 的 RT 任务记账并返回 1 表示超预算。 */
+int task_rt_budget_expire(void);
+/* 每个 PIT tick 调用：到期后补满被 throttle 的 RT 任务。 */
+void task_rt_budget_tick(u32 now_tick);
+u32 task_rt_budget_overrun_total(void);
+u32 task_rt_budget_throttle_total(void);
+
 #endif

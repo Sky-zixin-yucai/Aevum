@@ -350,3 +350,101 @@ RT-1 的 10ms 控制模型不靠 1kHz PIT。宿主墙钟用 `run-rt-host.ps1` �
 - 最终命令：`pwsh -NoProfile -File tests/kernel/rt/run-rt-host.ps1 -Bg 4 -Reps 3`；确定性口径加 `-Deterministic`；
 - 结果 CSV：`tests/kernel/results/2026-11-26/rt-1-final.csv`（ignored，不提交）；
 - 原始 QEMU 日志在 `tests/kernel/results/2026-11-26/rt-1-*`（ignored，不提交）。
+
+## 14. RT-2 第一版：CBS 预算账本与 throttle（已落地，硬 2ms 未闭合）
+
+RT-2 给控制任务加 CBS 预算：10ms 周期、2ms 预算、正常工作量 1.8ms。它不替代 RT-1 的唤醒抢占；预算耗尽后只影响 RT 任务自己的继续运行资格，fair 回退保持不变。
+
+### 14.1 契约与 API
+
+- 每任务字段：`rt_budget_cycles`、`rt_budget_left`、`rt_budget_last_tsc`、`rt_throttle_until`、`rt_period_ticks`、`rt_throttled`。
+- `task_set_rt_budget(task,budget_cycles,period_ticks)`：只对已标记 `rt` 的任务生效；`period_ticks=0` 按 1 tick 处理。
+- `task_rt_budget_begin()`：周期开始补满预算并建立 TSC 起点。
+- `task_rt_budget_end()`：控制工作结束结清本段预算，并清 `last_tsc`，避免把工作结束后的截止检查、打印和 sleep 尾部算成控制预算。
+- `task_rt_budget_tick(now_tick)`：PIT tick 扫描被 throttle 的任务；`now_tick >= rt_throttle_until` 时补满、清 throttle，并置 `need_resched`。
+- `task_rt_budget_expire()`：CBS 到期事件入口；只对当前 RUNNING 的 RT 任务记账。
+- `task_rt_budget_overrun_total()` / `task_rt_budget_throttle_total()`：汇总 `budget_overrun` 与 `throttle`。
+- `task_pick_next()` 跳过 `rt_throttled` 的 RT 任务；选中 RT 时若 `last_tsc=0` 建立起点。
+- `task_note_wake()` 对 RT 任务做周期重置；一次唤醒视为新周期。
+- 非 tick 的 yield/block/exit 退出也调用 `task_rt_budget_charge()` 结清当前预算。
+
+编译宏：
+
+| 宏 | 默认 | 说明 |
+| --- | ---: | --- |
+| `RT_BUDGET` | 0 | 0 保持 RT-1 行为；1 开 CBS 账本 |
+| `RT_BUDGET_ONESHOT` | 0 | 1 才启用 PIT 2ms one-shot 硬切；默认关闭 |
+| `RT_WORK_US` | 1800 | 正常控制工作量；恶意场景用 3000 |
+
+`RT_STAT start` 增加 `enforce=`、`oneshot=`；`RT_STAT` 汇总增加 `budget_overrun=`、`throttle=`。`overrun` 仍是 `exec > 2ms` 的原始执行口径，`budget_overrun` 是 CBS 账本判定，两者不合并。
+
+### 14.2 tick 级账本：确定性结果
+
+`RT_BUDGET=1`、`RT_BUDGET_ONESHOT=0`、4/8 后台、三次 1000 周期。表中为三次最坏值；`miss`/`budget_overrun`/`throttle` 三次均为 0，`exec` 均为 1800us。
+
+| 后台 | max latency | p99 latency | max jitter | max exec | miss | budget_overrun | throttle | switches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 38us | 30us | 207us | 1800us | 0/1000 | 0 | 0 | 2005 |
+| 8 | 42us | 40us | 389us | 1800us | 0/1000 | 0 | 0 | 2005 |
+
+原始三次：
+
+```text
+bg=4 lat_max=19/19/38us p99=10/10/30us jitter=184/184/207us exec=1800/1800/1800us miss=0 budget_overrun=0 throttle=0 switches=2005
+bg=8 lat_max=42/42/42us p99=40/40/40us jitter=389/389/389us exec=1800/1800/1800us miss=0 budget_overrun=0 throttle=0 switches=2005
+```
+
+结论：正常 1.8ms 控制工作量在 2ms 预算内，tick 级账本不产生 throttle；RT-1 的唤醒延迟和切换次数保持不变。
+
+### 14.3 恶意 3ms 控制：账本能记账，但不能 2ms 硬切
+
+`RT_WORK_US=3000`、`RT_BUDGET=1`、`RT_BUDGET_ONESHOT=0`、4 后台一次：
+
+```text
+RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=19 lat_p99_us=10 jitter_max_us=184 exec_max_us=3000 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=1001 switches=2005 cyc_us=982
+```
+
+这说明账本把 3ms 工作量逐周期判成 `budget_overrun` 并 throttle，但它是在 tick/工作结束边界发现，**没有在 2ms 处切走控制任务**；`exec_max` 仍是 3000us。tick 级账本不能作为“2ms 硬截断”的证据，只能作为预算记账和下一周期补满的证据。
+
+### 14.4 PIT one-shot 2ms 硬切试验：确定性可用，宿主不稳定
+
+`RT_BUDGET_ONESHOT=1` 时，`interrupt_arm_rt_budget()` 把 PIT 通道 0 的 100Hz 周期方波切成 2ms one-shot；预算 IRQ 不推进 tick，只调 `task_rt_budget_expire()` 并强制重选，随后装 `rest_us` 到下一个 10ms tick，tick 到达恢复周期模式。
+
+确定性 4 后台正常 1.8ms 一次：
+
+```text
+RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=38 lat_p99_us=30 jitter_max_us=215 exec_max_us=1800 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=1001 switches=2470 cyc_us=982
+```
+
+预算中断把切换从 2005 提到 2470，但零 miss、零预算超限。3ms 恶意场景在 one-shot 下出现 `lat_n=1`、`wake_miss=999`、`late=999`、`exec=10204us`：控制任务被 2ms 预算中断后跨周期恢复，测试的 `next_tick` 相位和 `start_tsc` 口径没有适配“被预算切走再恢复”的工作，不能作为有效验收样本。该场景需要单独的 `RT_BAD` 模式重新设计。
+
+宿主墙钟 one-shot 4 后台：rep1 有效 `lat_max=109us`、`jitter=851us`、`miss=0`、`budget_overrun=8`；rep2 `jitter=12286us`、`exec=11601us`、`miss=2`、`late=1`，被 `HOST_INVALID` 拒绝。one-shot 在宿主 TCG 下会放大 tick 相位抖动并产生预算误报，因此默认关闭，不作为 RT-2 宿主门槛。
+
+### 14.5 宿主墙钟 tick 级账本
+
+`run-rt-host.ps1 -Budget` 跑默认 `RT_ICOUNT=0`，4 后台三次：
+
+| 样本 | max latency | p99 | max jitter | max exec | miss | overrun | budget_overrun | throttle | switches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 187us | 80us | 594us | 1833us | 0 | 0 | 6 | 7 | 2011 |
+| 2 | 216us | 40us | 515us | 1895us | 0 | 0 | 7 | 8 | 2013 |
+| 3 | 285us | 70us | 1101us | 1883us | 0 | 0 | 7 | 7 | 2011 |
+
+4 后台保持零 miss；最大延迟 285us。但 `budget_overrun` 出现 6–7 次，且第 3 次抖动 1101us，略超 1ms。这些不是控制任务真的跑了 2ms，而是宿主 TCG 停顿把 TSC 墙钟时间计入预算；tick 级账本在宿主墙钟下会误报，不能要求零 `budget_overrun`。
+
+8 后台没有拿到同一轮三次干净样本；有效样本分别来自三次重跑：
+
+```text
+bg=8 lat_max=348us jitter=8463us miss=0 overrun=0 budget_overrun=7 throttle=7 switches=2011
+bg=8 lat_max=547us jitter=3818us miss=0 overrun=1 budget_overrun=9 throttle=9 switches=2013
+bg=8 lat_max=228us jitter=1508us miss=0 overrun=3 budget_overrun=10 throttle=10 switches=2013
+```
+
+三次都是零 miss，但抖动 1.5–8.4ms，明显是宿主停顿；另外两次 `HOST_INVALID`（`wake_miss=1`、`late=1`）未计入。RT-2 的宿主 8 后台只能作为“零 miss”观察，不能作为干净的三次门槛。
+
+### 14.6 结论与边界
+
+- 确定性口径：4/8 后台正常 1.8ms 控制零 miss、零 `budget_overrun`、零 throttle；CBS 账本和 throttle 选择本身能工作。
+- 宿主墙钟：4 后台零 miss、最大延迟 285us；8 后台零 miss，但只有单次有效样本且抖动毫秒级。宿主 `budget_overrun` 是停顿误报，不应当作控制任务超预算。
+- **硬 2ms 截断未闭合**：tick 级账本只能在 10ms tick/工作结束发现超预算；PIT one-shot 在确定性口径能 2ms 切，但宿主不稳定，3ms 恶意场景的测试口径也要重做。
+- 下一步要么接 APIC/HPET one-shot，把 2ms 预算做成独立高精度定时器；要么明确 RT-2 只做“预算记账 + 下一周期 throttle”，不承诺 2ms 硬切。

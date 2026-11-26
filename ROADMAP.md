@@ -6,7 +6,7 @@
 
 ## 当前目标
 
-内核已经走完进程、地址空间、信号、exec、fd/pipe、线程、动态内核线程、阻塞调度和只读文件 ABI。P12.1 已完成；P11.9 的公平份额基线和 P11.10 / RT-0b 的 A1 before 已完成。RT-1 第一刀（`need_resched` + 最小 RT 类 + 全部唤醒路径）已完成并闭合 10ms 模型：确定性口径 4/8 过 1ms 门槛，宿主墙钟在 0.5ms 定时器分辨率下 4/8 也过 1ms；12 后台单独报告。当前下一步是 1ms 伺服的 APIC/HPET one-shot，以及 RT-2 的 CBS 预算；P12.2 范围未定，不提前写块设备、写路径、目录、权限或 cwd。
+内核已经走完进程、地址空间、信号、exec、fd/pipe、线程、动态内核线程、阻塞调度和只读文件 ABI。P12.1 已完成；P11.9 的公平份额基线和 P11.10 / RT-0b 的 A1 before 已完成。RT-1 第一刀（`need_resched` + 最小 RT 类 + 全部唤醒路径）已完成并闭合 10ms 模型：确定性口径 4/8 过 1ms 门槛，宿主墙钟在 0.5ms 定时器分辨率下 4/8 也过 1ms；12 后台单独报告。RT-2 第一版已完成 CBS 预算账本、throttle 和 3ms 恶意记账：确定性 4/8 正常 1.8ms 控制零 miss/零预算超限；但 tick 级账本不能 2ms 硬切，PIT one-shot 宿主不稳定，默认关闭。当前下一步是 APIC/HPET one-shot 的 2ms 硬截断与 1ms 伺服；P12.2 范围未定，不提前写块设备、写路径、目录、权限或 cwd。
 
 ## 已完成
 
@@ -61,6 +61,7 @@
 - P11.10 / RT-0a：只定义实时控制模型与度量契约，不改调度器。默认控制周期 10ms、预算 2ms、截止 10ms，后台 0/4/8/12 个 CPU-bound 任务，1000 周期 × 3 次；记录唤醒延迟、抖动、执行时间、deadline miss、切换次数。RT-0b 才加观测，RT-1 才改 `need_resched`/1kHz。
 - P11.10 / RT-0b：建立 ring0 控制观测台与 TSC 探针。A1 before 的 0/4/8/12 后台最坏唤醒延迟为 30.5/152.2/313.1/472.4ms，p99 为 30.4/152.0/312.9/472.3ms；1000 周期全部 deadline miss。根因是 P11.5 的 4 tick 片延迟重选：唤醒只置 READY，`slice_left > 0` 时 PIT 出口直接返回当前帧。RT-1 先做唤醒抢占，1kHz/one-shot 留给第二刀。
 - P11.10 / RT-1 第一刀与闭合：`task_struct.rt` + `need_resched` + 全部唤醒路径 `task_note_wake()`；IRQ0 有抢占请求时绕过 `tick_defer`，`task_pick_next()` 先选 RT 再选 fair。PIT 保持 100Hz，未做 1kHz/CBS。确定性 `-icount` 口径 4/8 后台最大延迟 19/22us、最大抖动 185/365us、1000 周期零 miss/overrun；12 后台 24us/562us。宿主墙钟在 Windows 0.5ms 定时器分辨率下 4/8 后台最大延迟 201/405us、抖动 705/820us、零 miss；12 后台 166us/703us/零 miss、单次 overrun。15.9ms 整机暂停样本保留为 `HOST_INVALID`。正常 A1 份额不变，`kernel.bin=88,008B`、`__bss_end=0x999DC`。
+- P11.11 / RT-2 第一版：`task_struct` 增加 CBS 账本字段；`task_set_rt_budget()`、`begin/end/expire/tick()`、`task_pick_next()` 跳过 `rt_throttled`，tick 补满时置 `need_resched`。`RT_BUDGET=1` 打开账本，`RT_WORK_US=1800` 为正常控制，`RT_BUDGET_ONESHOT=1` 才启用 PIT 2ms one-shot。确定性 4/8 后台正常 1.8ms 均零 miss/零预算超限；宿主 4 后台零 miss、最大延迟 285us，宿主停顿造成 `budget_overrun=6..7` 误报；宿主 8 后台三次重跑各一个有效样本、零 miss，但抖动 1.5–8.4ms。**tick 级账本不能 2ms 硬切**：3ms 恶意场景仍执行 3000us；PIT one-shot 确定性可用、宿主不稳定，默认关闭。正常 A1 份额不变，`kernel.bin=88,712B`、`__bss_end=0x99DFC`（距上限 516B）。
 
 ### P12.1 只读 ramdisk 与最小文件 ABI
 
@@ -74,7 +75,7 @@
 
 ## 下一阶段
 
-P12.2：范围待定。只会在明确后决定是否接块设备、写路径、目录、权限或 cwd；不在 P12.1 里提前实现。RT-1 的 10ms 模型已闭合；下一步是 1ms 伺服所需的 APIC/HPET one-shot，以及 RT-2 的 CBS 预算；P12.2 的编号和范围都不被占用。
+P12.2：范围待定。只会在明确后决定是否接块设备、写路径、目录、权限或 cwd；不在 P12.1 里提前实现。RT-1 的 10ms 模型已闭合；RT-2 第一版账本已落地，但 2ms 硬截断仍需 APIC/HPET one-shot；1ms 伺服也需要同一套高精度定时器。P12.2 的编号和范围都不被占用。
 
 ## 不在路线图里
 

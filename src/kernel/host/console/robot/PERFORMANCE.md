@@ -233,3 +233,16 @@ RT-1 第一刀 clean 构建 `kernel.bin=88,008B`，`__bss_start=0x957E0`、`__bs
 - RT 构建（`RT_BG_TASKS=12`）：`kernel.bin=39,844B`、`text=39,598`、`data=228`、`bss=17,016`；`__bss_end=0x8DE38`，距 `0x9A000` 余 4,552B。相对 RT-0b，RT `bss` +96B、镜像 +约 300B。
 - 确定性 `-icount` 口径 4/8 后台最大唤醒延迟 19/22us、最大抖动 185/365us、1000 周期零 miss/零 overrun；12 后台 24us/562us。宿主墙钟在 0.5ms 定时器分辨率下 4/8 后台最大延迟 201/405us、抖动 705/820us、零 miss；15.9ms 整机暂停样本仍标 `HOST_INVALID`，不参与门槛。
 - 边界：这是单核 100Hz PIT 的功能/延迟观测，不是硬实时保证；没有 APIC one-shot、CBS、RT 队列或 per-task 抢占统计。`need_resched` 是全局单标记，不能表示多个独立抢占请求。1kHz PIT 实测会放大 TCG 宿主抖动，未采用；1ms 伺服必须另做 one-shot 定时器。
+
+## 21. P11.11 RT-2 CBS 预算的体积、账本与宿主口径
+
+RT-2 clean 构建 `kernel.bin=88,712B`，`__bss_start=0x95AA0`、`__bss_end=0x99DFC`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 正常 A1 镜像从 RT-1 的 88,008B 增至 88,712B（+704B）；`size` 的 text 列从 87,734B 增至 88,448B（+714B），`.data=232B` 不变，`.bss` 从 16,892B 增至 17,244B（+352B）。新增的是每任务 6 个预算字段（压缩后 20B × 16 槽）、`budget_overrun`/`throttle` 两个静态计数器、`task_rt_budget_*` 函数和 `task_pick_next()`/`task_schedule_irq()` 分支。
+- BSS 距 `0x9A000` 余 `0x204`（516B）；镜像距 106,496B 上限余 17,784B。余量已经接近 RT-1 的 `0x624` 的一半，后续再加 per-task 字段会很快越界；RT-2 已把 `rt_period_ticks` 压到 `u16`、`rt_throttled` 压到 `u8`，没有继续扩 `task_struct`。
+- RT 构建（`RT_BG_TASKS=4/8`、`RT_BUDGET=1`、`RT_BUDGET_ONESHOT=0`）：`kernel.bin=40,836B/40,868B`；RT-1 是 39,844B。one-shot 构建 40,964B。RT 镜像仍远低于 106,496B 上限。
+- 正常 A1 clean build 三次：4 任务 `52.80/26.40/13.60/7.20`，2 任务 `88.80/11.20`，与 RT-1 基线逐位一致；启动 smoke 无 fault/panic。`task_struct` 的预算字段只增 BSS，不改变正常 A1 的权重/片长/唤醒路径。
+- 确定性 `-icount`、tick 级账本、4/8 后台三次：正常 1.8ms 控制 `lat_max=38/42us`、`jitter=207/389us`、`exec=1800us`、`miss=0`、`budget_overrun=0`、`throttle=0`、`switches=2005`。账本开销没有改变 RT-1 的唤醒延迟和切换次数。
+- 宿主墙钟 4 后台三次：`lat_max=187/216/285us`、`jitter=594/515/1101us`、`exec=1833/1895/1883us`、`miss=0`、`overrun=0`、`budget_overrun=6/7/7`、`throttle=7/8/7`。宿主 8 后台只有三次重跑各一个有效样本：`lat_max=348/547/228us`、`jitter=8463/3818/1508us`、`budget_overrun=7/9/10`、`miss=0`。宿主停顿把 TSC 墙钟时间计入预算，`budget_overrun` 是误报，不是控制任务真的跑了 2ms。
+- 恶意 3ms 控制、tick 级账本：`exec=3000us`、`budget_overrun=1000`、`throttle=1000`、`miss=0`；账本只能在 tick/工作结束发现超预算，**没有 2ms 硬切**。PIT one-shot 确定性 4 后台正常 1.8ms 一次零 miss/零预算超限，`switches=2470`；宿主 one-shot rep1 有效、rep2 `miss=2/late=1` 被 `HOST_INVALID` 拒绝。one-shot 默认关闭。
+- 边界：RT-2 当前是“预算记账 + 下一周期 throttle”的第一版，不是硬 CBS；`task_note_wake()` 把一次唤醒当新周期，频繁自唤醒可以重置预算，不能抵御恶意唤醒。2ms 硬截断需要 APIC/HPET one-shot 或独立高精度定时器。宿主 `budget_overrun` 和毫秒级抖动是 TCG 停顿，不应写进实时性承诺。

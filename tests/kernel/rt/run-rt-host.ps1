@@ -2,8 +2,12 @@ param(
     [ValidateSet("0", "4", "8", "12")]
     [string]$Bg = "4",
     [int]$Reps = 3,
-    [int]$Timeout = 30,
-    [switch]$Deterministic
+    [int]$Timeout = 120,
+    [switch]$Deterministic,
+    [switch]$Budget,
+    [switch]$OneShot,
+    [int]$WorkUs = 1800,
+    [string]$Out = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +31,10 @@ if ($set -ne 0) {
 
 try {
     $icount = if ($Deterministic) { "1" } else { "0" }
-    $cmd = "cd /mnt/d/Aevum && RT_BG_TASKS=$Bg REPS=$Reps TIMEOUT=$Timeout RT_STRICT=1 RT_ICOUNT=$icount tests/kernel/rt/run-rt.sh"
+    $budgetArg = if ($Budget) { "1" } else { "0" }
+    $oneshotArg = if ($OneShot) { "1" } else { "0" }
+    $outArg = if ($Out) { " $Out" } else { "" }
+    $cmd = "cd /mnt/d/Aevum && RT_BG_TASKS=$Bg REPS=$Reps TIMEOUT=$Timeout RT_STRICT=1 RT_ICOUNT=$icount RT_BUDGET=$budgetArg RT_BUDGET_ONESHOT=$oneshotArg RT_WORK_US=$WorkUs tests/kernel/rt/run-rt.sh$outArg"
     & "C:\Windows\System32\wsl.exe" -d kali-linux -- bash -lc $cmd
     $code = $LASTEXITCODE
 }

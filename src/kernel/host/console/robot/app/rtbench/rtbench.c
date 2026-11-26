@@ -17,6 +17,18 @@ extern u8 user_program_end[];
 #define RT_BG_TASKS 0
 #endif
 
+#ifndef RT_WORK_US
+#define RT_WORK_US 1800u
+#endif
+
+#ifndef RT_BUDGET
+#define RT_BUDGET 0
+#endif
+
+#ifndef RT_BUDGET_ONESHOT
+#define RT_BUDGET_ONESHOT 0
+#endif
+
 #if RT_BG_TASKS > 12
 #error "RT_BG_TASKS must be 0..12 (PROC_MAX=12)"
 #endif
@@ -25,7 +37,6 @@ extern u8 user_program_end[];
 #define RT_PERIODS       1000u
 #define RT_PERIOD_US     10000u
 #define RT_BUDGET_US     2000u
-#define RT_WORK_US       1800u
 #define RT_DEADLINE_US   10000u
 
 static struct task_struct *rt_control_task;
@@ -179,6 +190,10 @@ static void rt_report(void)
     out_u32(deadline_miss);
     out(" overrun=");
     out_u32(overrun);
+    out(" budget_overrun=");
+    out_u32(task_rt_budget_overrun_total());
+    out(" throttle=");
+    out_u32(task_rt_budget_throttle_total());
     out(" wake_miss=");
     out_u32(wake_miss);
     out(" sleep_fail=");
@@ -242,12 +257,20 @@ static void rt_control(void)
     if (!work_cycles) work_cycles = 1u;
     if (!budget_cycles) budget_cycles = 1u;
 
+#if RT_BUDGET
+    task_set_rt_budget(rt_control_task, budget_cycles, period_ticks);
+#endif
+
     out("RT_STAT start bg=");
     out_u32(RT_BG_TASKS);
     out(" hz=");
     out_u32(interrupt_tick_hz());
     out(" period_us=");
     out_u32(RT_PERIOD_US);
+    out(" enforce=");
+    out_u32(RT_BUDGET);
+    out(" oneshot=");
+    out_u32(RT_BUDGET_ONESHOT);
     out(" budget_us=");
     out_u32(RT_BUDGET_US);
     out(" work_us=");
@@ -301,8 +324,29 @@ static void rt_control(void)
             prev_valid = 1;
         }
 
+#if RT_BUDGET
+        task_rt_budget_begin();
+#if RT_BUDGET_ONESHOT
+        /*
+         * RT-2：把 100Hz 周期方波换成 2ms one-shot；预算 IRQ 处理完再装
+         * 到下一个 10ms tick。rest_us 扣掉本次唤醒延迟，保持 tick 相位。
+         */
+        {
+            u32 lat_us = wake ? rt_cycles_to_us(latency) : 0u;
+            u32 rest_us = RT_PERIOD_US - RT_BUDGET_US;
+            if (lat_us < rest_us) rest_us -= lat_us;
+            else rest_us = 1000u;
+            if (rest_us < 1000u) rest_us = 1000u;
+            interrupt_arm_rt_budget(RT_BUDGET_US, rest_us);
+        }
+#endif
+#endif
+
         rt_work(start, work_cycles);
         end = tsc_read32();
+#if RT_BUDGET
+        task_rt_budget_end();
+#endif
         exec = end - start;
         if (exec > exec_max_cycles) exec_max_cycles = exec;
 

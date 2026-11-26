@@ -38,6 +38,12 @@ struct task_struct {
     int  detached;  /* 1：线程退出后由调度器自动回收，不等待 join */
     int  kthread;   /* 1：P8 动态内核线程，ZOMBIE 由 join 或调度器兜底回收 */
     int  rt;        /* RT-1：最小 RT 类；只给控制观测任务，优先于 fair 类 */
+    u32  rt_budget_cycles;  /* RT-2：每周期 CBS 预算，TSC 周期；0 表示不限制 */
+    u32  rt_budget_left;    /* 本周期剩余预算 */
+    u32  rt_budget_last_tsc;/* 上次开始/记账的 TSC；0 表示尚未开始 */
+    u32  rt_throttle_until; /* throttle 到该 tick 后解除 */
+    u16  rt_period_ticks;   /* 预算补满周期，100Hz 下 10ms=1 tick */
+    u8   rt_throttled;      /* 1：预算耗尽，调度器在本周期内跳过 */
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
     u32  wake_tick;         /* P11.1：定时阻塞的到期 PIT tick；0 表示无限等待 */
     struct wait_queue *waitq; /* P11.3：当前阻塞所属对象等待队列；0 表示普通等待 */
@@ -102,6 +108,9 @@ static u32 tick_defer_total;
 /* RT-1：唤醒后需要抢占当前任务的标记；只在 IRQ0 出口消费。 */
 static volatile u32 need_resched;
 static u32 wake_resched_total;
+/* RT-2：CBS 超预算与 throttle 次数；按任务字段记账，这里只汇总。 */
+static u32 rt_budget_overrun_total;
+static u32 rt_budget_throttle_total;
 /* P11.7：被 pending signal 打断的阻塞次数。 */
 static u32 eintr_total;
 /*
@@ -199,6 +208,12 @@ static void task_zero(struct task_struct *task)
     task->detached = 0;
     task->kthread = 0;
     task->rt = 0;
+    task->rt_budget_cycles = 0;
+    task->rt_budget_left = 0;
+    task->rt_budget_last_tsc = 0;
+    task->rt_period_ticks = 0;
+    task->rt_throttle_until = 0;
+    task->rt_throttled = 0;
     task->kthread_wait_tid = 0;
     task->wake_tick = 0;
     task->waitq = 0;
@@ -666,6 +681,7 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
             continue;
         }
         if (t->rt) {
+            if (t->rt_throttled) continue;
             if (!rt_best || t->vruntime < rt_best_v) {
                 rt_best = t;
                 rt_best_v = t->vruntime;
@@ -679,6 +695,8 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
     }
     if (rt_best) {
         rt_best->slice_left = TASK_SLICE_TICKS;
+        if (rt_best->rt_budget_cycles && !rt_best->rt_budget_last_tsc)
+            rt_best->rt_budget_last_tsc = tsc_read32();
         return rt_best;
     }
     if (best) {
@@ -693,6 +711,46 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
 }
 
 /*
+ * RT-2：CBS 账本。预算按 TSC 周期记；只有 RUNNING 的 RT 任务消费预算。
+ * 首次进入或刚补满时 last_tsc=0，由第一次记账/选中时建立起点。
+ */
+static void task_rt_budget_reset(struct task_struct *t)
+{
+    if (!t || !t->rt || !t->rt_budget_cycles) return;
+    t->rt_budget_left = t->rt_budget_cycles;
+    t->rt_budget_last_tsc = 0;
+    t->rt_throttled = 0;
+    t->rt_throttle_until = 0;
+}
+
+static int task_rt_budget_charge(struct task_struct *t, u32 now)
+{
+    u32 elapsed;
+
+    if (!t || !t->rt || !t->rt_budget_cycles || t->state != TASK_RUNNING)
+        return 0;
+    if (!t->rt_budget_last_tsc) {
+        t->rt_budget_last_tsc = now;
+        return 0;
+    }
+    elapsed = now - t->rt_budget_last_tsc;
+    t->rt_budget_last_tsc = now;
+    if (elapsed >= t->rt_budget_left) {
+        t->rt_budget_left = 0;
+        if (!t->rt_throttled) {
+            t->rt_throttled = 1;
+            t->rt_throttle_until = tick_total +
+                                   (t->rt_period_ticks ? t->rt_period_ticks : 1u);
+            rt_budget_overrun_total++;
+            rt_budget_throttle_total++;
+        }
+        return 1;
+    }
+    t->rt_budget_left -= elapsed;
+    return 0;
+}
+
+/*
  * RT-1 第一刀：唤醒抢占。只置 need_resched，不直接切栈；
  * IRQ0 出口看到标记后绕过 P11.5 的 tick_defer，再走原 task_pick_next。
  * RT 类任务优先于 fair；普通任务只在高优先级唤醒时抢占。
@@ -703,6 +761,8 @@ static void task_note_wake(struct task_struct *t)
 
     if (!t || !cur || cur->state != TASK_RUNNING) return;
     if (t == cur || t == idle_task) return;
+    /* RT-2：一次唤醒就是新周期，补满预算并解除 throttle。 */
+    if (t->rt) task_rt_budget_reset(t);
     if (cur == idle_task || t->rt || t->priority < cur->priority) {
         need_resched = 1;
         wake_resched_total++;
@@ -1027,25 +1087,43 @@ u32 task_schedule_irq(struct irq_frame *frame)
     if (frame->vector == 0x20) {
         interrupt_eoi();
         reason = SCHED_TICK;
-        tick_total++;
-        task_wake_expired(tick_total);
-        if (prev->state == TASK_RUNNING) {
-            prev->cpu_ticks++;
-            prev->vruntime += WEIGHT_QUANTUM / task_weight(prev);
-            if (prev->slice_left > 0) prev->slice_left--;
-            if (prev->slice_left > 0) {
-                if (need_resched) {
-                    /* RT-1：有唤醒抢占请求，片未尽也进入重选。 */
-                    tick_defer = 0;
+        /*
+         * RT-2：PIT 通道 0 在预算到期时切到 one-shot 子事件。该次 IRQ 不
+         * 推进 10ms tick，只记 CBS 账；处理完由 interrupt.c 再装到下一个
+         * 10ms tick，tick 到达时恢复周期模式。
+         */
+        if (interrupt_timer_event()) {
+            if (prev->state == TASK_RUNNING &&
+                task_rt_budget_expire()) {
+                need_resched = 1;
+            }
+        } else {
+            tick_total++;
+            task_rt_budget_tick(tick_total);
+            task_wake_expired(tick_total);
+            if (prev->state == TASK_RUNNING) {
+                if (task_rt_budget_charge(prev, tsc_read32()))
+                    need_resched = 1;
+                prev->cpu_ticks++;
+                prev->vruntime += WEIGHT_QUANTUM / task_weight(prev);
+                if (prev->slice_left > 0) prev->slice_left--;
+                if (prev->slice_left > 0) {
+                    if (need_resched) {
+                        /* RT-1/RT-2：有唤醒或超预算抢占请求，片未尽也重选。 */
+                        tick_defer = 0;
+                    } else {
+                        tick_defer_total++;
+                        tick_defer = 1;
+                    }
                 } else {
-                    tick_defer_total++;
-                    tick_defer = 1;
+                    slice_expire_total++;
                 }
-            } else {
-                slice_expire_total++;
             }
         }
     }
+    /* RT-2：yield/block 等非 tick 退出也把已消费预算结清。 */
+    if (reason != SCHED_TICK && prev->state == TASK_RUNNING)
+        (void)task_rt_budget_charge(prev, tsc_read32());
     prev->ctx.esp = (u32)frame;
     sched_failed = 0;
 
@@ -1682,6 +1760,73 @@ u32 task_rt_probe_wake_tsc(void)
 void task_set_rt(struct task_struct *task)
 {
     if (task) task->rt = 1;
+}
+
+void task_set_rt_budget(struct task_struct *task, u32 budget_cycles,
+                        u32 period_ticks)
+{
+    if (!task || !task->rt || !budget_cycles) return;
+    task->rt_budget_cycles = budget_cycles;
+    task->rt_period_ticks = period_ticks ? period_ticks : 1u;
+    task_rt_budget_reset(task);
+}
+
+void task_rt_budget_begin(void)
+{
+    if (!current_task || !current_task->rt || !current_task->rt_budget_cycles)
+        return;
+    current_task->rt_budget_left = current_task->rt_budget_cycles;
+    current_task->rt_budget_last_tsc = tsc_read32();
+    current_task->rt_throttled = 0;
+    current_task->rt_throttle_until = 0;
+}
+
+void task_rt_budget_end(void)
+{
+    if (!current_task || !current_task->rt || !current_task->rt_budget_cycles)
+        return;
+    (void)task_rt_budget_charge(current_task, tsc_read32());
+    /*
+     * 控制工作已经结束；预算定时器若在本周期剩余部分触发，不应把
+     * 打印/截止检查等尾部代码算成控制超预算。
+     */
+    current_task->rt_budget_last_tsc = 0;
+}
+
+int task_rt_budget_expire(void)
+{
+    if (!current_task || current_task->state != TASK_RUNNING)
+        return 0;
+    return task_rt_budget_charge(current_task, tsc_read32());
+}
+
+void task_rt_budget_tick(u32 now_tick)
+{
+    int i;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task_struct *t = &tasks[i];
+
+        if (!t->rt || !t->rt_budget_cycles || !t->rt_throttled) continue;
+        if ((int)(now_tick - t->rt_throttle_until) >= 0) {
+            t->rt_budget_left = t->rt_budget_cycles;
+            t->rt_budget_last_tsc = 0;
+            t->rt_throttled = 0;
+            t->rt_throttle_until = 0;
+            /* 补满后必须重选，否则 RT 要等到 fair 片耗尽才回来。 */
+            need_resched = 1;
+        }
+    }
+}
+
+u32 task_rt_budget_overrun_total(void)
+{
+    return rt_budget_overrun_total;
+}
+
+u32 task_rt_budget_throttle_total(void)
+{
+    return rt_budget_throttle_total;
 }
 
 u32 task_wake_resched_total(void)
