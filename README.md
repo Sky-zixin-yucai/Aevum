@@ -20,9 +20,10 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 | 部分 | 路径 | 当前状态 |
 | --- | --- | --- |
 | 渲染引擎 | `engine/` | 可运行；`validate.html` 是主要验证入口 |
-| 32 位裸机内核 | `src/kernel/host/console/robot/` | 可在 QEMU 运行；已完成 ring3、独立 CR3、`int 0x80`、VMA/brk/guard/copyin-copyout、COW fork、同步异常默认信号、用户 handler/signal frame/`sigreturn`、SIGCHLD/wait status、exec/fd/pipe、12 槽内核栈池、P5.3 的 100 轮 fork/wait 压测、不经过 fork 的 `spawn`、`clone/thread_exit/gettid/thread_join` 最小线程组、detach、主线程先退、主线程不 join 的整组回收、用户态与内核态 `#PF` 故障边界，以及 `V` 页 4 页观测面（槽/树/地址/fd） |
+| 32 位裸机内核 | `src/kernel/host/console/robot/` | 可在 QEMU 运行；已推进到 P12.1，接入 3R 控制、Forge 状态回传和 VGA 方向可视化；此前已完成 ring3、独立 CR3、`int 0x80`、VMA/brk/guard/copyin-copyout、COW fork、同步异常默认信号、用户 handler/signal frame/`sigreturn`、SIGCHLD/wait status、exec/fd/pipe、12 槽内核栈池、P5.3 的 100 轮 fork/wait 压测、不经过 fork 的 `spawn`、`clone/thread_exit/gettid/thread_join` 最小线程组、detach、主线程先退、主线程不 join 的整组回收、用户态与内核态 `#PF` 故障边界，以及 `V` 页 4 页观测面（槽/树/地址/fd） |
+| Forge 工作台 | `interface/web/forge/` | 3D 机械臂结构树、视口、Inspector、身体描述下发、手动目标、GRAB/SWEEP 演示 |
 | Fortuna 内核骨架 | `src/kernel/fortuna/` | 有 boot/mm/sched/fs/net/sandbox 等模块；设计验证阶段，没有稳定 CLI |
-| 串口桥 | `src/kernel/host/bridge/` | 把内核 COM1 差量帧转为 WebSocket |
+| 串口桥 | `src/kernel/host/bridge/` | 把内核 COM1 差量帧/状态帧转为 WebSocket，并下发 `B/J/R` 命令 |
 | Web / 桌面呈现层 | `interface/` | world、desktop、console；不属于引擎核心 |
 | 控制平面 | `control/` | 运行时登记、进程启停、状态汇总、纯内存中继 |
 
@@ -33,6 +34,31 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 每次内核或 Forge 测试都必须留下记录，统一写在 [`TESTING.md`](TESTING.md)。记录至少包含测试对象、QEMU 启动命令、串口/桥端口、操作步骤、QEMU VGA 与 Forge 两侧证据、结论和发现的问题。
 
 > Every kernel or Forge test must leave a record in [`TESTING.md`](TESTING.md), including the exact QEMU instance, ports, steps, evidence from both QEMU VGA and Forge, conclusions and issues.
+
+## 当前状态 / Current Status
+
+这一节只补当前已经跑通的状态；上面的项目结构、测试记录和内核历史继续保留。
+
+### 当前机器人状态
+
+- `kernel.bin = 90,312 B`，177/208 扇区，余量 `16,184 B`；`disk.img = 1,474,560 B`。
+- 内核在 QEMU 中最多驱动一台 3R 平面臂；Forge 通过 `B` 下发杆长 `0.62 / 0.52 / 0.24 m`、工具 `0.20 m`、基座高 `0.24 m`。
+- 手动模式接收 `J` 关节目标；`0x03` 状态帧回传 `q/dq/q_target`、末端误差、`sigma`、可操作度和限幅余量。
+- 方块位于 `x=1.30 m`，左端面 `1.24 m`；默认 tool tip 约 `1.19 m`，GRAB 时工具尖端 `1.2396 m`。
+- GRAB 验收：Forge `q1 26.7° / q2 -88.0° / q3 62.0°`，`END ERROR 0.06 mm`；内核 VGA `q1 26.6° / q2 -88.4° / q3 61.7°`，`tip 0.060 mm`。
+- 当前仍是前端脚本 + 内核关节到点：Forge 做 3R IK、等关节误差收敛后把方块标记为 `held`；内核没有夹爪命令，也没有任务级 `GRAB` 语义。
+
+### Forge 3R 抓取与 VGA
+
+| 初始场景：方块在 1.30 m | GRAB 后：工具尖端对齐 1.2396 m |
+| --- | --- |
+| ![Forge 3R 初始场景](docs/assets/readme/kernel/forge-v26-initial.png) | ![Forge 3R GRAB](docs/assets/readme/kernel/forge-v26-grab.png) |
+
+![内核 VGA 3R 抓取姿态](docs/assets/readme/kernel/kernel-vga-v26.png)
+
+内核 VGA 现在显示 `±1.45 m` 工作空间、base 十字、`L/R/U/D` 四向标记、关节方向标签、左上小地图、目标/实际轨迹和 `vx/vy` 速度分解。
+
+> Current addendum: `kernel.bin` is 90,312 bytes; Forge drives a 3R arm with `0.62 / 0.52 / 0.24 m` links and a `0.20 m` tool. Forge `GRAB` performs local 3R IK and marks the block held after joint convergence; the kernel receives joint targets only and has no gripper command. The VGA page shows the workspace, direction labels, a minimap, trails and `vx/vy`.
 
 ## 渲染引擎 / Render Engine
 
@@ -126,15 +152,17 @@ http://127.0.0.1:8766/interface/web/world.html
 
 > The repository contains two kernel tracks: a runnable 32-bit x86 bare-metal kernel under `host/console/robot`, and the Fortuna kernel skeleton under `fortuna`. Fortuna is a design-validation track, not a runtime dependency of the Web application.
 
+> 本节保留 P8 及更早的历史记录；最新状态见上面的“当前状态”。
+
 ### 1. 32 位裸机内核 / Bare-metal kernel
 
 这个内核不依赖 libc，也不跑在桌面操作系统里。BIOS 引导扇区把 128 个扇区读到 `0x80000`，进入保护模式、建立 GDT、IDT、TSS 和 0–4 MB 恒等分页，然后运行内核任务。
 
-当前进度：`P8` 加入动态内核线程。`kernel/task/kthread/kthread.c` 提供 `kthread_create/exit/self/join/stats`：内核任务在运行时申请任务槽、TID 和 `kernel_stack_alloc()` 的 4KB 栈槽，入口通过 `task_create_kernel_arg()` 携带一个内核参数；`kthread_exit` 只结束当前任务并进入 ZOMBIE，`task_reap()` 明确跳过 kthread，直到另一个内核任务 `kthread_join()` 读取退出码后才释放动态栈、PID 和任务槽。join 复用 P7.5 的 `task_block_until()`：调度器在 kthread 真正 ZOMBIE 后按等待 TID 唤醒 joiner；等待者先登记 `kthread_wait_tid`，再在 `cli` 窗口内重查，避免 lost wake。control 在启动时创建优先级 0 的 `kping`，它 yield 192 次后 `kthread_exit(5)`；control 立即 join 并进入 BLOCKED，被唤醒后写回 status 5。clean 构建 `kernel.bin=75,336B`，距 192 扇区上限 98,304B 余 22,968B。QEMU 主页显示 `kthr 4 s5 OK`；tasks dump 显示 TID 4 与 slot 3 已释放，`created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1 failed=0`。
+当前进度（P8 历史记录）：`P8` 加入动态内核线程。`kernel/task/kthread/kthread.c` 提供 `kthread_create/exit/self/join/stats`：内核任务在运行时申请任务槽、TID 和 `kernel_stack_alloc()` 的 4KB 栈槽，入口通过 `task_create_kernel_arg()` 携带一个内核参数；`kthread_exit` 只结束当前任务并进入 ZOMBIE，`task_reap()` 明确跳过 kthread，直到另一个内核任务 `kthread_join()` 读取退出码后才释放动态栈、PID 和任务槽。join 复用 P7.5 的 `task_block_until()`：调度器在 kthread 真正 ZOMBIE 后按等待 TID 唤醒 joiner；等待者先登记 `kthread_wait_tid`，再在 `cli` 窗口内重查，避免 lost wake。control 在启动时创建优先级 0 的 `kping`，它 yield 192 次后 `kthread_exit(5)`；control 立即 join 并进入 BLOCKED，被唤醒后写回 status 5。clean 构建 `kernel.bin=75,336B`，距 192 扇区上限 98,304B 余 22,968B。QEMU 主页显示 `kthr 4 s5 OK`；tasks dump 显示 TID 4 与 slot 3 已释放，`created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1 failed=0`。
 
 > This kernel does not use libc and does not run on top of a desktop OS. The BIOS boot sector loads 128 sectors to `0x80000`, enters protected mode, builds GDT/IDT/TSS and identity-maps 0–4 MB, then starts kernel tasks.
 
-> Current status: P8 adds dynamic kernel threads. `kernel/task/kthread/kthread.c` exposes `kthread_create/exit/self/join/stats`: a ring0 task allocates a task slot, TID and a 4 KB stack from `kernel_stack_alloc()` at runtime, and `task_create_kernel_arg()` carries one kernel argument into the entry. `kthread_exit` only ends the current task and leaves it ZOMBIE; `task_reap()` deliberately skips kthreads until another kernel task calls `kthread_join()`, which then frees the dynamic stack, PID and task slot. Join reuses the P7.5 `task_block_until()` pattern: the scheduler wakes the joiner by waiting TID only after the kthread is truly ZOMBIE, and the waiter registers `kthread_wait_tid` before re-checking inside the `cli` window. At boot the control task creates priority-0 `kping`, which yields 192 times and exits 5; control joins immediately, blocks, and records status 5 after wake. The clean build is 75,336 bytes, 22,968 bytes below the 98,304-byte limit. QEMU shows `kthr 4 s5 OK` on the main page; the task dump shows TID 4 and slot 3 released, with `created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1 failed=0`.
+> P8 status (historical): P8 adds dynamic kernel threads. `kernel/task/kthread/kthread.c` exposes `kthread_create/exit/self/join/stats`: a ring0 task allocates a task slot, TID and a 4 KB stack from `kernel_stack_alloc()` at runtime, and `task_create_kernel_arg()` carries one kernel argument into the entry. `kthread_exit` only ends the current task and leaves it ZOMBIE; `task_reap()` deliberately skips kthreads until another kernel task calls `kthread_join()`, which then frees the dynamic stack, PID and task slot. Join reuses the P7.5 `task_block_until()` pattern: the scheduler wakes the joiner by waiting TID only after the kthread is truly ZOMBIE, and the waiter registers `kthread_wait_tid` before re-checking inside the `cli` window. At boot the control task creates priority-0 `kping`, which yields 192 times and exits 5; control joins immediately, blocks, and records status 5 after wake. The clean build is 75,336 bytes, 22,968 bytes below the 98,304-byte limit. QEMU shows `kthr 4 s5 OK` on the main page; the task dump shows TID 4 and slot 3 released, with `created=1 exited=1 reaped=1 join_blocks=1 join_wakes=1 failed=0`.
 
 #### 已实现
 
@@ -159,9 +187,9 @@ http://127.0.0.1:8766/interface/web/world.html
 | 故障隔离 | IDT 第 14 项 `#PF`；记录 `CR2/ERR/EIP/CS/PID`；heap 缺页零填重试、COW 写页复制重试，guard/RO/非法地址以 `SIGSEGV` 终止当前进程 |
 | 内核态故障页 | `K` 键从 kernel task 写 `0x00400000`（PDE 1 未映射）触发 CPL0 `#PF`；页面显示 PID/任务名、CS/CPL、EIP、CR2、ERR、CR3、P/W/U/RSVD/I-D、fault count、recoveries 与 kernel image 范围；`R` 临时建立 PDE 1、执行完出错写并 `iret` 返回，`H` 停机 |
 
-#### 当前验收数据
+#### P8 验收数据（历史）
 
-| 项 | 当前值 |
+| 项 | P8 值 |
 | --- | --- |
 | `kernel.bin` | 75,336 字节，小于 192 扇区上限 98,304 字节（余量 22,968） |
 | 加载基址 | `0x80000`；boot 读取窗口 `0x80000..0x98000` |
@@ -224,13 +252,15 @@ P5.3 已在本地提交为 `115a31f`。这一阶段把「反复 fork/wait 100 �
 
 #### 截图
 
-**当前机械臂工作台**
+**机械臂工作台（P8 时期）**
 
 ![AEVUM FORGE 机械臂工作台](docs/assets/readme/kernel/forge-arm-workspace.png)
 
 左侧是结构树，中间是 QEMU 里的内核窗口，右侧是 3D 视口和 Inspector。内核给出 `q1 67.9°`、`q2 -76.8°`、`q3 -56.5°`；3D 视口把同一组关节角长成可见的臂，并在同一屏上显示 `TARGET/ACTUAL ANGLE`、`KP/KD`、`TORQUE`、`TRACKING ERROR 4.78 mm`。`TASK SCHED P3/31`、`nullsp ON` 和 `kthr 4 s5 OK` 说明机械臂在动的时候，任务调度、零空间投影和动态 kthread 也在跑。
 
-> Current AEVUM FORGE workbench: structure tree, QEMU kernel window, 3D viewport and Inspector. The kernel reports `q1 67.9°`, `q2 -76.8°`, `q3 -56.5°`; the 3D viewport turns the same joint angles into a visible arm and shows target/actual angle, gains, torque and `TRACKING ERROR 4.78 mm` on the same screen. `TASK SCHED P3/31`, `nullsp ON` and `kthr 4 s5 OK` show scheduling, null-space projection and the dynamic kthread running while the arm is live.
+> P8-era AEVUM FORGE workbench: structure tree, QEMU kernel window, 3D viewport and Inspector. The kernel reports `q1 67.9°`, `q2 -76.8°`, `q3 -56.5°`; the 3D viewport turns the same joint angles into a visible arm and shows target/actual angle, gains, torque and `TRACKING ERROR 4.78 mm` on the same screen. `TASK SCHED P3/31`, `nullsp ON` and `kthr 4 s5 OK` show scheduling, null-space projection and the dynamic kthread running while the arm is live.
+
+最新 v26 截图见上面的“当前状态”。
 
 **启动、异常与恢复**
 
