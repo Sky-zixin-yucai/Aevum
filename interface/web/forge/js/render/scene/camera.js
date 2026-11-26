@@ -102,6 +102,16 @@
     mnx = Math.min(mnx, end[0], tip[0]); mxx = Math.max(mxx, end[0], tip[0]);
     mny = Math.min(mny, end[1], tip[1]); mxy = Math.max(mxy, end[1], tip[1]);
     mnz = Math.min(mnz, end[2], tip[2]); mxz = Math.max(mxz, end[2], tip[2]);
+    if (doc.prop) {
+      const p = doc.prop;
+      const size = p.size || [0.12, 0.12, 0.12];
+      const center = p.held && tool && scene.endMat
+        ? F.math.transformPoint(scene.endMat, [Number(tool.length || 0) + size[0] / 2, 0, 0])
+        : p.pos;
+      mnx = Math.min(mnx, center[0] - size[0] / 2); mxx = Math.max(mxx, center[0] + size[0] / 2);
+      mny = Math.min(mny, center[1] - size[1] / 2); mxy = Math.max(mxy, center[1] + size[1] / 2);
+      mnz = Math.min(mnz, center[2] - size[2] / 2); mxz = Math.max(mxz, center[2] + size[2] / 2);
+    }
     if (doc.base && !doc.base.hidden) {
       mnx = Math.min(mnx, -doc.base.w / 2); mxx = Math.max(mxx, doc.base.w / 2);
       mny = Math.min(mny, 0); mxy = Math.max(mxy, doc.base.h);
@@ -111,7 +121,7 @@
     const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2, cz = (mnz + mxz) / 2;
     const span = Math.max(mxx - mnx, mxy - mny, mxz - mnz, 0.5);
     cam.goalTarget = [cx, cy, cz];
-    cam.goalDist = Math.max(0.95, span * 1.25);
+    cam.goalDist = Math.max(1.1, span * 1.55);
     if (immediate) {
       cam.target = [cx, cy, cz];
       cam.dist = cam.goalDist;

@@ -10,6 +10,7 @@
     const bridge = opts.bridge;
     const inspector = opts.inspector;
     const tree = opts.tree;
+    const demoMotion = opts.demoMotion;
     let treeLast = 0;
     let fpsFrames = 0;
     let fpsLast = 0;
@@ -21,6 +22,7 @@
       }
       F.render.cameraStep(state.cam, now);
       const eye = F.render.cameraEye(state.cam);
+      if (demoMotion) demoMotion.tick(now);
       const scene = F.render.buildScene(state.doc);
       const vp = F.render.viewProjection(state.cam, renderer.canvas);
       renderer.draw(state.doc, scene, vp, state.selected, eye);
@@ -30,7 +32,7 @@
           F.bridge.send(bridge, packet);
         });
       }
-      if (state.sim.kernel && state.sim.manual) {
+      if (state.sim.kernel && (state.sim.manual || state.sim.demoDrive)) {
         F.bridge.send(bridge, {
           type: "joint",
           q: state.doc.segments.map(function (s) { return +s.target.toFixed(5); })

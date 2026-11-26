@@ -8,6 +8,7 @@
     doc: F.model.defaultDoc(),
     selected: { kind: "joint", index: 0 },
     sim: null,
+    demo: { sweep: false, sweepStart: 0, sweepBase: 0, grabbing: false, grabAt: 0, grabBy: 0 },
     cam: F.render.createCamera(),
     bridge: F.bridge.create("ws://127.0.0.1:8765")
   };
@@ -32,6 +33,7 @@
   let controls = null;
   let telemetry = null;
   let workbench = null;
+  let demoMotion = null;
 
   function setKernelPill(mode) {
     const pill = $("kernelPill");
@@ -76,6 +78,7 @@
     state.selected = { kind: "joint", index: 0 };
     state.sim = F.control.createSim(state.doc);
     state.sim.bodyPending = false;
+    if (demoMotion) demoMotion.reset();
     labels.ensure(state.doc);
     if (F.model.isImported(state.doc)) F.render.fitCamera(state.doc, state.cam, true);
     else {
@@ -163,6 +166,13 @@
     toast: F.ui.toast.show
   });
 
+  demoMotion = F.control.createDemoMotion({
+    state: state,
+    bridgeControl: bridgeControl,
+    syncControls: function () { if (controls) controls.sync(); },
+    toast: F.ui.toast.show
+  });
+
   tree = F.ui.createDocumentTree({
     state: state,
     tree: $("tree"),
@@ -213,7 +223,14 @@
       state.sim.last = performance.now();
       F.ui.toast.show(state.sim.sine ? "正弦激励已开启" : "已回到目标角");
     },
+    onSweep: function () {
+      if (demoMotion) demoMotion.toggleSweep();
+    },
+    onGrab: function () {
+      if (demoMotion) demoMotion.grab();
+    },
     onReset: function () {
+      if (demoMotion) demoMotion.reset();
       F.control.reset(state.doc, state.sim);
       F.ui.toast.show("已复位到目标姿态");
     }
@@ -253,6 +270,7 @@
     replaceDocument: replaceDocument,
     saveDoc: saveDoc,
     bridgeControl: bridgeControl,
+    demoMotion: demoMotion,
     toast: F.ui.toast.show
   });
   const api = F.api.bind(handlers);
@@ -289,6 +307,7 @@
     telemetry: telemetry,
     bridge: state.bridge,
     inspector: inspector,
-    tree: tree
+    tree: tree,
+    demoMotion: demoMotion
   });
 })(window.AEVUM.FORGE);

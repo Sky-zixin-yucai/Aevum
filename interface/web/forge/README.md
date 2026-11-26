@@ -27,6 +27,8 @@ python -m http.server 8080
 - 右侧 `PROPERTIES / Inspector` 只显示当前选中对象的属性；`KERNEL STATUS` 只在接上内核后出现。
 - 顶部 `BODY` 预设可切 2R–8R 平面链；切换时页面把 `body descriptor`（关节数、杆长、限位、home）下发给内核，不需要重编译。`Import` / `Save` / `More` 是文档级动作；`Sine` 收在 More，避免常驻。
 - 导入模型若不是 2–8 关节平面链（单链 parent、Z 轴、单杆 ≤ 2 m、总 reach ≤ 16 m 之外），显示 `KERNEL LOCAL ONLY`，仍可本地建模和 PD。
+- `SWEEP` 只对 J1 叠加约 ±37°、0.4 Hz 的正弦目标，用来演示左右自转；`GRAB` 只服务默认 3R：场景里有一个 `doc.prop` 方块，宿主用 3R IK 把工具尖端对到方块左侧面，再闭合夹爪。两者都是宿主侧参数实例，内核只收到普通 `J` 和 `R`。
+- `GRAB` 在方块被夹住后按钮变成 `RELEASE`；2R、4R–8R 或没有 `doc.prop` 时不启用。方块和夹爪是 Forge 渲染层的演示对象，不属于 `body_desc`。
 - 4K 下根字号、面板宽度、视口控件按视口宽度提升；默认按 2560–3840 的展示密度排。
 
 ## 建模与导入
@@ -182,6 +184,9 @@ window.AEVUM_FORGE
 | `setTarget(index, degrees)` | 设置单个关节目标角；kernel 下自动进入手动并下发 |
 | `setTargets(degrees[])` | 批量设置目标角；kernel 下自动进入手动并下发 |
 | `setManual(on)` | kernel 下开 / 关手动保持；关闭时下发 `R`，内核立即回 AUTO，5 秒超时仅作兜底 |
+| `sweep(on)` | 开 / 关 J1 左右自转演示；内核下持续下发 `J`，本地走 PD |
+| `grab()` | 默认 3R 方块抓取；已夹住时再次调用等价于 `releaseGrip()` |
+| `releaseGrip()` | 松开夹爪并把方块放回原位 |
 | `run()` / `pause()` | 本地启动 / 暂停 100 Hz PD；kernel 下等价于开 / 关手动保持 |
 | `reset()` | 回到目标姿态（仅本地；kernel 抛错） |
 | `sine(on)` | 开 / 关正弦激励；开时自动启动（仅本地；kernel 抛错） |

@@ -13,6 +13,7 @@
       kernel: false,
       manual: false,
       manualSince: 0,
+      demoDrive: false,
       kernelStatus: null,
       kernelRejected: false,
       time: 0,

@@ -68,7 +68,7 @@
       q.forEach(function (v, i) {
         if (state.doc.segments[i]) {
           state.doc.segments[i].q = v;
-          if (!state.sim.manual) state.doc.segments[i].target = qt[i];
+          if (!state.sim.manual && !state.sim.demoDrive) state.doc.segments[i].target = qt[i];
           state.sim.q[i] = v;
           state.sim.qd[i] = dq[i];
         }

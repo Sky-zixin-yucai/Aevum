@@ -12,7 +12,8 @@
         { id: "J2", name: "ELBOW", q: -1.60, target: -1.60, min: -150, max: 150, torque: 9, inertia: 0.022, damping: 0.04, kp: 32, kd: 7, length: 0.52, width: 0.10, depth: 0.12, mass: 0.8, color: [0.22, 0.50, 0.70] },
         { id: "J3", name: "WRIST", q: 0.55, target: 0.55, min: -170, max: 170, torque: 5, inertia: 0.012, damping: 0.03, kp: 24, kd: 5, length: 0.24, width: 0.075, depth: 0.09, mass: 0.35, color: [0.70, 0.45, 0.18] }
       ],
-      tool: { length: 0.20, width: 0.075, depth: 0.09, color: [0.82, 0.55, 0.22] },
+      tool: { length: 0.20, width: 0.075, depth: 0.09, grip: 0, color: [0.82, 0.55, 0.22] },
+      prop: { type: "box", size: [0.12, 0.12, 0.12], pos: [0.80, 0.06, 0], color: [0.78, 0.42, 0.18] },
       control: { loop_hz: 100, dt: 0.01 }
     };
   }
@@ -178,7 +179,8 @@
       name: "AEVUM " + n + "R PLANAR",
       base: { w: 0.54, h: 0.24, d: 0.38, mass: 2.2, color: [0.15, 0.19, 0.23] },
       segments: segs,
-      tool: { length: 0.20, width: 0.075, depth: 0.09, color: [0.82, 0.55, 0.22] },
+      tool: { length: 0.20, width: 0.075, depth: 0.09, grip: 0, color: [0.82, 0.55, 0.22] },
+      prop: { type: "box", size: [0.12, 0.12, 0.12], pos: [0.80, 0.06, 0], color: [0.78, 0.42, 0.18] },
       control: { loop_hz: 100, dt: 0.01 }
     };
   }

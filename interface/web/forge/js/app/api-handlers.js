@@ -10,6 +10,7 @@
     const replaceDocument = deps.replaceDocument;
     const saveDoc = deps.saveDoc;
     const bridgeControl = deps.bridgeControl;
+    const demoMotion = deps.demoMotion;
     const toast = deps.toast;
     const M = F.math;
 
@@ -23,6 +24,12 @@
         time: state.sim.time,
         q: state.sim.q.slice(),
         target: state.doc.segments.map(function (s) { return s.target; }),
+        demo: {
+          sweep: !!state.demo.sweep,
+          grabbing: !!state.demo.grabbing,
+          grip: Number(state.doc.tool && state.doc.tool.grip) || 0,
+          held: !!(state.doc.prop && state.doc.prop.held)
+        },
         selected: { kind: state.selected.kind, index: state.selected.index },
         bridge: { online: state.bridge.online, url: state.bridge.url, kernel: state.sim.kernel },
         document: F.model.clone(state.doc)
@@ -67,6 +74,23 @@
       setManual: function (on) {
         bridgeControl.setManual(on);
       },
+      sweep: function (on) {
+        if (!demoMotion) return false;
+        if (on === false) demoMotion.stopSweep(true);
+        else demoMotion.startSweep();
+        controls.sync();
+        return state.demo.sweep;
+      },
+      grab: function () {
+        const ok = demoMotion ? demoMotion.grab() : false;
+        controls.sync();
+        return ok;
+      },
+      releaseGrip: function () {
+        if (demoMotion) demoMotion.release();
+        controls.sync();
+        return !(state.doc.prop && state.doc.prop.held);
+      },
       run: function () {
         if (state.sim.kernel) {
           bridgeControl.setManual(true);
@@ -87,6 +111,7 @@
       },
       reset: function () {
         requireLocal("reset");
+        if (demoMotion) demoMotion.reset();
         F.control.reset(state.doc, state.sim);
         controls.sync();
       },

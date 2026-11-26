@@ -35,21 +35,44 @@
 #define CV_W  42
 #define CV_H  19
 
-#define WX0    (-55706)
-#define WY0    (-58982)
-#define WSPANX 111411
-#define WSPANY 117965
+#define WX0    (-95027)
+#define WY0    (-95027)
+#define WSPANX 190054
+#define WSPANY 190054
 
 #define TRACE_N 48
 
+/* 左上角工作空间小地图：固定 ±1.45 m；主画面也按同一范围画全工作空间。 */
+#define MM_X  1
+#define MM_Y  2
+#define MM_W  13
+#define MM_H  7
+#define MM_WX0   (-95027)
+#define MM_WY0   (-95027)
+#define MM_SPAN  190054
+
 static u16 trace[TRACE_N];
 static int trace_i;
+static u16 mtrace[TRACE_N];
+static int mtrace_i;
+
+static struct arm_points ghost_points;
+static int ghost_n;
+static int ghost_valid;
+static int ghost_age;
 
 void arm_render_init(void)
 {
     int i;
-    for (i = 0; i < TRACE_N; i++) trace[i] = 0;
+    for (i = 0; i < TRACE_N; i++) {
+        trace[i] = 0;
+        mtrace[i] = 0;
+    }
     trace_i = 0;
+    mtrace_i = 0;
+    ghost_valid = 0;
+    ghost_n = 0;
+    ghost_age = 0;
 }
 
 static int wx(i32 x)
@@ -67,6 +90,24 @@ static int wy(i32 y)
     int r = CV_Y + CV_H - 1 - (int)(((i64)t * (CV_H - 1)) >> FXBITS);
     if (r < CV_Y) r = CV_Y;
     if (r > CV_Y + CV_H - 1) r = CV_Y + CV_H - 1;
+    return r;
+}
+
+static int mx(i32 x)
+{
+    i32 t = fx_div(x - MM_WX0, MM_SPAN);
+    int c = MM_X + 1 + (int)(((i64)t * (MM_W - 3)) >> FXBITS);
+    if (c < MM_X + 1) c = MM_X + 1;
+    if (c > MM_X + MM_W - 2) c = MM_X + MM_W - 2;
+    return c;
+}
+
+static int my(i32 y)
+{
+    i32 t = fx_div(y - MM_WY0, MM_SPAN);
+    int r = MM_Y + MM_H - 2 - (int)(((i64)t * (MM_H - 3)) >> FXBITS);
+    if (r < MM_Y + 1) r = MM_Y + 1;
+    if (r > MM_Y + MM_H - 2) r = MM_Y + MM_H - 2;
     return r;
 }
 
@@ -202,6 +243,87 @@ static void task_timeline(void)
             u32 pid = task_trace_pid(first + c - pad);
             vga_cell(c, 21, (char)CH_FULL, task_pid_color(pid));
         }
+    }
+}
+
+static void draw_map_trail(void)
+{
+    int i;
+    for (i = 0; i < TRACE_N; i++) {
+        u16 a = mtrace[(mtrace_i + i) % TRACE_N];
+        u16 b = mtrace[(mtrace_i + i + 1) % TRACE_N];
+        if (!a || !b) continue;
+        vga_line(a & 0xFF, (int)(a >> 8), b & 0xFF, (int)(b >> 8),
+                 '.', C_GRAY);
+    }
+}
+
+static void draw_minimap(const struct arm_status *s, i32 vx_mm_s, i32 vy_mm_s)
+{
+    char buf[16];
+    int c, r, i;
+
+    /* 小地图清成黑底，避免主画面机械臂从下面穿出来。 */
+    vga_fill(MM_X, MM_Y, MM_X + MM_W - 1, MM_Y + MM_H - 1, ' ', C_DGRAY);
+    for (c = MM_X + 1; c <= MM_X + MM_W - 2; c++) {
+        vga_cell(c, MM_Y, (char)CH_H, C_GRAY);
+        vga_cell(c, MM_Y + MM_H - 1, (char)CH_H, C_GRAY);
+    }
+    for (r = MM_Y + 1; r <= MM_Y + MM_H - 2; r++) {
+        vga_cell(MM_X, r, (char)CH_V, C_GRAY);
+        vga_cell(MM_X + MM_W - 1, r, (char)CH_V, C_GRAY);
+    }
+    vga_cell(MM_X, MM_Y, (char)CH_TL, C_GRAY);
+    vga_cell(MM_X + MM_W - 1, MM_Y, (char)CH_TR, C_GRAY);
+    vga_cell(MM_X, MM_Y + MM_H - 1, (char)CH_BL, C_GRAY);
+    vga_cell(MM_X + MM_W - 1, MM_Y + MM_H - 1, (char)CH_BR, C_GRAY);
+
+    /* ±1.45 m 的固定参考系，base 永远在中心。 */
+    for (c = MM_X + 1; c <= MM_X + MM_W - 2; c++)
+        vga_cell(c, MM_Y + MM_H / 2, '.', C_GRAY);
+    for (r = MM_Y + 1; r <= MM_Y + MM_H - 2; r++)
+        vga_cell(MM_X + MM_W / 2, r, '.', C_GRAY);
+
+    for (i = 0; i < TRACE_N; i++) {
+        u16 t = mtrace[i];
+        if (t) vga_cell(t & 0xFF, (int)(t >> 8), '*', C_GRAY);
+    }
+    draw_map_trail();
+
+    vga_cell(mx(s->target.x), my(s->target.y), 'o', C_YELLOW);
+    vga_cell(mx(s->points.p[s->n].x), my(s->points.p[s->n].y), '@', C_GREEN);
+    vga_cell(MM_X + MM_W / 2, MM_Y + MM_H / 2, '#', C_WHITE);
+
+    vga_cell(MM_X + MM_W / 2, MM_Y + 1, 'U', C_WHITE);
+    vga_cell(MM_X + MM_W / 2, MM_Y + MM_H - 2, 'D', C_WHITE);
+    vga_cell(MM_X + 1, MM_Y + MM_H / 2, 'L', C_WHITE);
+    vga_cell(MM_X + MM_W - 2, MM_Y + MM_H / 2, 'R', C_WHITE);
+
+    vga_text(MM_X, MM_Y - 1, "WS MAP 1.45m", C_GRAY);
+
+    vga_text(MM_X, MM_Y + MM_H, "vx", C_GRAY);
+    fmt_fx(buf, vx_mm_s, 0);
+    vga_text(MM_X + 3, MM_Y + MM_H, buf, C_WHITE);
+    vga_text(MM_X + 9, MM_Y + MM_H, "mm/s", C_GRAY);
+    vga_text(MM_X, MM_Y + MM_H + 1, "vy", C_GRAY);
+    fmt_fx(buf, vy_mm_s, 0);
+    vga_text(MM_X + 3, MM_Y + MM_H + 1, buf, C_WHITE);
+    vga_text(MM_X + 9, MM_Y + MM_H + 1, "mm/s", C_GRAY);
+}
+
+static void draw_ghost_pose(void)
+{
+    int c0, r0, c1, r1, i;
+
+    if (!ghost_valid) return;
+    c0 = wx(ghost_points.p[0].x);
+    r0 = wy(ghost_points.p[0].y);
+    for (i = 0; i < ghost_n; i++) {
+        c1 = wx(ghost_points.p[i + 1].x);
+        r1 = wy(ghost_points.p[i + 1].y);
+        vga_line(c0, r0, c1, r1, (char)CH_LIGHT, C_DGRAY);
+        c0 = c1;
+        r0 = r1;
     }
 }
 
@@ -487,6 +609,21 @@ void arm_render_frame(const struct arm_status *s)
     char buf[40];
     int c, r, i, p;
     u8 sc, sp_max;
+    struct arm_vec2 tip;
+    i32 vx_mm_s = 0, vy_mm_s = 0;
+
+    tip = s->points.p[s->n];
+    {
+        i32 vx = 0, vy = 0;
+        for (i = 0; i < s->n; i++) {
+            i32 rx = tip.x - s->points.p[i].x;
+            i32 ry = tip.y - s->points.p[i].y;
+            vx += fx_mul(s->dq[i], -ry);
+            vy += fx_mul(s->dq[i], rx);
+        }
+        vx_mm_s = vx * 1000;
+        vy_mm_s = vy * 1000;
+    }
 
     vga_clear(C_DGRAY);
 
@@ -509,11 +646,15 @@ void arm_render_frame(const struct arm_status *s)
     vga_cell(CV_X - 1, CV_Y + CV_H, (char)CH_BL, C_GRAY);
     vga_cell(CV_X + CV_W, CV_Y + CV_H, (char)CH_BR, C_GRAY);
 
+    /* 主画面也给出 base 参考系：横轴左右，纵轴上下。 */
     for (c = CV_X; c <= CV_X + CV_W - 1; c++) vga_cell(c, wy(0), '.', C_GRAY);
+    for (r = CV_Y; r <= CV_Y + CV_H - 1; r++) vga_cell(wx(0), r, '.', C_GRAY);
+
+    draw_ghost_pose();
 
     for (i = 0; i < TRACE_N; i++) {
         u16 t = trace[i];
-        if (t) vga_cell(t & 0xFF, (int)(t >> 8), '.', C_BLUE);
+        if (t) vga_cell(t & 0xFF, (int)(t >> 8), '*', C_GRAY);
     }
 
     vga_cell(wx(s->target.x), wy(s->target.y), 'o', C_YELLOW);
@@ -533,6 +674,49 @@ void arm_render_frame(const struct arm_status *s)
         vga_cell(wx(s->points.p[0].x), wy(s->points.p[0].y), '#', C_WHITE);
         if (s->n > 0)
             vga_cell(wx(s->points.p[s->n].x), wy(s->points.p[s->n].y), '@', C_GREEN);
+    }
+
+
+    /* 四个方向的边界标记。 */
+    vga_cell(CV_X - 1, wy(0), 'L', C_WHITE);
+    vga_cell(CV_X + CV_W, wy(0), 'R', C_WHITE);
+    vga_cell(wx(0), CV_Y - 1, 'U', C_WHITE);
+    vga_cell(wx(0), CV_Y + CV_H - 1, 'D', C_WHITE);
+
+    /* 关节旁的短标签：J1^ / J2> 表示该关节当前主要推动方向。 */
+    for (i = 0; i < s->n; i++) {
+        i32 rx = tip.x - s->points.p[i].x;
+        i32 ry = tip.y - s->points.p[i].y;
+        i32 tx = -ry;
+        i32 ty = rx;
+        char dir;
+        int lc = wx(s->points.p[i].x) + 1;
+        int lr = wy(s->points.p[i].y) - 1;
+
+        if (s->dq[i] < 0) { tx = -tx; ty = -ty; }
+        if ((tx < 0 ? -tx : tx) > (ty < 0 ? -ty : ty))
+            dir = tx > 0 ? 'R' : 'L';
+        else
+            dir = ty > 0 ? 'U' : 'D';
+        if (lc < CV_X) lc = CV_X;
+        if (lc > CV_X + CV_W - 3) lc = CV_X + CV_W - 3;
+        if (lr < CV_Y) lr = CV_Y;
+        if (lr > CV_Y + CV_H - 1) lr = CV_Y + CV_H - 1;
+        buf[0] = 'J';
+        buf[1] = (char)('1' + i);
+        buf[2] = dir;
+        buf[3] = 0;
+        vga_text(lc, lr, buf, C_DGRAY);
+    }
+
+    draw_minimap(s, vx_mm_s, vy_mm_s);
+
+    ghost_age++;
+    if (!ghost_valid || ghost_n != s->n || ghost_age >= 12) {
+        ghost_points = s->points;
+        ghost_n = s->n;
+        ghost_valid = 1;
+        ghost_age = 0;
     }
 
     {
@@ -670,6 +854,11 @@ void arm_render_frame(const struct arm_status *s)
 
 void arm_render_trace_push(const struct arm_status *s)
 {
-    trace[trace_i] = (u16)(wx(s->points.p[s->n].x) | (wy(s->points.p[s->n].y) << 8));
+    i32 x = s->points.p[s->n].x;
+    i32 y = s->points.p[s->n].y;
+
+    trace[trace_i] = (u16)(wx(x) | (wy(y) << 8));
     trace_i = (trace_i + 1) % TRACE_N;
+    mtrace[mtrace_i] = (u16)(mx(x) | (my(y) << 8));
+    mtrace_i = (mtrace_i + 1) % TRACE_N;
 }

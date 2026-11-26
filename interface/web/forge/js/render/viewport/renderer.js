@@ -251,19 +251,40 @@
         if (sel) drawSelectionBox(l);
       }
 
+      if (doc.prop && !doc.prop.held) {
+        const p = doc.prop;
+        const size = p.size || [0.12, 0.12, 0.12];
+        buffers.drawMesh(buffers.boxMesh,
+          M.mul(M.trans(p.pos[0], p.pos[1], p.pos[2]),
+            M.scale(size[0], size[1], size[2])),
+          M.mat3(M.mat4()), p.color || [0.78, 0.42, 0.18]);
+      }
+
       const tool = scene.endMat;
       drawBuffer(
         buffers.boxMesh,
         M.mul(M.mul(tool, M.trans(doc.tool.length / 2, 0, 0)), M.scale(doc.tool.length, doc.tool.width, doc.tool.depth)),
         [0.30, 0.34, 0.38]
       );
-      [0.048, -0.048].forEach(function (y) {
+      const grip = M.clamp(Number(doc.tool.grip) || 0, 0, 1);
+      [0.065, -0.065].forEach(function (y) {
+        const jaw = y * (1 - grip * 0.62);
         drawBuffer(
           buffers.boxMesh,
-          M.mul(M.mul(tool, M.trans(doc.tool.length + 0.075, y, 0)), M.scale(0.14, 0.030, 0.04)),
+          M.mul(M.mul(tool, M.trans(doc.tool.length + 0.075 - grip * 0.025, jaw, 0)),
+            M.scale(0.14, 0.030, 0.04)),
           [0.55, 0.59, 0.63]
         );
       });
+
+      if (doc.prop && doc.prop.held) {
+        const p = doc.prop;
+        const size = p.size || [0.12, 0.12, 0.12];
+        buffers.drawMesh(buffers.boxMesh,
+          M.mul(M.mul(tool, M.trans(doc.tool.length + size[0] / 2, 0, 0)),
+            M.scale(size[0], size[1], size[2])),
+          M.mat3(M.mat4()), p.color || [0.78, 0.42, 0.18]);
+      }
 
       for (let i = 0; i < scene.joints.length; i++) {
         drawJoint(scene.joints[i], jointRadius(scene, i), selected.kind === "joint" && selected.index === i, true);

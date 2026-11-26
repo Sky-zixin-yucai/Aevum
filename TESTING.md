@@ -318,6 +318,82 @@ python src/kernel/host/bridge/serial_bridge.py
 - 检查 Windows QEMU 启动目录/权限；尝试 `-machine pc,accel=tcg` + 不同 `cache/aio`；
 - 如果仍失败，改用 WSL QEMU 做功能验证，Windows 侧只做 Forge 页面。
 
+## 2026-11-26 / Forge SWEEP 与 3R GRAB（重建内核）
+
+### 对象
+- QEMU：WSL QEMU 11.1.2，`-m 32M -drive format=raw,file=disk.img -display gtk -vga std -serial tcp:127.0.0.1:5555,server,nowait -monitor tcp:127.0.0.1:5556,server,nowait -no-reboot`
+- 串口 `5555` / monitor `5556` / 桥 `8765` / Forge `8766`
+- `kernel.bin`：88,776 bytes（224 扇区上限，余量 25,912 bytes）
+- Forge URL：`http://127.0.0.1:8766/interface/web/forge/?v=16`
+
+### 步骤
+1. 撤回未提交的 `MoveJ`/`Dwell` 动作库方向代码，保留 `body_desc` 2–8 关节执行。
+2. 在 Forge 增加宿主侧 `SWEEP` 与 3R `GRAB`；场景 `doc.prop` 放一个 0.12 m 方块。
+3. `make clean && make -j4`，重启 QEMU 与 `serial_bridge.py`。
+4. 浏览器打开 `?v=16`，连接桥；点 `SWEEP` 看 J1 左右摆动；点 `GRAB` 看末端对准方块并闭爪。
+
+### 证据
+- 构建/QEMU：`tests/kernel/results/2026-11-26/rebuild-boot.png`
+- SWEEP：`tests/kernel/results/2026-11-26/rebuild-sweep.png`
+- GRAB 收敛：`tests/kernel/results/2026-11-26/rebuild-grab-settled.png`
+- Forge `0x03`：`MODE MANUAL HOLD`、`END ERROR 0.16 mm`、`q1 31.9° / q2 -109° / q3 77°`，夹爪闭合后方块跟随工具尖端。
+
+### 结论
+- 通过：重建内核可引导；Forge 可连桥；SWEEP 期间 J1 目标与内核 `q` 同步变化；GRAB 的 3R IK 目标为 `q1 31.9° / q2 -109° / q3 77°`，内核收敛后末端误差 0.16 mm。
+- 边界：GRAB 只服务默认 3R；2R、4R–8R 仍只做建模/手动关节控制。方块是 Forge 场景对象，不是 `body_desc`。
+- 新问题：Forge 窗口不在前台时 `requestAnimationFrame` 会被宿主降频，页面显示的跟踪过程会变慢；内核本身仍按 100 Hz 运行。
+
+## 2026-11-26 / 内核 VGA 方向可视化（全工作空间 + 小地图）
+
+### 对象
+- QEMU：Windows QEMU 11.1.0，`-display gtk`，串口 5555 / monitor 5556
+- `kernel.bin`：90,312 bytes（177 扇区，上限 208，余量 16,184 bytes）
+- 页面：`http://127.0.0.1:8766/interface/web/forge/?v=21`
+
+### 步骤
+1. 主画面坐标范围从 ±0.85 m 放大到 ±1.45 m，base 固定在画布中心，避免机械臂在左右两端被裁切。
+2. 主画面增加 base 十字参考线，边界标 `L/R/U/D`；在关节旁标 `J1U/J2R/...`，表示该关节当前主要推动方向。
+3. 左上角增加固定 ±1.45 m 工作空间小地图：`base #`、当前 tip `@`、目标 `o`、轨迹 `*`、四向 `L/R/U/D`。
+4. 增加 tip 轨迹、上一姿态 ghost（暗灰）、`vx/vy` 速度分解（由 `dq` 和雅可比列合成，单位 mm/s）。
+5. 用串口 `B` 下发 3R 身体（0.62/0.52/0.24），再用 `J` 手动目标分别到右侧和左侧姿态，抓取 VGA 画面。
+
+### 证据
+- 右侧姿态：`tests/kernel/results/2026-11-26/viz-final-right.png`
+- 左侧姿态：`tests/kernel/results/2026-11-26/viz-final-left.png`
+- J1 摆动与小地图轨迹：`tests/kernel/results/2026-11-26/viz-final-sweep-b.png`
+
+### 结论
+- 通过：主画面不再只在右半边；左右目标都能完整显示；小地图能在同一帧里给出 base、当前象限、目标和轨迹；`vx/vy` 随 J1/J2 运动变化。
+- 边界：小地图分辨率约 0.26 m/格，J2 的局部左右弧线可能只占一格；A 方案只摆 J2 仍不能实际走遍四个象限，完整四向需要 J1 大范围扫或 J1+J2 合成路径。
+- 说明：轨迹是渲染层的历史采样，不是控制层动作语义；`@` 是当前 tip，`o` 是目标，`*` 是历史。
+
+## 2026-11-26 / Forge 方块 0.80 m 与 3R GRAB 演示
+
+### 对象
+- QEMU：Windows QEMU 11.1.0，`-display gtk`，串口 5555 / monitor 5556；本轮 PID 199064
+- 桥：`serial_bridge.py`，`ws://127.0.0.1:8765` → QEMU serial 5555
+- `kernel.bin`：90,312 bytes（177 扇区，上限 208，余量 16,184 bytes）
+- 页面：`http://127.0.0.1:8766/interface/web/forge/?v=22`
+- 方块：`doc.prop` 默认与 3R preset 均为 `size [0.12,0.12,0.12]`、`pos [0.80,0.06,0]`
+
+### 步骤
+1. 把方块中心从 `x=0.90` 改到 `x=0.80`，保持中心高度 `y=0.06`、底面贴地；方块左端面为 `0.74`。
+2. 3R 抓取几何：工具长 `0.20`，wrist 为 `[0.54,0.06]`，base 高 `0.24`；IK 目标 `q=[33.2°,-120.8°,87.6°]`。
+3. 页面缓存参数升到 `?v=22`；重启 QEMU 和桥，Forge 点 Connect 进入 `KERNEL / MANUAL HOLD`。
+4. 点 GRAB，等待 `GRAB 完成：方块已夹住`，再点 RELEASE 确认方块回到 `x=0.80`。
+
+### 证据
+- Forge GRAB：`tests/kernel/results/2026-11-26/windows-forge-v22-grab.png`
+- Forge RELEASE：`tests/kernel/results/2026-11-26/windows-forge-v22-released.png`
+- 内核 VGA：`tests/kernel/results/2026-11-26/viz-forge-grab.png`
+- Forge `0x03`：`q1 33.2° / q2 -121.3° / q3 88.3°`，`END ERROR 0.25 mm`
+- VGA：`q1 33.2° / q2 -120.8° / q3 87.6°`，`tip 0.250 mm`
+
+### 结论
+- 通过：方块左端面与 3R 工具尖端对齐；GRAB 后夹爪闭合、方块随工具；RELEASE 后回到 `0.80`，页面不再在右边缘裁切。
+- 边界：本轮“抓取”是 Forge 夹爪状态加内核关节到点，没有内核夹爪命令，不能说成真机夹爪控制。
+- 说明：`x=0.80` 是当前演示的舒适中距位置；`0.90` 在几何上也能解，但会贴近视口右缘。
+
 ## 九、讨论问题
 
 - “机器人核心控制内核组件”和“多机器人控制”是什么关系：一个组件管一台机器人，还是管一组机器人？
