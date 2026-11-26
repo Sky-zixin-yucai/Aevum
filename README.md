@@ -50,15 +50,14 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 
 ### Forge 3R 抓取与 VGA
 
-| 初始场景：方块在 1.30 m | GRAB 后：工具尖端对齐 1.2396 m |
+| 阶段 | 结果 |
 | --- | --- |
-| ![Forge 3R 初始场景](docs/assets/readme/kernel/forge-v26-initial.png) | ![Forge 3R GRAB](docs/assets/readme/kernel/forge-v26-grab.png) |
-
-![内核 VGA 3R 抓取姿态](docs/assets/readme/kernel/kernel-vga-v26.png)
+| 初始场景 | 方块在 `x=1.30 m`，左端面 `1.24 m` |
+| GRAB 后 | 工具尖端对齐 `1.2396 m`，方块标记为 `held` |
 
 内核 VGA 现在显示 `±1.45 m` 工作空间、base 十字、`L/R/U/D` 四向标记、关节方向标签、左上小地图、目标/实际轨迹和 `vx/vy` 速度分解。
 
-> Current addendum: `kernel.bin` is 90,312 bytes; Forge drives a 3R arm with `0.62 / 0.52 / 0.24 m` links and a `0.20 m` tool. Forge `GRAB` performs local 3R IK and marks the block held after joint convergence; the kernel receives joint targets only and has no gripper command. The VGA page shows the workspace, direction labels, a minimap, trails and `vx/vy`.
+> Current status: `kernel.bin` is 90,312 bytes; Forge drives a 3R arm with `0.62 / 0.52 / 0.24 m` links and a `0.20 m` tool. Forge `GRAB` performs local 3R IK and marks the block held after joint convergence; the kernel receives joint targets only and has no gripper command. The VGA page shows the workspace, direction labels, a minimap, trails and `vx/vy`.
 
 ## 渲染引擎 / Render Engine
 
@@ -260,7 +259,6 @@ P5.3 已在本地提交为 `115a31f`。这一阶段把「反复 fork/wait 100 �
 
 > P8-era AEVUM FORGE workbench: structure tree, QEMU kernel window, 3D viewport and Inspector. The kernel reports `q1 67.9°`, `q2 -76.8°`, `q3 -56.5°`; the 3D viewport turns the same joint angles into a visible arm and shows target/actual angle, gains, torque and `TRACKING ERROR 4.78 mm` on the same screen. `TASK SCHED P3/31`, `nullsp ON` and `kthr 4 s5 OK` show scheduling, null-space projection and the dynamic kthread running while the arm is live.
 
-最新 v26 截图见上面的“当前状态”。
 
 **启动、异常与恢复**
 
