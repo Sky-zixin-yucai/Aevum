@@ -4,7 +4,7 @@
 
 ## 目标
 
-进程调度不跳过。P12 的文件分支冻结在 P12.1；这里先把调度测试的基线、模型和 Linux 对照组搭起来，再决定是修现有调度器，还是重设计。
+进程调度不跳过。P12 的文件分支冻结在 P12.1；这里先把调度测试的基线、模型和 Linux 对照组搭起来，再决定是修现有调度器，还是重设计。P11.9 的 A1 份额基线已完成；`rt/` 开始定义控制任务的实时指标，先量 before，再改 RT-1。
 
 测试要回答的不是“Linux 有没有 CFS”，而是：
 
@@ -22,6 +22,8 @@ tests/kernel/
 ├── aevum/                    Aevum 侧启动、采集与 CPU-bound 基准
 │   ├── README.md
 │   └── run-bench.sh
+├── rt/                       RT-0a 实时控制模型与度量契约
+│   └── README.md
 ├── linux/                    Linux i386 构建与 QEMU 启动
 │   ├── build-i386.sh
 │   ├── run-qemu.sh

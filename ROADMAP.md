@@ -6,7 +6,7 @@
 
 ## 当前目标
 
-内核已经走完进程、地址空间、信号、exec、fd/pipe、线程、动态内核线程、阻塞调度和只读文件 ABI。P12.1 已完成；当前先做 P11 调度线的补章 P11.9（CFS-lite：权重 8/4/2/1 + `min_vruntime`），完成后再回到 P12.2。P12.2 范围未定，不提前写块设备、写路径、目录、权限或 cwd。
+内核已经走完进程、地址空间、信号、exec、fd/pipe、线程、动态内核线程、阻塞调度和只读文件 ABI。P12.1 已完成；P11.9 的公平份额基线已完成，当前做 P11.10 / RT-0a：定义控制任务的实时指标与度量契约，先量 A1 的 before，再进 RT-1 唤醒抢占。P12.2 范围未定，不提前写块设备、写路径、目录、权限或 cwd。
 
 ## 已完成
 
@@ -58,6 +58,7 @@
 - P11.7：pending signal 接入阻塞点；`read_block/write_block/sleep/wait/wait_timeout/thread_join` 统一返回 -3（EINTR）；条件优先于超时，超时优先于信号。
 - P11.8：`kill(pid,sig)` 与 `sigaction_flags`；`kill` 只允许 self 或直接子进程，`sig=0` 做存在性检查，拒绝 SIGSTOP；返回用户态前异步投递；最小 `SA_RESTART` 把 `eip-2` 的 `CD 80` 帧回退并重执行。image3 四段 kill 验收通过。
 - P11.9：调度公平性补章。`priority 0..3` 权重改为 `8/4/2/1`，新增 64 位 `min_vruntime`，睡眠唤醒钳到下界；固定 4 tick 片，所有任务仍有正权重，不做 FIFO 式饥饿。A1 4 任务 `52.80/26.40/13.60/7.20`，2 任务 `88.80/11.20`。
+- P11.10 / RT-0a：只定义实时控制模型与度量契约，不改调度器。默认控制周期 10ms、预算 2ms、截止 10ms，后台 0/4/8/12 个 CPU-bound 任务，1000 周期 × 3 次；记录唤醒延迟、抖动、执行时间、deadline miss、切换次数。RT-0b 才加观测，RT-1 才改 `need_resched`/1kHz。
 
 ### P12.1 只读 ramdisk 与最小文件 ABI
 
