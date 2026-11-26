@@ -95,6 +95,11 @@ static u32 slice_expire_total;
 static u32 tick_defer_total;
 /* P11.7：被 pending signal 打断的阻塞次数。 */
 static u32 eintr_total;
+/*
+ * P11.9：CFS-lite 的全局虚拟时间下界。只增不减；睡眠任务被唤醒时
+ * 钳到该值，避免长时间睡眠后带着过期的小 vruntime 一次性抢走 CPU。
+ */
+static u64 min_vruntime;
 #define WEIGHT_QUANTUM 64u
 
 /* FXSAVE 区域必须 16 字节对齐；模板只用于新任务的初始 FPU/SSE 状态。 */
@@ -111,9 +116,44 @@ static inline void fpu_restore(void *area)
     __asm__ __volatile__("fxrstor (%0)" : : "r"(area) : "memory");
 }
 
+/*
+ * P11.9：priority 0 最高、3 最低，依次对应权重 8/4/2/1。
+ * WEIGHT_QUANTUM=64 能被这四个权重整除，逐 tick 记账没有余数损失；
+ * 因此 4 个 CPU-bound 任务在整 tick 账本上应得到 8:4:2:1 的份额。
+ */
 static u32 task_weight(const struct task_struct *task)
 {
-    return (u32)(task->priority + 1);
+    return 1u << (TASK_PRIORITY_MAX - task->priority);
+}
+
+/*
+ * 只把非 idle 的 READY/RUNNING 任务纳入 min_vruntime；idle 永远有
+ * vruntime 0，若把它算进来，下界会永久卡在 0，睡眠任务仍能带着旧信用
+ * 唤醒。
+ */
+static void task_vruntime_refresh_min(void)
+{
+    u64 m = 0;
+    int found = 0;
+    int i;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task_struct *t = &tasks[i];
+        if (t == idle_task) continue;
+        if (t->state != TASK_READY && t->state != TASK_RUNNING) continue;
+        if (!found || t->vruntime < m) {
+            m = t->vruntime;
+            found = 1;
+        }
+    }
+    if (found && m > min_vruntime) min_vruntime = m;
+}
+
+/* 唤醒前先刷新下界，再把过期的小 vruntime 钳到 min_vruntime。 */
+static void task_vruntime_wake(struct task_struct *t)
+{
+    task_vruntime_refresh_min();
+    if (t->vruntime < min_vruntime) t->vruntime = min_vruntime;
 }
 
 static int pid_alloc(void)
@@ -252,8 +292,11 @@ static const char *task_create_common(int priority, const char *name, u32 entry,
     task->priority = priority;
     /* P11.5：新任务从完整时间片开始，避免落在 0 片立即被抢占。 */
     task->slice_left = TASK_SLICE_TICKS;
-    /* 新任务从当前虚拟时间起跑，不靠 0 值抢占已运行任务的时间片。 */
-    task->vruntime = current_task ? current_task->vruntime : 0;
+    /* P11.9：新任务从全局虚拟时间下界起跑，不继承当前任务已经积累的
+     * 高 vruntime，也不拿 0 值去抢占已运行任务的时间片。先刷新一次，
+     * 把当前 RUNNING 任务也算进下界，避免片未尽的窗口里新任务拿到旧值。 */
+    task_vruntime_refresh_min();
+    task->vruntime = min_vruntime;
     task->stack_base = stack_base;
     task->stack_top = stack_top;
     task->fpu_state = fpu_state;
@@ -370,7 +413,9 @@ const char *task_create_thread_user(int tid, const char *name,
     /* 线程入口从 eax 读 arg；首轮必须有机会跑，父线程随后 yield/join。 */
     sp = (u32 *)task->ctx.esp;
     sp[0] = arg;
-    task->vruntime = 0;
+    /* P11.9：线程继承全局下界；父线程随后 yield/join，子线程不会因 0 值
+     * 获得超过一整轮的历史信用。 */
+    task->vruntime = min_vruntime;
     return 0;
 }
 
@@ -415,9 +460,10 @@ const char *task_fork_user(int pid, const char *name, struct irq_frame *frame,
                             1, frame->user_esp, proc, pid, 0, 0, 0, out);
     if (rc) return rc;
     task = *out;
-    /* fork 子任务必须有机会先跑一次：父进程随后进入 wait，
-     * 若子和父同 vruntime，调度器会一直选回父、饿死子。 */
-    task->vruntime = 0;
+    /* fork 子任务必须有机会先跑一次：父进程随后进入 wait。
+     * P11.9 用全局下界而不是 0：子任务仍在父进程之前被选中，但不会拿到
+     * 超过 min_vruntime 的历史信用，唤醒后的份额更接近 CFS。 */
+    task->vruntime = min_vruntime;
     sp = (u32 *)task->ctx.esp;
     sp[0] = 0;                 /* 子进程 fork 返回 0 */
     sp[1] = frame->ebx;
@@ -574,9 +620,11 @@ static void task_note_switch(struct task_struct *next)
 }
 
 /*
- * 优先级加权公平选择：priority 0..3 对应权重 1..4，每次 PIT 给运行任务
- * 的 vruntime 增加 64/weight。选择 READY 中 vruntime 最小者；同值按
- * prev 之后的槽位轮转，避免严格最高优先把 render/idle 饿死。
+ * P11.9：CFS-lite 加权公平选择。priority 0..3 对应权重 8/4/2/1，
+ * 每个 PIT tick 给运行任务的 vruntime 增加 64/weight；选择 READY 中
+ * vruntime 最小者。权重全为正且最小为 1，低优先级任务仍会轮到，
+ * 不会被 FIFO 式地永久饿死；min_vruntime 防止睡眠任务醒来后一次抢回
+ * 整段历史 CPU。
  * P11.4：只要存在非 idle READY，idle 就不参与本轮选择；只有全系统都
  * 没有可运行任务时才选 idle，让它在 sti; hlt 上真正停机。
  */
@@ -587,6 +635,8 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
     u64 best_v = 0;
     int start = 0;
     int i;
+
+    task_vruntime_refresh_min();
 
     for (i = 0; i < TASK_MAX; i++) {
         if (&tasks[i] == prev) {
@@ -631,6 +681,7 @@ static void task_wake_expired(u32 now)
         t->wake_tick = 0;
         t->waitq = 0;
         t->wait_ticket = 0;
+        task_vruntime_wake(t);
         t->state = TASK_READY;
         timeout_wake_total++;
     }
@@ -673,6 +724,7 @@ void task_wake_kthread_waiters(int tid)
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
+            task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
         }
     }
@@ -1095,6 +1147,7 @@ const char *task_wake(int pid)
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
+            task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
             return 0;
         }
@@ -1263,6 +1316,7 @@ void wait_queue_wake_one(struct wait_queue *q)
     if (best) {
         best->wake_tick = 0;
         best->waitq = 0;
+        task_vruntime_wake(best);
         best->state = TASK_READY;
         q->wakes++;
         wq_wake_one_total++;
@@ -1286,6 +1340,7 @@ void wait_queue_wake_all(struct wait_queue *q)
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
+            task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
             woke = 1;
         }
@@ -1425,6 +1480,7 @@ void task_wake_process(struct process *proc)
             tasks[i].wake_tick = 0;
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
+            task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
         }
     }

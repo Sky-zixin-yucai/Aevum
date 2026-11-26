@@ -38,16 +38,27 @@ BENCH_TASKS=2 tests/kernel/aevum/run-bench.sh
 - 同一段 `user_program_start`，数据页 mode=7；
 - mode 7 只自增计数、不 `yield`，由 PIT 抢占；
 - bench 内核任务睡眠 500 tick，500 tick 后读 `task_snapshot_process()` 的 `cpu_ticks`；
-- 结果写到 `tests/kernel/results/2026-11-26/aevum-a0/`。
+- 结果建议写到 `/tmp` 或 `results/2026-11-26/`；原始 `.log` 不提交，只保留汇总和截图。
 
-当前实测（3 次一致）：
+A0 冻结基线（P11.9 前，3 次一致）：
 
 | 用例 | P0 | P1 | P2 | P3 |
 | --- | ---: | ---: | ---: | ---: |
 | A0 2 任务（P0/P3） | 20.00% | — | — | 80.00% |
 | A0 4 任务 | 10.40% | 20.00% | 30.40% | 39.20% |
 
-结论：当前 `task_weight()` 的 `priority + 1` 让 priority 0 份额最低，和 Linux CFS 的权重方向相反。完整对比见 `tests/kernel/results/2026-11-26/aevum-real.md`。
+A1 CFS-lite 实测（P11.9，3 次一致，500 tick）：
+
+| 用例 | P0 | P1 | P2 | P3 |
+| --- | ---: | ---: | ---: | ---: |
+| A1 2 任务（P0/P3） | 88.80% | — | — | 11.20% |
+| A1 4 任务 | 52.80% | 26.40% | 13.60% | 7.20% |
+
+结论：A0 的 `priority + 1` 让 priority 0 份额最低，和 Linux CFS 的权重方向相反；A1
+改成 `8 >> priority` 后，2 任务和 Linux CFS 的 `88.67/11.33` 基本重合，4 任务
+`52.80/26.40/13.60/7.20` 也贴近 `53.34/26.64/13.25/6.74`。完整对比见
+`tests/kernel/results/2026-11-26/aevum-real.md`。
+
 
 ## 启动
 

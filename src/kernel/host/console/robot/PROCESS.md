@@ -48,6 +48,7 @@ P1 建立用户进程 PCB、PID、父子关系、退出码和 `fork/exit/wait/re
 | P11.6 等待队列 ticket FIFO | `struct wait_queue` 从 `u8 wake_seq` 改为 `u32 next_ticket + u32 wakes`；`task_struct` 增加 `u32 wait_ticket`。`wait_queue_init()` 把 `next_ticket` 初始化为 1，`wait_ticket_alloc()` 单调分配；`task_block_on()` 首次入队取票并统计队列深度，虚假唤醒后重查失败再次阻塞时保留原票据。`wait_queue_wake_one()` 线性扫 16 槽，用有符号差值比较票据、处理回绕，只把票据最小的 BLOCKED 成员置 READY，不清其票据；条件满足/超时/退出/广播时才清。pipe 读消费后定向唤醒写者、仍有数据再唤醒下一个读者，写入后只唤醒一个读者；console 输入只唤醒一个读者，仍有积压再唤醒下一个；pipe release 的关闭/EOF 继续 `wake_all`。`task_wq_stats(blocks,wake_one,wake_all,max_depth)` 导出 C 页 `WQ blk/one/all/dep` | `include/kernel/task.h`、`kernel/task/task.c`、`kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`、`app/arm/render/render.c`、`user/exec-io/exec_io.asm` |
 | P11.7 可中断阻塞 EINTR | 新增 `process_signal_take_current()`：按信号号取走当前进程最低位 pending 并清 bit，0 表示无信号。`task_block_until/task_block_until_timeout/task_block_on` 在条件不满足时检查 pending，命中则清 `waitq/wait_ticket/wake_tick`、递增 `eintr_total`、返回内部码 2；条件优先于 deadline，deadline 优先于信号。`task_sleep_ticks`、`pipe_read_block/write_block`、`console_read_block`、`process_wait_common`、`process_thread_join_current` 把内部码 2 映射为 -3；syscall case 22 保留 -3，不压成 -1。C 页第 22 行显示 `EINTR <n>`；image 3 用 SIGCHLD 分别打断 sleep/read_block/write_block/wait_timeout/thread_join | `include/kernel/task.h`、`include/kernel/proc.h`、`kernel/task/task.c`、`kernel/proc/process.c`、`kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`、`arch/x86/cpu/syscall/syscall.c`、`app/arm/render/render.c`、`user/exec-io/exec_io.asm` |
 | P11.8 kill 与异步信号投递 | 新增 `eax=30 kill(pid,sig)` 与 `eax=31 sigaction_flags(sig,handler,mask,flags)`；旧 `eax=11 sigaction` 等价 flags=0。`kill` 只允许 self 或直接子进程，`sig=0` 做存在性检查，拒绝 SIGSTOP；目标 LIVE 时置 pending + `task_wake_process()`。P11.7 的阻塞点改为 `process_signal_peek_current()`，只探测不清 bit；真正消费移到返回用户态前的 `process_signal_deliver_async()`，按 IGN/DFL/handler 处理，一次投递一个。`process_signal_restart_prepare()` 在阻塞 syscall 返回 -3 时，若最低位 pending 有用户 handler 且带 `SA_RESTART`（0x10000000），把 `eip-2` 的 `CD 80` 帧回退并把 `eax` 还原成原 syscall 号，sigreturn 后重执行。`loader.asm` 在 int80 和 PIT/task 返回用户态前各投递一次 | `include/kernel/proc.h`、`kernel/proc/process.c`、`kernel/task/task.c`、`arch/x86/cpu/syscall/syscall.c`、`loader.asm`、`user/exec-io/exec_io.asm` |
+| P11.9 CFS-lite | `task_weight()` 改为 `1 << (TASK_PRIORITY_MAX - priority)`，0..3 对应 8/4/2/1；新增静态 `u64 min_vruntime`，只统计非 idle READY/RUNNING，唤醒路径统一先把 `vruntime` 钳到下界；新任务/fork/clone 从下界起跑。仍固定 4 tick 片，所有权重为正，低优先级不会 FIFO 饥饿。A1 4 任务 52.80/26.40/13.60/7.20，2 任务 88.80/11.20 | `kernel/task/task.c`、`app/arm/app/app.c`、`app/arm/render/render.c`、`README.md`、`PROCESS.md` |
 | wait status | 正常退出保留原退出码（`exit(7) -> 7`）；信号终止为 `0x80000000` 按位或 `sig`（`#DE -> 0x80000008`） | `PROC_WAIT_STATUS()` |
 | PCB 信号字段 | `pending/last_sig/term_sig/sig_count/sigchld_count`；`process_info` 同步暴露 | `kernel/proc/process.c` |
 | pending 位图 | `pending |= 1u << (sig - 1)`；只记录 1..31 号信号，不在这里改进程状态 | `proc_signal_pending()` |
@@ -557,7 +558,7 @@ P11.1 在不改调度器单核结构的前提下，给 `TASK_BLOCKED` 增加一�
 
 ### P11.2 优先级读写与 fork/clone 继承
 
-P11.2 不改变 `priority 0..3 -> weight 4..1` 的既有映射，只把优先级从“创建时参数”变成可由用户态读写的生命周期属性，并修正 fork/clone 的继承路径。
+P11.2 当时沿用了 `priority 0..3 -> weight 4..1` 的既有映射；这个映射把 priority 0 当成最低权重，和“0 最高”的文档相反。P11.9 已修正为 `8..1`，并把 control/render/idle 的创建优先级改为 0/1/3；P11.2 的 ABI、get/set 和 fork/clone 继承语义不变。
 
 - `task_priority_get(tid)` 与 `task_priority_set(tid,priority)` 按 TID 操作；`tid=0` 表示当前任务。优先级范围 0..3，0 最高。get 成功返回 0..3，set 成功返回 0，参数/目标/状态错误返回 -1。
 - `task_priority_set()` 在 `cli` 窗口内完成查找与写入；只改后续 PIT 记账权重，不重算历史 `vruntime`，避免反复 setpriority 清零累计虚拟时间刷调度优势。ZOMBIE 任务不接受 set；用户态只能改 `user` 任务，`setpriority(1,0)` 这类对 control 的请求返回 -1。
@@ -624,7 +625,7 @@ P11.3 的调度器把 `idle` 当成一个普通 READY 任务参与加权公平�
 
 - `include/kernel/task.h` 增加 `task_set_idle_task()`、`task_note_idle_hlt()`、`task_idle_hlt_total()`；`task.c` 增加静态 `struct task_struct *idle_task` 和 `u32 idle_hlt_total`。`arm_app_init()` 在 `task_create(0,"idle",...)` 之后调用 `task_set_idle_task(p_idle)`，避免在扫描时按名字比较字符串。
 - `task_pick_next()` 改为同时收集非 idle 的 `best` 与 `idle_best`。只要存在任意非 idle READY，就返回 `best`，idle 完全不参与本轮 vruntime 比较；只有全系统没有非 idle READY 时才返回 `idle_best`。若两者都为空，沿用原有 `prev` 兜底路径。
-- idle 仍是 `TASK_MAX` 内的静态任务，优先级 0、栈 `0xB000..0xBFFF`，不新增任务槽、不新增 BSS 大数组；`sizeof(struct task_struct)` 保持 112B，`tasks[]` 仍为 16×112B。
+- idle 仍是 `TASK_MAX` 内的静态任务，P11.9 起优先级 3（权重 1，但正常选择时被排除）、栈 `0xB000..0xBFFF`，不新增任务槽、不新增 BSS 大数组；`sizeof(struct task_struct)` 保持 112B，`tasks[]` 仍为 16×112B。
 
 ### 停机循环与 I 键探针
 
@@ -768,7 +769,7 @@ P11.6 补上了等待队列的 FIFO 与定向唤醒，但所有阻塞点仍只�
 ### C 页观测
 
 - `task.c` 新增静态 `eintr_total` 与 `task_eintr_total()`；每次内部码 2 返回时只加 1。
-- `render.c` 第 22 行改为 `priority 0..3 -> weight 1..4; EINTR <n>`，数字放在第 39 列；非 0 用绿色。
+- `render.c` 第 22 行改为 `priority 0..3 -> weight 8..1; EINTR <n>`，数字放在第 39 列；非 0 用绿色。
 - P11.7 没有新增 task 字段，`sizeof(struct task_struct)` 仍为 120B，`sizeof(struct wait_queue)` 仍为 8B；新增的只是 4B 统计全局。
 
 ### image 3 五段 EINTR 验收
@@ -846,6 +847,31 @@ P11.7 只把 pending signal 变成阻塞 syscall 的 EINTR，没有用户态注�
 - pending 仍是进程级，没有 per-thread pending；多线程进程里任何线程都可能先看到同一个 pending。没有 `SA_SIGINFO`、`SA_NODEFER`、`sigprocmask` 用户 ABI；handler 期间 `sig_mask` 只保存/恢复 `sigaction.mask`。
 - `SA_RESTART` 只覆盖“阻塞 syscall 返回 -3、且返回点是 `int 0x80`”的用户 handler 场景；不重启被同步异常打断的指令，不覆盖 read/write 部分传输，也不改变 -1/-2 错误码。
 - 异步投递只在返回用户态前发生；纯内核线程没有 PCB，不参与。仍没有 poll/select、SMP、P12 文件系统/网络。
+
+## 十九、P11.9 CFS-lite 权重与唤醒下界
+
+P11.2 的 `task_weight()` 实际返回 `priority + 1`，priority 0 只拿到权重 1，和“0 最高”的 ABI 文档相反；A0 实测 4 任务 `10.40/20.00/30.40/39.20`，2 任务 `20.00/80.00`。P11.9 只修权重方向和睡眠唤醒信用，不上完整 EEVDF。
+
+### 调度规则
+
+- `priority 0..3` 对应权重 `8/4/2/1`，即 `task_weight = 1 << (TASK_PRIORITY_MAX - priority)`。`WEIGHT_QUANTUM=64` 可被四个权重整除，逐 tick 的 `vruntime += 64 / weight` 没有余数损失。
+- 选择 READY 中 `vruntime` 最小者；固定 `TASK_SLICE_TICKS=4`，同值按 `prev` 之后的槽位轮转。所有权重为正，最低任务仍会轮到，不做 FIFO 式永久抢占。
+- 新增 64 位静态 `min_vruntime`，只增不减；刷新时只统计非 idle 的 READY/RUNNING 任务，idle 的 0 不会把下界永久钉在 0。睡眠任务被 `task_wake_expired()`、`task_wake()`、`task_wake_process()`、kthread waiter 和 wait queue 唤醒时，先把 `vruntime` 钳到 `min_vruntime`。
+- 新任务、fork 子进程和 clone 线程都从 `min_vruntime` 起跑，不再用 0 值抢历史信用；fork 子仍比父任务先获得一次运行机会，因为父随后进入 wait，子在下界、父已高于下界。
+- control/render/idle 的创建优先级改为 0/1/3；`kping`/`korph` 改为 3，避免新的 0 最高语义把后台 kthread 抬到控制任务上面。
+
+### A1 实测
+
+- 4 任务（P0..P3）：`52.80% / 26.40% / 13.60% / 7.20%`，总 500 tick，3 次一致；Linux CFS 对照 `53.34 / 26.64 / 13.25 / 6.74`。
+- 2 任务（P0/P3）：`88.80% / 11.20%`，3 次一致；Linux CFS 对照 `88.67 / 11.33`。
+- 低优先级 P3 在 500 tick 里仍拿到 36 tick；没有出现 FIFO 4 任务的 `99.97/0.01/0.01/0.00` 饥饿。
+- 正常 clean build：`kernel.bin=87,720B`（A0 87,496B，+224B）；bench build `38,308B`。正常内核 QEMU 启动无 fault/panic；bench 构建 4/2 任务各 3 次通过。
+
+### 边界
+
+- 仍是固定 4 tick 片，没有目标延迟、最小粒度、动态片长或唤醒抢占；4 任务误差主要来自片量化，量级小于 1 个百分点。
+- `min_vruntime` 只做唤醒钳制，不做完整 lag 跟踪、组调度、EEVDF eligibility 或 deadline；不改变 `task_struct` 布局，不新增用户 ABI。
+- 本轮不验证 K3 唤醒延迟、K4 周期抖动、K5 睡眠补偿的份额收敛；`setpriority` 仍只改后续记账，不重算历史 `vruntime`。
 
 ## P12.1 只读 ramdisk 与最小文件 ABI
 

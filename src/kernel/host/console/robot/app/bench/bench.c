@@ -13,6 +13,7 @@ extern u8 user_program_end[];
 #define BENCH_TASKS 4
 #endif
 #define BENCH_TICKS 500u   /* PIT 100 Hz -> 5 s */
+/* 串口标签沿用 A0_BENCH，保持既有脚本 grep 兼容；A0/A1 由结果文档区分。 */
 
 static struct process *bench_proc[BENCH_TASKS];
 static struct task_struct *bench_task;

@@ -66,13 +66,23 @@ D:\Aevum\.excluded\linux      v6.18，depth=1，仅作参考
 
 ## 基线
 
-当前 Aevum 基线记为 `A0`：
+当前 Aevum 基线分两层：
+
+`A0`（P11.9 前的冻结基线）：
 
 - 32-bit x86 裸机内核，100Hz PIT；
 - 固定 4 tick 时间片；
-- `priority 0..3`，当前代码 `task_weight = priority + 1`；
+- `priority 0..3`，`task_weight = priority + 1`（1..4，和“0 最高”文档相反）；
 - 加权 `vruntime`，选择 READY 中最小值；
 - 无 `min_vruntime`、无动态片长、无唤醒抢占。
+
+`A1`（P11.9 CFS-lite）：
+
+- 固定 4 tick 时间片；
+- `priority 0..3`，`task_weight = 8 >> priority`（8/4/2/1，0 最高）；
+- 加权 `vruntime`，选择 READY 中最小值；
+- 64 位 `min_vruntime`，睡眠唤醒时钳到下界；
+- 权重全为正，低优先级仍会轮到，不做 FIFO 式永久抢占。
 
 Linux 基线记为 `L100`：
 

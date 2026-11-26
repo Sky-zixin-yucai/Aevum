@@ -452,7 +452,7 @@ void arm_render_cpu_frame(void)
     p += fmt_dec(buf, idle_hlt);
     buf[p] = 0;
     vga_text(35, 21, buf, idle_hlt ? C_GREEN : C_GRAY);
-    vga_text(2, 22, "priority 0..3 -> weight 1..4; EINTR", 0x18);
+    vga_text(2, 22, "priority 0..3 -> weight 8..1; EINTR", 0x18);
     eintr = task_eintr_total();
     p = 0;
     p += fmt_dec(buf, eintr);

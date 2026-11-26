@@ -139,7 +139,7 @@ static void kthread_demo_run_once(void)
 
     kthread_demo_stack_before = (u32)kernel_stack_used();
     tid = kthread_create("kping", kthread_demo_entry,
-                         (void *)&kthread_demo_steps, 0);
+                         (void *)&kthread_demo_steps, 3);
     if (tid < 0) {
         kthread_demo_ok = 0;
         return;
@@ -157,7 +157,7 @@ static void kthread_demo_run_once(void)
      * 由调度器回收；这里等 140 tick，确保兜底路径真的跑过一次。
      */
     orphan_tid = kthread_create("korph", kthread_orphan_entry,
-                                (void *)&kthread_demo_orphan_steps, 0);
+                                (void *)&kthread_demo_orphan_steps, 3);
     if (orphan_tid < 0) {
         kthread_demo_ok = 0;
         return;
@@ -729,13 +729,13 @@ const char *arm_app_init(void)
     arm_control_init();
     arm_render_init();
 
-    rc = task_create(3, "control", proc_control, AEVUM_STACK_P1, &p_control);
+    rc = task_create(0, "control", proc_control, AEVUM_STACK_P1, &p_control);
     if (rc) return rc;
 
-    rc = task_create(2, "render", proc_render, AEVUM_STACK_P2, &p_render);
+    rc = task_create(1, "render", proc_render, AEVUM_STACK_P2, &p_render);
     if (rc) return rc;
 
-    rc = task_create(0, "idle", proc_idle, AEVUM_STACK_IDLE, &p_idle);
+    rc = task_create(3, "idle", proc_idle, AEVUM_STACK_IDLE, &p_idle);
     if (rc) return rc;
     task_set_idle_task(p_idle);
     family_set_reaper(task_pid_of(p_idle));

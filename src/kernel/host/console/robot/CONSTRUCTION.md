@@ -115,7 +115,7 @@ PIT 通道 0 以 100Hz 触发 IRQ0，`task_schedule_irq()` 在 IRQ0 和 `int 0x4
 
 ### 3.1 优先级加权公平选择
 
-- `priority` 取值 `0..3`，权重 `weight = priority + 1`，即 `1..4`。
+- `priority` 取值 `0..3`，P11.9 起权重 `weight = 8 >> priority`，即 `8/4/2/1`；priority 0 最高。
 - 每个 PIT tick 给正在运行的任务 `vruntime += 64 / weight`。
 - `task_pick_next()` 在 READY 任务中选择 `vruntime` 最小者；同值从 `prev` 之后的槽位轮转，避免固定顺序。
 - 新建任务从 `current_task->vruntime` 起跑，不从 0 值插队。
@@ -288,7 +288,7 @@ P8 把“内核任务只能启动时静态创建”这条限制拆掉：
 - `task_reap()` 对 `state==TASK_ZOMBIE && proc==NULL` 的槽增加 `!kthread` 条件，动态 kthread 优先留给 joiner；无人 join 时由 P9 的 grace reaper 兜底。
 - `kthread_join()` 先 `task_set_kthread_wait(tid)`，再进 `task_block_until()`。`kthread_join_ready()` 在 `cli` 窗口内重查：目标不存在/已不是 kthread/已 ZOMBIE 都返回 1，外层再区分错误或回收。调度器在 `prev->kthread` 变 ZOMBIE 后调用 `task_wake_kthread_waiters(prev->pid)`，只唤醒等待该 TID 的任务；唤醒时保留 `kthread_wait_tid`，等 `kthread_join()` 真正回收后再清。
 - `task_reap_kthread(tid)` 校验目标仍是 kthread ZOMBIE，依次 `kernel_stack_free(stack_top)`、`pid_free(pid)`、`task_zero()`；`task_zero` 同时清 kthread 标记、等待 TID、`zombie_ticks`、fn/arg。
-- control 启动时创建优先级 0 的 `kping`，它 yield 192 次后 `kthread_exit(5)`；control 优先级 3，先进入 join 的 BLOCKED 再让目标运行。P8 页面证据为 `kthr 4 s5 OK`，后由 P9 扩展为 `kt 4 s5 a1 OK`。
+- control 优先级 0（P11.9 起最高权重 8），启动时创建优先级 3（最低权重 1）的 `kping`，它 yield 192 次后 `kthread_exit(5)`；control 先进入 join 的 BLOCKED 再让目标运行。P8 页面证据为 `kthr 4 s5 OK`，后由 P9 扩展为 `kt 4 s5 a1 OK`。
 
 ### 3.14 P9 未 join kthread 的 grace 兜底
 
@@ -501,7 +501,7 @@ P11.7 不引入新字段，只在已有的阻塞 helper 上增加“条件不满
 - `include/kernel/task.h`：`task_block_until`、`task_block_until_timeout`、`task_block_on` 的返回码注释增加 2=EINTR；`task_sleep_ticks` 注释增加 -3；声明 `task_eintr_total()`。
 - `kernel/ipc/pipe/pipe.c`、`drivers/console/console.c`：`pipe_read_block()`、`pipe_write_block()`、`console_read_block()` 在 `task_block_on()` 返回 2 时返回 -3，其余 -2/-1/字节数语义不变。
 - `arch/x86/cpu/syscall/syscall.c`：case 22 改成先取 `process_thread_join_current()` 返回值，`rc==-3` 原样写回 `eax`；case 4/24/25/28/29 继续直接透传 int。
-- `app/arm/render/render.c`：C 页第 22 行 `priority 0..3 -> weight 1..4; EINTR <n>`，第 39 列显示 `task_eintr_total()`。
+- `app/arm/render/render.c`：C 页第 22 行 `priority 0..3 -> weight 8..1; EINTR <n>`，第 39 列显示 `task_eintr_total()`。
 - 语义顺序：条件满足 > deadline 到达 > pending signal。`ticks=0` 的非阻塞查询不检查 pending。
 - `user/exec-io/exec_io.asm`：在 P11.3/P11.6 image 3 上追加五段 EINTR。数据区 `0x401140/148` 两个 pipe、`0x401150/154` 子 PID、`0x401158` status、`0x40115C` TID、线程栈顶 `0x401F00`。测试 1 用子进程 sleep 20 打断父 `sleep(200)`；测试 2 用保留写端的空 pipe 打断 `read_block`；测试 3 用保留读端的满 pipe 打断 `write_block`；测试 4 用次子 B 退出打断 `wait_timeout(A,200)`；测试 5 用子进程 C 退出打断 `thread_join(worker)`，worker 以纯用户态计数循环保持 RUNNING/READY，避免它自己消费 SIGCHLD。失败码 20..25，成功输出 `P11.7 EINTR OK\n` 后写 `IO13`/exit(0)。
 - clean build：`kernel.bin=85,640B`（+1,376B）；`size` text 85,369B、`.data=232B`、`.bss=16,700B`；`__bss_start=0x94EA0`、`__bss_end=0x98FDC`，BSS 余量 4,132B，镜像余量 20,856B；`sizeof(struct task_struct)=120B`、`sizeof(struct wait_queue)=8B`；image 3 `0x81380..0x81D0F`，2,447B。SHA256 kernel `d21a23dd6d28f580793ad0b23bff112381f60749d4e0a4d4ebf90910a95db1ee`、boot `c41c5f5d350976a553acc1da6992175c53b2e00885f088e9a649675143800bb7`、disk `03f1fd15d5f0dff0a14a84caf4708b95930a13bad61373bbb06327a1bce382f1`。
