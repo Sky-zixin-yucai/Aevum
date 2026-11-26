@@ -117,3 +117,8 @@ void interrupt_eoi(void)
 {
     outb(PIC1_CMD, 0x20);
 }
+
+u32 interrupt_tick_hz(void)
+{
+    return PIT_HZ;
+}

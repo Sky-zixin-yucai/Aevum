@@ -14,10 +14,11 @@
 #include "drivers/serial/uart.h"
 #include "app/arm/app.h"
 #include "app/bench/bench.h"
+#include "app/rtbench/rtbench.h"
 
 void kernel_main(void)
 {
-#ifndef AEVUM_SCHED_BENCH
+#if !defined(AEVUM_SCHED_BENCH) && !defined(AEVUM_RT_BENCH)
     const char *rc;
 #endif
 
@@ -39,7 +40,7 @@ void kernel_main(void)
     }
     tss_init();
 
-#ifndef AEVUM_SCHED_BENCH
+#if !defined(AEVUM_SCHED_BENCH) && !defined(AEVUM_RT_BENCH)
     rc = arm_app_init();
     if (rc) {
         struct aevum_error e = {
@@ -61,6 +62,8 @@ void kernel_main(void)
     page_fault_init();
 #ifdef AEVUM_SCHED_BENCH
     bench_start();
+#elif defined(AEVUM_RT_BENCH)
+    rtbench_start();
 #else
     arm_app_start();
 #endif

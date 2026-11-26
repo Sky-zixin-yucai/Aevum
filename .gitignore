@@ -67,3 +67,4 @@ tests/kernel/results/*
 tests/kernel/linux/rootfs/
 tests/kernel/linux/.config
 src/kernel/host/console/robot/build-bench/
+src/kernel/host/console/robot/build-rt/

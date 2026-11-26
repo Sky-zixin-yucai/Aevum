@@ -231,4 +231,9 @@ u32 task_cpu_total(void);
 /* 单调 PIT tick 计数（100 Hz），只统计 IRQ0，不把 int 0x40 yield 算进去。 */
 u32 task_tick_total(void);
 
+/* RT-0b：把一个任务登记为唤醒探针；只记录 timer 到期唤醒的 TSC，不参与调度。 */
+void task_rt_probe_set(struct task_struct *task);
+void task_rt_probe_clear(void);
+u32 task_rt_probe_wake_tsc(void);
+
 #endif

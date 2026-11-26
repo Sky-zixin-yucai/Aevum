@@ -62,7 +62,8 @@ SRCS = \
 	app/console/render/render.c \
 	app/pool/demo/demo.c \
 	app/pool/render/render.c \
-	app/bench/bench.c
+	app/bench/bench.c \
+	app/rtbench/rtbench.c
 
 OBJS    = $(addprefix $(BUILD)/,$(SRCS:.c=.o)) $(BUILD)/user/ring3.o $(BUILD)/user/exec.o $(BUILD)/user/exec_pipe.o $(BUILD)/user/exec_io.o $(BUILD)/user/exec_ramfs.o $(BUILD)/kernel/fs/ramfs/ramdisk.o
 IMG     = os.img

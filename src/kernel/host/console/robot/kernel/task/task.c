@@ -6,6 +6,7 @@
 #include "arch/x86/interrupt.h"
 #include "arch/x86/frame.h"
 #include "arch/x86/tss.h"
+#include "arch/x86/tsc.h"
 #include "kernel/mm/address_space.h"
 #include "config/memory.h"
 
@@ -79,6 +80,10 @@ static u32 preempt_total;
 static u32 sleep_block_total;
 static u32 sleep_wake_total;
 static u32 timeout_wake_total;
+
+/* RT-0b：只记录一个探针任务的定时唤醒时刻；不改变调度路径。 */
+static struct task_struct *rt_probe_task;
+static u32 rt_probe_wake_tsc;
 /* P11.3：对象等待队列的阻塞/唤醒/超时统计，只由 task_block_on 记账。 */
 static u32 io_block_total;
 static u32 io_wake_total;
@@ -683,6 +688,7 @@ static void task_wake_expired(u32 now)
         t->wait_ticket = 0;
         task_vruntime_wake(t);
         t->state = TASK_READY;
+        if (t == rt_probe_task) rt_probe_wake_tsc = tsc_read32();
         timeout_wake_total++;
     }
 }
@@ -1608,4 +1614,20 @@ u32 task_cpu_total(void)
 u32 task_tick_total(void)
 {
     return tick_total;
+}
+
+void task_rt_probe_set(struct task_struct *task)
+{
+    rt_probe_task = task;
+    rt_probe_wake_tsc = 0;
+}
+
+void task_rt_probe_clear(void)
+{
+    rt_probe_wake_tsc = 0;
+}
+
+u32 task_rt_probe_wake_tsc(void)
+{
+    return rt_probe_wake_tsc;
 }
