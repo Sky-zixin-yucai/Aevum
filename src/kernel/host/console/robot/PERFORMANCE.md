@@ -231,5 +231,5 @@ RT-1 第一刀 clean 构建 `kernel.bin=88,008B`，`__bss_start=0x957E0`、`__bs
 - 所有 READY 唤醒路径多一次 `task_note_wake()` 调用；`task_wake_expired()` 在 PIT 内多一次当前任务/目标比较，不分配、不切栈、不改 `waitq` 票据。`task_wake_resched_total()` 只是返回静态计数器。
 - 正常 A1 clean build 三次一致：4 任务 `52.80/26.40/13.60/7.20`，2 任务 `88.80/11.20`；与 P11.9 基线逐位一致。正常内核启动 smoke 无 fault/panic，UI 正常。
 - RT 构建（`RT_BG_TASKS=12`）：`kernel.bin=39,844B`、`text=39,598`、`data=228`、`bss=17,016`；`__bss_end=0x8DE38`，距 `0x9A000` 余 4,552B。相对 RT-0b，RT `bss` +96B、镜像 +约 300B。
-- 确定性 `-icount` 口径 4/8 后台最大唤醒延迟 38/44us、最大抖动 206/389us、1000 周期零 miss/零 overrun；12 后台 24us/562us。宿主墙钟口径 4 后台有一次 1.261ms jitter 离群，另有 15.9ms QEMU 宿主停顿；这些是测量环境，不是内核路径。
-- 边界：这是单核 100Hz PIT 的功能/延迟观测，不是硬实时保证；没有 1kHz、APIC one-shot、CBS、RT 队列或 per-task 抢占统计。`need_resched` 是全局单标记，不能表示多个独立抢占请求。
+- 确定性 `-icount` 口径 4/8 后台最大唤醒延迟 19/22us、最大抖动 185/365us、1000 周期零 miss/零 overrun；12 后台 24us/562us。宿主墙钟在 0.5ms 定时器分辨率下 4/8 后台最大延迟 201/405us、抖动 705/820us、零 miss；15.9ms 整机暂停样本仍标 `HOST_INVALID`，不参与门槛。
+- 边界：这是单核 100Hz PIT 的功能/延迟观测，不是硬实时保证；没有 APIC one-shot、CBS、RT 队列或 per-task 抢占统计。`need_resched` 是全局单标记，不能表示多个独立抢占请求。1kHz PIT 实测会放大 TCG 宿主抖动，未采用；1ms 伺服必须另做 one-shot 定时器。

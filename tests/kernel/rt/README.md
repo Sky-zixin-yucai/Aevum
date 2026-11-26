@@ -110,7 +110,7 @@ RT-1 只要求先过第一关，不宣称硬实时：
 | 1000 周期 | deadline miss = 0 |
 | 12 后台任务 | 单独报告，不作为 4/8 门槛的替代 |
 
-RT-1 第一刀起同时记录两种口径：`RT_ICOUNT=1` 的确定性虚拟时钟用于隔离 guest 调度路径、判定上表；默认宿主墙钟用于暴露 QEMU 进程被宿主调度器打断的真实抖动，单列参考，不混入确定性表。
+RT-1 的 10ms 模型同时记录两种口径：`RT_ICOUNT=1` 的确定性虚拟时钟隔离 guest 调度路径；默认宿主墙钟暴露 QEMU 进程被宿主调度器打断的真实抖动，用 `run-rt-host.ps1` 固定 0.5ms 定时器分辨率。两种口径都必须满足上表；确定性结果不能替代宿主墙钟。整机暂停样本仍按 `HOST_INVALID` 拒绝，不能删除。
 
 如果 4/8 都过不了，不进入 RT-2 的 CBS；先查 IRQ-off、FPU、CR3、`cli` 和阻塞路径。
 
@@ -141,7 +141,7 @@ RT-0a 定稿后，RT-0b 只做观测：
 - UART 输出 `RT_STAT`；
 - 当前 A1 的 0/4/8/12 后台基线。
 
-RT-1 第一刀再改 `need_resched` 与唤醒抢占；1kHz / 1 tick 片留给第二刀。
+RT-1 第一刀再改 `need_resched` 与唤醒抢占；1kHz PIT 已验证会放大 TCG 宿主抖动，不用于 10ms 模型；1ms 伺服另做 APIC/HPET one-shot。
 
 ## 9. RT-0b 实现（已落地）
 
@@ -278,51 +278,50 @@ RT_BG_TASKS=4 REPS=3 TIMEOUT=60 \
 | 后台 | max latency | p99 latency | max jitter | max exec | deadline miss | overrun | switches |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 0 | 16us | 10us | 19us | 1.800ms | 0/1000 | 0 | 2003 |
-| 4 | 38us | 30us | 206us | 1.800ms | 0/1000 | 0 | 2005 |
-| 8 | 44us | 40us | 389us | 1.800ms | 0/1000 | 0 | 2005 |
+| 4 | 19us | 10us | 185us | 1.800ms | 0/1000 | 0 | 2005 |
+| 8 | 22us | 20us | 365us | 1.800ms | 0/1000 | 0 | 2005 |
 | 12 | 24us | 20us | 562us | 1.800ms | 0/1000 | 0 | 2005 |
 
 原始三次 `RT_STAT`：
 
 ```text
 bg=0  lat_max=16/16/16us       p99=10/10/10us       jitter=19/19/19us       exec=1800/1800/1800us  switches=2003
-bg=4  lat_max=19/38/38us       p99=10/30/30us       jitter=184/206/206us    exec=1800/1800/1800us  switches=2005
-bg=8  lat_max=22/22/44us       p99=20/20/40us       jitter=365/363/389us    exec=1800/1800/1800us  switches=2005
+bg=4  lat_max=19/19/19us       p99=10/10/10us       jitter=184/184/185us    exec=1800/1800/1800us  switches=2005
+bg=8  lat_max=22/22/22us       p99=20/20/20us       jitter=363/365/363us    exec=1800/1800/1800us  switches=2005
 bg=12 lat_max=24/24/24us       p99=20/20/20us       jitter=560/562/562us    exec=1800/1800/1800us  switches=2005
 ```
 
 **4/8 后台的最大唤醒延迟和抖动都低于 1ms，1000 周期零 miss、零 overrun。** 12 后台也低于 1ms，单独报告。
 
-### 12.2 宿主墙钟（真实 QEMU 调度参考）
+### 12.2 宿主墙钟（门槛口径）
 
-同一份代码、默认 `-icount 0`，三次最坏值：
+RT-1 的 10ms 控制模型不靠 1kHz PIT。宿主墙钟用 `run-rt-host.ps1` 把 Windows 定时器分辨率提到 0.5ms 后跑默认 `-icount 0` 的 QEMU；三次最坏值：
 
-| 后台 | max latency | p99 latency | max jitter | max exec | deadline miss | overrun | 说明 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 0 | 211us | 50us | 507us | 1.991ms | 0/1000 | 0 | 三次全过 |
-| 4 | 269us | 70us | 1.261ms | 1.952ms | 0/1000 | 0 | 抖动离群一次 |
-| 8 | 280us | 90us | 734us | 1.878ms | 0/1000 | 0 | 三次全过 |
-| 12 | 195us | 80us | 754us | 3.380ms | 0/1000 | 2 | 单次 exec 被宿主拉长 |
+| 后台 | max latency | p99 latency | max jitter | max exec | deadline miss | overrun |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 201us | 60us | 705us | 1.951ms | 0/1000 | 0 |
+| 8 | 405us | 120us | 820us | 1.849ms | 0/1000 | 0 |
+| 12 | 166us | 100us | 703us | 2.579ms | 0/1000 | 1 |
 
-另有一次 4 后台宿主墙钟被外部调度打断：`lat_max=2780us`、`jitter=15931us`、`miss=1`、`exec_max=9167us`、`late=1`、`wake_miss=1`。这不是内核把控制任务延迟了 15ms，而是 QEMU 进程本身接近 10ms 没拿到宿主 CPU；PIT tick 和 TSC 一起跳，控制任务的 `next_tick` 已经过期。
+`rt-1-host-bg4-stall` 仍是 `valid=0`：`lat_max=2780us`、`jitter=15931us`、`miss=1`、`exec=9167us`、`late=1`、`wake_miss=1`。这不是内核把控制任务延迟了 15ms，而是整个 QEMU 进程接近 10ms 没拿到宿主 CPU；PIT tick 和 TSC 一起跳，控制任务的 `next_tick` 已经过期。这类样本不参与门槛，但不能删除；`RT_STRICT=1` 遇到 `late>0`、`wake_miss>0` 或 `sleep_fail>0` 直接判 `HOST_INVALID`。
 
-**有效性规则**：宿主墙钟样本只要出现 `late>0`、`wake_miss>0` 或 `sleep_fail>0`，就标记为 `HOST_INVALID`，不计入 3 次门槛，但必须留在结果里，不能删掉。原因是被暂停的是整个 QEMU 进程，guest 内的调度器、PIT 和 TSC 同时停；这类样本无法证明或否证调度路径。`RT_STRICT=1` 会让 `run-rt.sh` 在遇到这类样本时直接以 `HOST_INVALID` 失败，避免误把它算成通过。
+**宿主隔离**：Windows 默认定时器分辨率会把 QEMU 的 10ms PIT 抖动放大到 1.2–1.9ms；`run-rt-host.ps1` 调用 `NtSetTimerResolution(5000)`（0.5ms），在同一个 PowerShell 进程里同步跑 WSL QEMU，退出时恢复。三次 fresh 样本因此稳定在 705/820/703us。若宿主仍偶发整 tick 丢失，`RT_STRICT=1` 会拒绝该样本，必须重跑，不能把它算进三次。
 
-最近的 4 后台 fresh rerun（三样本）没有 `late`/`wake_miss`，但最大 jitter 仍是 `1.167ms`，所以宿主墙钟的 4 后台门槛仍未闭合；这和 `rt-1-host-bg4-stall` 是两个不同问题：前者是宿主抖动，后者是整机暂停导致无效样本。
+**1kHz PIT 试验不采用**：把 `PIT_HZ` 直接改成 1000 后，确定性 `-icount` 仍正常，但宿主墙钟 4 后台出现 `jitter=9.989ms`、`exec=12.055ms`、`miss=1`；1kHz 周期 IRQ 在 TCG 下比 100Hz 更贵，反而放大宿主抖动。因此 RT-1 的 10ms 模型保留 100Hz PIT；1ms 伺服仍需 APIC/HPET one-shot，不能靠 1kHz PIT 硬顶。
 
-因此：
+结论：
 
-- **确定性口径**下第一刀过 4/8 门槛；
-- **宿主墙钟口径**下 4 后台仍有一次 1.261ms jitter 离群，8/12 的三次样本低于 1ms，但不能用它们替代 4；
-- 宿主墙钟的 1.26ms / 15.9ms 属于测量环境，不是 `need_resched` 逻辑；要把它压到硬 1ms，需要第二刀的 1kHz/one-shot 和固定宿主环境，而不是继续改唤醒路径。
+- **确定性口径**：4/8/12 后台最大延迟 19/22/24us、最大抖动 185/365/562us，1000 周期零 miss、零 overrun。
+- **宿主墙钟口径**：4/8 后台最大延迟 201/405us、最大抖动 705/820us，1000 周期零 miss；12 后台单独报告，最大抖动 703us、零 miss、单次 overrun 1。
+- `rt-1-host-bg4-stall` 是宿主停顿无效样本，不是 `need_resched` 回归，不需要先“修调度器”再闭合；需要的是宿主隔离和严格样本有效性。
 
 ### 12.3 与 RT-0b before 的对比
 
 | 后台 | RT-0b max latency | RT-1 确定性 max latency | RT-0b max jitter | RT-1 确定性 max jitter | RT-0b miss | RT-1 确定性 miss |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 0 | 30.526ms | 16us | 30.594ms | 19us | 1000/1000 | 0/1000 |
-| 4 | 152.176ms | 38us | 152.281ms | 206us | 1000/1000 | 0/1000 |
-| 8 | 313.064ms | 44us | 313.157ms | 389us | 1000/1000 | 0/1000 |
+| 4 | 152.176ms | 19us | 152.281ms | 185us | 1000/1000 | 0/1000 |
+| 8 | 313.064ms | 22us | 313.157ms | 365us | 1000/1000 | 0/1000 |
 | 12 | 472.393ms | 24us | 472.403ms | 562us | 1000/1000 | 0/1000 |
 
 结论：**唤醒抢占切对了根因。** control 不再等 idle 的剩余片，也不再排在多个 CPU-bound fair 任务后面；它在一个 PIT tick 的 IRQ 出口被选上并恢复。`exec` 保持 1.8ms，deadline 10ms 有足够余量。
@@ -347,5 +346,7 @@ bg=12 lat_max=24/24/24us       p99=20/20/20us       jitter=560/562/562us    exec
 测试脚本：
 
 - `tests/kernel/rt/run-rt.sh` 保持默认 `RT_ICOUNT=0`，新增 `RT_ICOUNT=1` 的可选确定性口径；
-- 结果 CSV：`tests/kernel/results/2026-11-26/rt-1-first-cut.csv`（ignored，不提交）；
+- `tests/kernel/rt/run-rt-host.ps1` 是 Windows/WSL 宿主入口：先 `NtSetTimerResolution(5000)`，再同步跑 `run-rt.sh`，退出前恢复；
+- 最终命令：`pwsh -NoProfile -File tests/kernel/rt/run-rt-host.ps1 -Bg 4 -Reps 3`；确定性口径加 `-Deterministic`；
+- 结果 CSV：`tests/kernel/results/2026-11-26/rt-1-final.csv`（ignored，不提交）；
 - 原始 QEMU 日志在 `tests/kernel/results/2026-11-26/rt-1-*`（ignored，不提交）。
