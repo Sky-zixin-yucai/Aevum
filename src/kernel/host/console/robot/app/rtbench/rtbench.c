@@ -30,7 +30,9 @@ extern u8 user_program_end[];
 
 static struct task_struct *rt_control_task;
 static struct task_struct *rt_idle_task;
+#if RT_BG_TASKS > 0
 static struct process *rt_bg[RT_MAX_BG];
+#endif
 static u16 rt_lat_us[RT_PERIODS];
 
 static u32 cycles_per_us;
@@ -183,6 +185,8 @@ static void rt_report(void)
     out_u32(sleep_fail);
     out(" late=");
     out_u32(late_count);
+    out(" wresched=");
+    out_u32(task_wake_resched_total());
     out(" switches=");
     out_u32(switches);
     out(" cyc_us=");
@@ -194,12 +198,14 @@ static void rt_report(void)
 
 static void rt_control(void)
 {
+#if RT_BG_TASKS > 0
     static const char *const names[RT_MAX_BG] = {
         "rtbg0", "rtbg1", "rtbg2", "rtbg3",
         "rtbg4", "rtbg5", "rtbg6", "rtbg7",
         "rtbg8", "rtbg9", "rtbg10", "rtbg11"
     };
     u32 code_size = (u32)user_program_end - (u32)user_program_start;
+#endif
     u32 period_ticks = rt_period_ticks();
     u32 period_cycles;
     u32 budget_cycles;
@@ -344,6 +350,7 @@ void rtbench_start(void)
     }
 
     task_rt_probe_set(rt_control_task);
+    task_set_rt(rt_control_task);
     task_start(rt_control_task);
 }
 

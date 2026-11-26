@@ -236,4 +236,8 @@ void task_rt_probe_set(struct task_struct *task);
 void task_rt_probe_clear(void);
 u32 task_rt_probe_wake_tsc(void);
 
+/* RT-1：最小 RT 类标记；RT 任务优先于 fair 任务，不参与权重竞争。 */
+void task_set_rt(struct task_struct *task);
+u32 task_wake_resched_total(void);
+
 #endif

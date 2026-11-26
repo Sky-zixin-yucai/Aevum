@@ -37,6 +37,7 @@ struct task_struct {
     u32  exit_code;
     int  detached;  /* 1：线程退出后由调度器自动回收，不等待 join */
     int  kthread;   /* 1：P8 动态内核线程，ZOMBIE 由 join 或调度器兜底回收 */
+    int  rt;        /* RT-1：最小 RT 类；只给控制观测任务，优先于 fair 类 */
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
     u32  wake_tick;         /* P11.1：定时阻塞的到期 PIT tick；0 表示无限等待 */
     struct wait_queue *waitq; /* P11.3：当前阻塞所属对象等待队列；0 表示普通等待 */
@@ -98,6 +99,9 @@ static u32 idle_hlt_total;
 /* P11.5：显式时间片的到期与“片未尽、跳过重选”计数。 */
 static u32 slice_expire_total;
 static u32 tick_defer_total;
+/* RT-1：唤醒后需要抢占当前任务的标记；只在 IRQ0 出口消费。 */
+static volatile u32 need_resched;
+static u32 wake_resched_total;
 /* P11.7：被 pending signal 打断的阻塞次数。 */
 static u32 eintr_total;
 /*
@@ -194,6 +198,7 @@ static void task_zero(struct task_struct *task)
     task->exit_code = 0;
     task->detached = 0;
     task->kthread = 0;
+    task->rt = 0;
     task->kthread_wait_tid = 0;
     task->wake_tick = 0;
     task->waitq = 0;
@@ -636,8 +641,10 @@ static void task_note_switch(struct task_struct *next)
 static struct task_struct *task_pick_next(struct task_struct *prev)
 {
     struct task_struct *best = 0;
+    struct task_struct *rt_best = 0;
     struct task_struct *idle_best = 0;
     u64 best_v = 0;
+    u64 rt_best_v = 0;
     int start = 0;
     int i;
 
@@ -658,10 +665,21 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
             if (!idle_best) idle_best = t;
             continue;
         }
+        if (t->rt) {
+            if (!rt_best || t->vruntime < rt_best_v) {
+                rt_best = t;
+                rt_best_v = t->vruntime;
+            }
+            continue;
+        }
         if (!best || t->vruntime < best_v) {
             best = t;
             best_v = t->vruntime;
         }
+    }
+    if (rt_best) {
+        rt_best->slice_left = TASK_SLICE_TICKS;
+        return rt_best;
     }
     if (best) {
         best->slice_left = TASK_SLICE_TICKS;
@@ -672,6 +690,23 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
         return idle_best;
     }
     return 0;
+}
+
+/*
+ * RT-1 第一刀：唤醒抢占。只置 need_resched，不直接切栈；
+ * IRQ0 出口看到标记后绕过 P11.5 的 tick_defer，再走原 task_pick_next。
+ * RT 类任务优先于 fair；普通任务只在高优先级唤醒时抢占。
+ */
+static void task_note_wake(struct task_struct *t)
+{
+    struct task_struct *cur = current_task;
+
+    if (!t || !cur || cur->state != TASK_RUNNING) return;
+    if (t == cur || t == idle_task) return;
+    if (cur == idle_task || t->rt || t->priority < cur->priority) {
+        need_resched = 1;
+        wake_resched_total++;
+    }
 }
 
 /* P11.1：每个 PIT tick 扫描一次定时阻塞；tick 是 32 位，比较用有符号差值防回绕。 */
@@ -689,6 +724,7 @@ static void task_wake_expired(u32 now)
         task_vruntime_wake(t);
         t->state = TASK_READY;
         if (t == rt_probe_task) rt_probe_wake_tsc = tsc_read32();
+        task_note_wake(t);
         timeout_wake_total++;
     }
 }
@@ -732,6 +768,7 @@ void task_wake_kthread_waiters(int tid)
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
+            task_note_wake(&tasks[i]);
         }
     }
 }
@@ -997,8 +1034,13 @@ u32 task_schedule_irq(struct irq_frame *frame)
             prev->vruntime += WEIGHT_QUANTUM / task_weight(prev);
             if (prev->slice_left > 0) prev->slice_left--;
             if (prev->slice_left > 0) {
-                tick_defer_total++;
-                tick_defer = 1;
+                if (need_resched) {
+                    /* RT-1：有唤醒抢占请求，片未尽也进入重选。 */
+                    tick_defer = 0;
+                } else {
+                    tick_defer_total++;
+                    tick_defer = 1;
+                }
             } else {
                 slice_expire_total++;
             }
@@ -1007,9 +1049,10 @@ u32 task_schedule_irq(struct irq_frame *frame)
     prev->ctx.esp = (u32)frame;
     sched_failed = 0;
 
-    /* P11.5：片未尽就不重选，直接返回当前帧；片到期才进入下面的调度流程。 */
+    /* P11.5：片未尽就不重选；RT-1 的 need_resched 是唯一旁路。 */
     if (reason == SCHED_TICK && tick_defer)
         return (u32)frame;
+    need_resched = 0;
 
     if (reason == SCHED_START) {
         next = start_target;
@@ -1155,6 +1198,7 @@ const char *task_wake(int pid)
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
+            task_note_wake(&tasks[i]);
             return 0;
         }
     }
@@ -1324,6 +1368,7 @@ void wait_queue_wake_one(struct wait_queue *q)
         best->waitq = 0;
         task_vruntime_wake(best);
         best->state = TASK_READY;
+        task_note_wake(best);
         q->wakes++;
         wq_wake_one_total++;
     }
@@ -1348,6 +1393,7 @@ void wait_queue_wake_all(struct wait_queue *q)
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
+            task_note_wake(&tasks[i]);
             woke = 1;
         }
     }
@@ -1488,6 +1534,7 @@ void task_wake_process(struct process *proc)
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
             tasks[i].state = TASK_READY;
+            task_note_wake(&tasks[i]);
         }
     }
 }
@@ -1630,4 +1677,14 @@ void task_rt_probe_clear(void)
 u32 task_rt_probe_wake_tsc(void)
 {
     return rt_probe_wake_tsc;
+}
+
+void task_set_rt(struct task_struct *task)
+{
+    if (task) task->rt = 1;
+}
+
+u32 task_wake_resched_total(void)
+{
+    return wake_resched_total;
 }

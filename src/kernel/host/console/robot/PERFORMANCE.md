@@ -220,3 +220,16 @@ P12.1 clean 构建 `kernel.bin=89,064B`，`__bss_start=0x95C00`、`__bss_end=0x9
 - image3 代码从 P11.8 的 3,208B 增至 3,285B（`0x813A0..0x82075`，+77B），仍小于 4KB code VMA；image4 `0x82080..0x8222A` 426B；ramdisk `0x93B54..0x93BCC` 120B。image3 增加的是一次 `spawn(4)` + `wait` 和失败码 30，image4 是独立 426B 镜像。
 - QEMU 实测主页面 `kt 4 s5 a1 OK`；V/ADDRESS userD `REAP1 6 img 3 a0 e0`、`CHILDREN live 0`、`SIG pending 00000000`；`THREAD tid 6 join 0 ... ok THRD`；P5.3 `round 100/100 ... STRESS OK`、`PHYS 6/255`、`proc/AS/KSTK 1/12`。image3 exit 0 只有在 image4 返回 0 时成立，因此该证据覆盖 image4 全链路。
 - 边界：这是 QEMU TCG 的功能与体积口径，不是文件读取吞吐基准；没有测 open/read 的端到端延迟、缓存命中、并发读或大文件读取。ramdisk 只有 120B，不能代表块设备或 VFS 性能。
+
+## 20. P11.10 RT-1 第一刀：唤醒抢占与最小 RT 类的开销
+
+RT-1 第一刀 clean 构建 `kernel.bin=88,008B`，`__bss_start=0x957E0`、`__bss_end=0x999DC`，`AEVUM_KERNEL_END=0x9A000`：
+
+- 正常 A1 镜像从 RT-0b 的 87,720B 增至 88,008B（+288B）；`size` 的 text 列从 87,455B 增至 87,734B（+279B），`.data=232B` 不变，`.bss` 从 16,796B 增至 16,892B（+96B）。新增的是 `task_struct.rt` 的 4B × 16 槽、`need_resched`/`wake_resched_total` 8B、`task_note_wake`、RT 选择分支和 `task_set_rt/task_wake_resched_total` 两个入口。
+- BSS 距 `0x9A000` 余 `0x624`（1,572B）；镜像距 106,496B 上限余 18,488B。正常构建没有 RT 任务，`task_note_wake` 的 RT 分支不会进入；`need_resched` 只在“当前 idle”“目标 RT”或“目标优先级更高”的唤醒上置位。
+- IRQ0 正常路径多一次 `need_resched` 判断；没有抢占请求时仍沿用 P11.5 的 `tick_defer` 早退，不做额外 16 槽扫描。有抢占请求时只多一次 `task_pick_next()`，与片到期路径同阶；`task_pick_next()` 多收集一个 `rt_best`，仍是 16 槽线性扫描。
+- 所有 READY 唤醒路径多一次 `task_note_wake()` 调用；`task_wake_expired()` 在 PIT 内多一次当前任务/目标比较，不分配、不切栈、不改 `waitq` 票据。`task_wake_resched_total()` 只是返回静态计数器。
+- 正常 A1 clean build 三次一致：4 任务 `52.80/26.40/13.60/7.20`，2 任务 `88.80/11.20`；与 P11.9 基线逐位一致。正常内核启动 smoke 无 fault/panic，UI 正常。
+- RT 构建（`RT_BG_TASKS=12`）：`kernel.bin=39,844B`、`text=39,598`、`data=228`、`bss=17,016`；`__bss_end=0x8DE38`，距 `0x9A000` 余 4,552B。相对 RT-0b，RT `bss` +96B、镜像 +约 300B。
+- 确定性 `-icount` 口径 4/8 后台最大唤醒延迟 38/44us、最大抖动 206/389us、1000 周期零 miss/零 overrun；12 后台 24us/562us。宿主墙钟口径 4 后台有一次 1.261ms jitter 离群，另有 15.9ms QEMU 宿主停顿；这些是测量环境，不是内核路径。
+- 边界：这是单核 100Hz PIT 的功能/延迟观测，不是硬实时保证；没有 1kHz、APIC one-shot、CBS、RT 队列或 per-task 抢占统计。`need_resched` 是全局单标记，不能表示多个独立抢占请求。

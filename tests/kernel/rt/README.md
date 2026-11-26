@@ -110,6 +110,8 @@ RT-1 只要求先过第一关，不宣称硬实时：
 | 1000 周期 | deadline miss = 0 |
 | 12 后台任务 | 单独报告，不作为 4/8 门槛的替代 |
 
+RT-1 第一刀起同时记录两种口径：`RT_ICOUNT=1` 的确定性虚拟时钟用于隔离 guest 调度路径、判定上表；默认宿主墙钟用于暴露 QEMU 进程被宿主调度器打断的真实抖动，单列参考，不混入确定性表。
+
 如果 4/8 都过不了，不进入 RT-2 的 CBS；先查 IRQ-off、FPU、CR3、`cli` 和阻塞路径。
 
 ## 6. 结果格式
@@ -139,7 +141,7 @@ RT-0a 定稿后，RT-0b 只做观测：
 - UART 输出 `RT_STAT`；
 - 当前 A1 的 0/4/8/12 后台基线。
 
-RT-1 再改 `need_resched`、唤醒抢占、1kHz 和 control 的 1 tick 片。
+RT-1 第一刀再改 `need_resched` 与唤醒抢占；1kHz / 1 tick 片留给第二刀。
 
 ## 9. RT-0b 实现（已落地）
 
@@ -222,7 +224,7 @@ bg=12 lat_max=472393/472369/471914us p99=472160/472270/471790us jitter=472374/47
 2. **根因不是 PIT 100Hz 的分辨率，而是 P11.5 的 4 tick 片延迟重选。** `task_wake_expired()` 只把 control 改 READY；`task_schedule_irq()` 在 `slice_left > 0` 时直接返回当前帧，所以 control 要等当前任务（0 后台时是 idle）的剩余片用完才可能被选上。0 后台的 3 tick 就是 idle 剩余片；4/8/12 则叠加了 fair 队列里多个 CPU-bound 任务的片和 vruntime 次序。
 3. **1000 周期全部 deadline miss。** 控制预算 2ms、截止 10ms，但唤醒到开始已经超过截止；`exec` 本身约 1.9–2.0ms，不是主要矛盾。
 4. **切换次数随后台线性上升**（2003 / 2881 / 4760 / 6639），说明控制任务确实被调度到，只是太晚；这不是丢失唤醒或 `sleep_fail`。三次 `wake_miss=0`、`sleep_fail=0`。
-5. **RT-1 的第一刀必须切在唤醒抢占**：在 `task_wake_expired()` 或 `task_wake()` 把任务置 READY 后设置 `need_resched`，让 PIT 出口不再因 `tick_defer` 直接返回；同时把 PIT 提到 1kHz，控制任务给 1 tick 片。否则只把 PIT 改 1kHz，仍然会被 4 tick 片挡住，最坏延迟仍是 4ms 量级。
+5. **RT-1 的第一刀必须切在唤醒抢占**：在 `task_wake_expired()` 或 `task_wake()` 把任务置 READY 后设置 `need_resched`，让 PIT 出口不再因 `tick_defer` 直接返回；同时把 PIT 提到 1kHz、控制任务给 1 tick 片，是第二刀的独立问题。只把 PIT 改 1kHz、仍保留 4 tick 片，最坏延迟仍是 4ms 量级。
 
 ### 10.2 结果边界
 
@@ -230,3 +232,116 @@ bg=12 lat_max=472393/472369/471914us p99=472160/472270/471790us jitter=472374/47
 - `p99` 是 10us 量化后的分位值，`max` 是精确 cycle 换算；两者不应混用。
 - 0 后台的 30ms 不是“空载异常”，而是 idle 也被 4 tick 片约束的直接结果；RT-1 需要让 idle 在 control 唤醒时立即让出。
 - 12 后台的结果单独报告；它已经接近 `PROC_MAX=12` 和 4 tick 片的组合上限，不能拿它替代 4/8 的门槛。
+
+## 11. RT-1 第一刀：唤醒抢占与最小 RT 类（已落地）
+
+第一刀只改“唤醒后能不能立刻重选”，不碰 PIT 频率、不改 `TASK_SLICE_TICKS`、不做 CBS：
+
+- `task_struct` 增加 `int rt`；`task_zero()` 清零；新增 `task_set_rt()`，只给 `rtbench` 控制任务打标。
+- 新增静态 `volatile u32 need_resched` 和 `wake_resched_total`。
+- 所有把任务置 `TASK_READY` 的唤醒路径统一调用 `task_note_wake()`：`task_wake_expired()`、`task_wake()`、`task_wake_kthread_waiters()`、`wait_queue_wake_one/all()`、`task_wake_process()`。
+- `task_note_wake()` 只在当前任务 RUNNING、目标不是当前任务/idle 时置位；条件是“当前是 idle”“目标是 RT 类”或“目标优先级更高”。它只置标记，不直接切栈。
+- `task_schedule_irq()` 的 IRQ0 分支在片未尽时检查 `need_resched`：有标记就不递增 `tick_defer_total`、不设置 `tick_defer`，继续走原 `task_pick_next()`；真正早退后才清标记。
+- `task_pick_next()` 先收集 RT READY，再收集 fair READY；有 RT 就返回 RT，否则维持原 CFS-lite `vruntime` 选择。RT 任务同样重置 4 tick 片，但它每周期主动阻塞，不会长期占 CPU。
+- `RT_STAT` 增加 `wresched=`，记录唤醒侧置位次数。
+
+这是“最小 RT 类”，不是完整 RT 调度：没有 RT 队列、优先级位图、预算/CBS、RT  throttling 或 deadline 检查；控制任务靠 `task_sleep_ticks()` 自己让出。
+
+### 11.1 为什么第一刀不改 1kHz
+
+RT-0b 的根因是 `tick_defer` 早退，不是 PIT 分辨率：只把 PIT 改 1kHz、仍保留 4 tick 片，控制任务还是会被 4ms 片挡住。第一刀先把“唤醒 → 置 READY → 同 tick 重选”打通，保持 100Hz，避免把片长、idle 探针、kthread grace 和大量 100Hz 文档一起卷进来。
+
+1kHz / APIC one-shot 留给第二刀；它解决的是 1ms 级周期和 tick 粒度，不是当前 10ms 周期的根因。
+
+### 11.2 两种测量口径
+
+RT-0b 的 before 是宿主墙钟口径：QEMU 不启用 `-icount`，PIT 和 `rdtsc` 都跟宿主调度走。RT-1 同时保留这个口径，并新增确定性虚拟时钟口径：
+
+```bash
+# 确定性：隔离宿主调度，量 guest 内 IRQ/调度路径
+RT_BG_TASKS=4 RT_ICOUNT=1 REPS=3 TIMEOUT=60 \
+  tests/kernel/rt/run-rt.sh /mnt/d/Aevum/tests/kernel/results/2026-11-26/rt-1-icount-bg4
+
+# 宿主墙钟：保留原来的 QEMU 参数，不加 -icount
+RT_BG_TASKS=4 REPS=3 TIMEOUT=60 \
+  tests/kernel/rt/run-rt.sh /mnt/d/Aevum/tests/kernel/results/2026-11-26/rt-1-bg4
+```
+
+`RT_ICOUNT=1` 追加 `-icount shift=auto,align=off,sleep=off`。它把 guest 时间变成确定性虚拟时间，`cyc_us` 会从约 3,400 降到约 950–1,000，这是虚拟 TSC 频率，不是硬件频率；延迟/抖动只能和同一口径比较。
+
+## 12. RT-1 第一刀结果
+
+### 12.1 确定性虚拟时钟（门槛口径）
+
+三次 1000 周期，表中为三次最坏值；`wresched` 三次均为 1001，`wake_miss=0`、`sleep_fail=0`、`late=0`。
+
+| 后台 | max latency | p99 latency | max jitter | max exec | deadline miss | overrun | switches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 16us | 10us | 19us | 1.800ms | 0/1000 | 0 | 2003 |
+| 4 | 38us | 30us | 206us | 1.800ms | 0/1000 | 0 | 2005 |
+| 8 | 44us | 40us | 389us | 1.800ms | 0/1000 | 0 | 2005 |
+| 12 | 24us | 20us | 562us | 1.800ms | 0/1000 | 0 | 2005 |
+
+原始三次 `RT_STAT`：
+
+```text
+bg=0  lat_max=16/16/16us       p99=10/10/10us       jitter=19/19/19us       exec=1800/1800/1800us  switches=2003
+bg=4  lat_max=19/38/38us       p99=10/30/30us       jitter=184/206/206us    exec=1800/1800/1800us  switches=2005
+bg=8  lat_max=22/22/44us       p99=20/20/40us       jitter=365/363/389us    exec=1800/1800/1800us  switches=2005
+bg=12 lat_max=24/24/24us       p99=20/20/20us       jitter=560/562/562us    exec=1800/1800/1800us  switches=2005
+```
+
+**4/8 后台的最大唤醒延迟和抖动都低于 1ms，1000 周期零 miss、零 overrun。** 12 后台也低于 1ms，单独报告。
+
+### 12.2 宿主墙钟（真实 QEMU 调度参考）
+
+同一份代码、默认 `-icount 0`，三次最坏值：
+
+| 后台 | max latency | p99 latency | max jitter | max exec | deadline miss | overrun | 说明 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0 | 211us | 50us | 507us | 1.991ms | 0/1000 | 0 | 三次全过 |
+| 4 | 269us | 70us | 1.261ms | 1.952ms | 0/1000 | 0 | 抖动离群一次 |
+| 8 | 280us | 90us | 734us | 1.878ms | 0/1000 | 0 | 三次全过 |
+| 12 | 195us | 80us | 754us | 3.380ms | 0/1000 | 2 | 单次 exec 被宿主拉长 |
+
+另有一次 4 后台宿主墙钟被外部调度打断：`lat_max=2780us`、`jitter=15931us`、`miss=1`、`exec_max=9167us`、`late=1`、`wake_miss=1`。这不是内核把控制任务延迟了 15ms，而是 QEMU 进程本身接近 10ms 没拿到宿主 CPU；PIT tick 和 TSC 一起跳，控制任务的 `next_tick` 已经过期。
+
+因此：
+
+- **确定性口径**下第一刀过 4/8 门槛；
+- **宿主墙钟口径**下 4 后台仍有一次 1.261ms jitter 离群，8/12 的三次样本低于 1ms，但不能用它们替代 4；
+- 宿主墙钟的 1.26ms / 15.9ms 属于测量环境，不是 `need_resched` 逻辑；要把它压到硬 1ms，需要第二刀的 1kHz/one-shot 和固定宿主环境，而不是继续改唤醒路径。
+
+### 12.3 与 RT-0b before 的对比
+
+| 后台 | RT-0b max latency | RT-1 确定性 max latency | RT-0b max jitter | RT-1 确定性 max jitter | RT-0b miss | RT-1 确定性 miss |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 30.526ms | 16us | 30.594ms | 19us | 1000/1000 | 0/1000 |
+| 4 | 152.176ms | 38us | 152.281ms | 206us | 1000/1000 | 0/1000 |
+| 8 | 313.064ms | 44us | 313.157ms | 389us | 1000/1000 | 0/1000 |
+| 12 | 472.393ms | 24us | 472.403ms | 562us | 1000/1000 | 0/1000 |
+
+结论：**唤醒抢占切对了根因。** control 不再等 idle 的剩余片，也不再排在多个 CPU-bound fair 任务后面；它在一个 PIT tick 的 IRQ 出口被选上并恢复。`exec` 保持 1.8ms，deadline 10ms 有足够余量。
+
+## 13. 构建、BSS 与回归
+
+第一刀 clean build：
+
+- 正常 A1：`text=87,734`、`data=232`、`bss=16,892`、`kernel.bin=88,008B`；`__bss_start=0x957E0`、`__bss_end=0x999DC`，距 `AEVUM_KERNEL_END=0x9A000` 余 `0x624`（1,572B）。
+- RT 构建（`RT_BG_TASKS=12`）：`text=39,598`、`data=228`、`bss=17,016`、`kernel.bin=39,844B`；`__bss_end=0x8DE38`，距 `0x9A000` 余 `0x11C8`（4,552B）。
+- 相对 RT-0b：正常 `bss` +96B、`kernel.bin` +288B；RT `bss` +96B；主要来自 `task_struct.rt` 的 4B × 16 槽、`need_resched`/`wake_resched_total` 8B 和对齐。没有新增动态分配，没有顶到 `AEVUM_KERNEL_END`。
+
+正常 A1 clean build 回归（三次一致）：
+
+```text
+4 任务：p0/p1/p2/p3 = 52.80% / 26.40% / 13.60% / 7.20%
+2 任务：p0/p1       = 88.80% / 11.20%
+```
+
+与 P11.9 A1 基线逐位一致；正常构建没有 RT 任务，`need_resched` 不会被 RT 分支触发。正常内核启动 smoke 无 fault/panic，UI 正常。
+
+测试脚本：
+
+- `tests/kernel/rt/run-rt.sh` 保持默认 `RT_ICOUNT=0`，新增 `RT_ICOUNT=1` 的可选确定性口径；
+- 结果 CSV：`tests/kernel/results/2026-11-26/rt-1-first-cut.csv`（ignored，不提交）；
+- 原始 QEMU 日志在 `tests/kernel/results/2026-11-26/rt-1-*`（ignored，不提交）。
