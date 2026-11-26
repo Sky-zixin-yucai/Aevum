@@ -10,6 +10,7 @@ BG="${RT_BG_TASKS:-0}"
 REPS="${REPS:-3}"
 TIMEOUT="${TIMEOUT:-300}"
 ICOUNT="${RT_ICOUNT:-0}"
+STRICT="${RT_STRICT:-0}"
 OUT="${1:-$ROOT/tests/kernel/results/2026-11-26/rt-bg$BG}"
 
 case "$BG" in
@@ -34,6 +35,11 @@ for r in $(seq 1 "$REPS"); do
     timeout "$TIMEOUT" "${QEMU[@]}" > "$OUT/rt-${BG}-r${r}.log" 2>&1 || true
     if ! grep -q "RT_STAT bg=$BG periods=1000" "$OUT/rt-${BG}-r${r}.log"; then
         echo "missing final RT_STAT: bg=$BG rep=$r" >&2
+        exit 1
+    fi
+    if [ "$STRICT" = 1 ] && ! grep -q " wake_miss=0 sleep_fail=0 late=0 " \
+        "$OUT/rt-${BG}-r${r}.log"; then
+        echo "HOST_INVALID: bg=$BG rep=$r (late/wake_miss/sleep_fail 非 0)" >&2
         exit 1
     fi
 done

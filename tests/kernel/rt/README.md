@@ -306,6 +306,10 @@ bg=12 lat_max=24/24/24us       p99=20/20/20us       jitter=560/562/562us    exec
 
 另有一次 4 后台宿主墙钟被外部调度打断：`lat_max=2780us`、`jitter=15931us`、`miss=1`、`exec_max=9167us`、`late=1`、`wake_miss=1`。这不是内核把控制任务延迟了 15ms，而是 QEMU 进程本身接近 10ms 没拿到宿主 CPU；PIT tick 和 TSC 一起跳，控制任务的 `next_tick` 已经过期。
 
+**有效性规则**：宿主墙钟样本只要出现 `late>0`、`wake_miss>0` 或 `sleep_fail>0`，就标记为 `HOST_INVALID`，不计入 3 次门槛，但必须留在结果里，不能删掉。原因是被暂停的是整个 QEMU 进程，guest 内的调度器、PIT 和 TSC 同时停；这类样本无法证明或否证调度路径。`RT_STRICT=1` 会让 `run-rt.sh` 在遇到这类样本时直接以 `HOST_INVALID` 失败，避免误把它算成通过。
+
+最近的 4 后台 fresh rerun（三样本）没有 `late`/`wake_miss`，但最大 jitter 仍是 `1.167ms`，所以宿主墙钟的 4 后台门槛仍未闭合；这和 `rt-1-host-bg4-stall` 是两个不同问题：前者是宿主抖动，后者是整机暂停导致无效样本。
+
 因此：
 
 - **确定性口径**下第一刀过 4/8 门槛；
