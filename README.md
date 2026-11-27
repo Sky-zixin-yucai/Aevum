@@ -66,7 +66,9 @@ Forge 的 `TOY OFFROAD` 是 3R 控制链上的车辆 avatar：车身、`FL/FR/RL
 
 车相机提供 `任意 / 固定跟随 / 跟随 / 第一人称` 四个入口。`固定跟随` 会记住选定时的车体相对机位，之后车怎么走，相机保持这个位置跟过去；`任意` 则允许鼠标自由环绕。
 
-![Forge 车辆总览](docs/assets/readme/kernel/forge-vehicle-overview.png)
+![Forge 车辆与内核 VGA 同屏：左侧 TOY OFFROAD，右侧 3R 关节姿态](docs/assets/readme/kernel/forge-vehicle-overview.png)
+
+上图把 Forge 的 `TOY OFFROAD` 和 QEMU 内的 3R VGA 放在同一屏：左侧是车辆、四轮关节和 `固定跟随` 视角，右侧是 `q1/q2/q3`、`MANUAL HOLD` 与关节速度提示，能同时看到“车怎么走”和“内核收到什么”。
 
 | 打轮后前进：前轮 9°，车体 yaw 0.1027 | 固定跟随：W×10 后仍保持原构图 |
 | --- | --- |
@@ -74,7 +76,7 @@ Forge 的 `TOY OFFROAD` 是 3R 控制链上的车辆 avatar：车身、`FL/FR/RL
 
 当前车辆模型为 `toy_offroad.gltf`：36 个节点、8 个网格、792 个三角形、6 个车轮关节。
 
-> The Forge `TOY OFFROAD` demo is a vehicle avatar on the same 3R control chain. `W/S` drive, `A/D` steer the front wheels, and the four keys are mutually exclusive; the steering angle persists, so steering first and then applying throttle produces an arc. The four wheel joints roll from body displacement and their labels follow the body's world matrix. Camera modes are free orbit, fixed follow, follow and first-person; fixed follow keeps the selected car-relative offset as the car moves.
+> The Forge `TOY OFFROAD` demo is a vehicle avatar on the same 3R control chain. `W/S` drive, `A/D` steer the front wheels, and the four keys are mutually exclusive; the steering angle persists, so steering first and then applying throttle produces an arc. The four wheel joints roll from body displacement and their labels follow the body's world matrix. Camera modes are free orbit, fixed follow, follow and first-person; fixed follow keeps the selected car-relative offset as the car moves. The overview image shows the vehicle in Forge and the 3R VGA output side by side.
 
 ## 渲染引擎 / Render Engine
 
