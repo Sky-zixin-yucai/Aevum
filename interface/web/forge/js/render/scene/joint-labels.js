@@ -56,12 +56,31 @@
           el.style.display = "none";
           continue;
         }
+        /* 轮子标签在屏幕上抬到轮胎上方；世界坐标锚点仍在轮心。 */
+        if (link && link.seg &&
+          (link.seg.role === "wheel" || link.seg.jointType === "steer" || link.seg.jointType === "spin")) {
+          p.y -= 22;
+        }
         el.style.display = "block";
         el.style.left = p.x + "px";
         el.style.top = p.y + "px";
         el.classList.toggle("sel", selected.kind === "joint" && selected.index === i);
         const val = el.querySelector(".val");
-        if (val) val.textContent = F.math.fmt((j.q || 0) * F.math.R2D, 0) + "°";
+        if (val) {
+          let text = F.math.fmt((j.q || 0) * F.math.R2D, 0) + "°";
+          /* 前轮标签同时显示转向角和轮胎滚动角：轮胎 spin 子节点的标签被隐藏，
+           * 如果只显示 steer，W 跑起来后看起来仍像固定的 0°。 */
+          if (link && link.seg && link.seg.jointType === "steer") {
+            for (let k = 0; k < scene.links.length; k++) {
+              const child = scene.links[k] && scene.links[k].seg;
+              if (child && child.parent === i && child.jointType === "spin") {
+                text += " / " + F.math.fmt((child.q || 0) * F.math.R2D, 0) + "°";
+                break;
+              }
+            }
+          }
+          val.textContent = text;
+        }
         screenJoints.push({ index: i, x: p.x, y: p.y });
       }
       screenParts = [];

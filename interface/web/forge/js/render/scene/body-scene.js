@@ -49,10 +49,13 @@
       };
       joints[index] = {
         id: seg.id,
-        pos: anchor(seg, parentWorld),
+        /* 用节点实际世界矩阵，不能用 anchor(seg,null)：根节点的 anchor 会落回原点，
+         * 车移动时标签就固定在世界原点。 */
+        pos: M.translation(m),
         axis: seg.joint ? seg.joint.axis : [0, 0, 1],
         q: seg.q || 0
       };
+      /* 轮关节锚点在轮心；标签在 screen-space 抬到轮子上方，见 joint-labels.js。 */
       doc.segments.forEach(function (s, i) {
         if (s.parent === index) walk(i, m);
       });
@@ -78,7 +81,79 @@
     };
   }
 
+  /*
+   * 平面机械臂按内核 body.links 的顺序重算世界矩阵。
+   * glTF 里的节点可能只是平铺的外观件（节点原点在世界坐标），不能再拿节点
+   * 自身的 translation/rotation 当关节层级，否则 q 变化时只会原地旋转。
+   */
+  function buildPlanarScene(doc) {
+    const chain = F.model.controlSegments(doc);
+    if (!chain.length) return buildBodyScene(doc);
+    const base = doc.base || { w: 0.54, h: 0.24, d: 0.38 };
+    const tool = doc.tool || { length: 0.2, width: 0.075, depth: 0.09 };
+    const links = [];
+    const joints = [];
+    let m = M.trans(0, base.h, 0);
+
+    chain.forEach(function (seg) {
+      const len = F.model.controlLength(doc, seg);
+      const width = Math.max(0.02, Number(seg.width) || 0.1);
+      const depth = Math.max(0.02, Number(seg.depth) || 0.1);
+      joints.push({
+        id: seg.id,
+        pos: M.translation(m),
+        axis: [0, 0, 1],
+        q: seg.q || 0
+      });
+      const rot = M.mul(m, M.rz(seg.q || 0));
+      links.push({
+        seg: seg,
+        model: M.mul(M.mul(rot, M.trans(len / 2, 0, 0)), M.scale(len, width, depth)),
+        normal: M.mat3(rot),
+        mesh: seg.mesh || null
+      });
+      m = M.mul(rot, M.trans(len, 0, 0));
+    });
+
+    const baseSeg = doc.segments.find(function (s) {
+      return s.semanticId === "base" || s.role === "base";
+    });
+    if (baseSeg && baseSeg.mesh) {
+      links.push({
+        seg: baseSeg,
+        model: M.mul(M.trans(0, base.h / 2, 0), M.scale(base.w, base.h, base.d)),
+        normal: M.mat3(M.mat4()),
+        mesh: baseSeg.mesh
+      });
+    }
+
+    const toolSeg = doc.segments.find(function (s) {
+      return s.semanticId === "tool" || s.role === "tool";
+    });
+    if (toolSeg && toolSeg.mesh) {
+      links.push({
+        seg: toolSeg,
+        model: M.mul(M.mul(m, M.trans(tool.length / 2, 0, 0)),
+          M.scale(tool.length, tool.width, tool.depth)),
+        normal: M.mat3(m),
+        mesh: toolSeg.mesh
+      });
+    }
+
+    return {
+      mode: "body",
+      links: links,
+      joints: joints,
+      guides: [],
+      end: M.translation(m),
+      endMat: m
+    };
+  }
+
   function buildScene(doc) {
+    if (doc && doc.modelKind === "arm" && doc.aevum && doc.aevum.body) {
+      return buildPlanarScene(doc);
+    }
     if (F.model.isImported(doc)) return buildBodyScene(doc);
     return F.render.buildArmScene(doc);
   }

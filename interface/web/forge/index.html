@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="styles/base.css">
 <link rel="stylesheet" href="styles/shell.css">
 <link rel="stylesheet" href="styles/stage.css">
-<link rel="stylesheet" href="styles/panels.css?v=54">
+<link rel="stylesheet" href="styles/panels.css?v=94">
 <link rel="stylesheet" href="styles/telemetry.css">
 </head>
 <body>
@@ -24,24 +24,32 @@
   <div class="docbar" title="当前模型">
     <span class="dot"></span>
     <div>
-      <b id="docName">TOY OFFROAD</b>
+      <b id="docName">3R ARM</b>
       <span id="docMeta">加载模型中…</span>
     </div>
+  </div>
+  <div class="top-actions">
+    <label class="body-picker" title="切换演示模型；控制链始终是内核 3R 平面臂">
+      <span>MODEL</span>
+      <select id="modelPreset" aria-label="模型">
+        <option value="arm3" selected>3R ARM</option>
+        <option value="toy_offroad">TOY OFFROAD</option>
+      </select>
+    </label>
+    <button type="button" class="btn subtle" id="btnImportTop">Import glTF</button>
+    <label class="body-picker" id="cameraPicker" title="视角：任意 / 固定跟随 / 跟随 / 第一人称">
+      <span>VIEW</span>
+      <select id="btnCameraMode">
+        <option value="orbit">任意</option>
+        <option value="fixed">固定跟随</option>
+        <option value="follow">跟随</option>
+        <option value="first">第一人称</option>
+      </select>
+    </label>
   </div>
   <div class="top-status">
     <span class="pill" id="modePill">MODEL VIEW</span>
     <span class="pill warn" id="kernelPill">KERNEL OFFLINE</span>
-  </div>
-  <div class="top-actions">
-    <label class="body-picker" title="切换已入库模型；页面只呈现，不运行本地控制">
-      <span>MODEL</span>
-      <select id="modelPreset" aria-label="模型">
-        <option value="toy_offroad" selected>TOY OFFROAD</option>
-        <option value="arm3">3R ARM</option>
-        <option value="custom" disabled>IMPORTED</option>
-      </select>
-    </label>
-    <button type="button" class="btn subtle" id="btnImportTop">Import glTF</button>
   </div>
 </header>
 
@@ -65,8 +73,8 @@
 
     <div class="viewport-top">
       <div class="hud">
-        <div class="big" id="hudTitle">TOY OFFROAD / MODEL VIEW</div>
-        <div class="sub">glTF 2.0 · vehicle placeholder · kernel external</div>
+        <div class="big" id="hudTitle">3R ARM / KERNEL LINK</div>
+        <div class="sub">glTF 2.0 · 3 revolute joints · WASD target jog</div>
       </div>
       <div class="viewcube" id="viewCube" aria-label="视图方向">
         <button type="button" class="face vc-top" data-view="top" title="顶视图">TOP</button>
@@ -91,6 +99,11 @@
       </button>
     </div>
 
+    <details class="debug-panel" id="debugPanel" open>
+      <summary><span>KERNEL DEBUG</span><b id="debugTick">0x03 · --</b></summary>
+      <pre id="debugBody">等待桥接与 0x03…</pre>
+    </details>
+
     <button type="button" class="panel-restore" id="btnShowLeft" title="展开结构面板">OUTLINER</button>
     <button type="button" class="panel-restore" id="btnShowRight" title="展开属性面板">INSPECTOR</button>
 
@@ -108,7 +121,7 @@
         <circle cx="38" cy="54" r="2" fill="#c6d1da"/>
       </svg>
     </div>
-    <div class="hint">LMB <b>orbit</b> · MMB <b>pan</b> · WHEEL <b>zoom</b> · F <b>frame</b> · click <b>joint</b></div>
+    <div class="hint">W A S D <b>kernel target</b> · LMB <b>orbit</b> · MMB <b>pan</b> · WHEEL <b>zoom</b> · F <b>frame</b></div>
   </section>
 
   <aside class="panel right" id="rightPanel">
@@ -155,30 +168,32 @@
 <script src="js/core/namespace.js"></script>
 <script src="js/core/math.js"></script>
 <script src="js/core/dom.js"></script>
-<script src="js/model/body-document.js?v=54"></script>
-<script src="js/model/gltf-loader.js?v=54"></script>
-<script src="js/model/catalog.js?v=54"></script>
-<script src="js/control/session.js?v=54"></script>
+<script src="js/model/body-document.js?v=94"></script>
+<script src="js/model/gltf-loader.js?v=94"></script>
+<script src="js/model/catalog.js?v=94"></script>
+<script src="js/control/session.js?v=94"></script>
 <script src="js/render/gl/shaders.js"></script>
 <script src="js/render/gl/meshes.js"></script>
 <script src="js/render/gl/context.js"></script>
 <script src="js/render/gl/buffers.js"></script>
-<script src="js/render/scene/camera.js?v=54"></script>
+<script src="js/render/scene/camera.js?v=94"></script>
 <script src="js/render/scene/arm-scene.js"></script>
-<script src="js/render/scene/body-scene.js?v=54"></script>
-<script src="js/render/scene/joint-labels.js?v=54"></script>
-<script src="js/render/viewport/renderer.js?v=54"></script>
+<script src="js/render/scene/body-scene.js?v=94"></script>
+<script src="js/render/scene/joint-labels.js?v=94"></script>
+<script src="js/render/viewport/renderer.js?v=94"></script>
 <script src="js/ui/toast.js"></script>
-<script src="js/ui/document-tree.js?v=54"></script>
-<script src="js/ui/inspector.js?v=54"></script>
-<script src="js/ui/status.js?v=54"></script>
-<script src="js/ui/telemetry-panel.js?v=54"></script>
+<script src="js/ui/document-tree.js?v=94"></script>
+<script src="js/ui/inspector.js?v=94"></script>
+<script src="js/ui/status.js?v=94"></script>
+<script src="js/ui/telemetry-panel.js?v=94"></script>
 <script src="js/bridge/websocket.js"></script>
-<script src="js/app/bridge-control.js?v=54"></script>
-<script src="js/app/workbench.js?v=54"></script>
-<script src="js/app/api-handlers.js?v=54"></script>
-<script src="js/app/frame-loop.js?v=54"></script>
-<script src="api.js?v=54"></script>
-<script src="app.js?v=54"></script>
+<script src="js/app/bridge-control.js?v=94"></script>
+<script src="js/app/keyboard-control.js?v=94"></script>
+<script src="js/app/workbench.js?v=94"></script>
+<script src="js/ui/debug-panel.js?v=94"></script>
+<script src="js/app/api-handlers.js?v=94"></script>
+<script src="js/app/frame-loop.js?v=94"></script>
+<script src="api.js?v=94"></script>
+<script src="app.js?v=94"></script>
 </body>
 </html>

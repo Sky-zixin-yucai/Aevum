@@ -9,11 +9,14 @@
     return {
       yaw: 0.58, pitch: 0.30, dist: 2.1, target: [0.42, 0.32, 0],
       goalYaw: 0.58, goalPitch: 0.30, goalDist: 2.1, goalTarget: [0.42, 0.32, 0],
+      mode: "orbit", eye: null,
       ortho: false
     };
   }
 
   function cameraEye(cam) {
+    if (cam.mode === "fixed" && cam.eye) return cam.eye.slice();
+    if ((cam.mode === "first" || cam.mode === "follow") && cam.eye) return cam.eye.slice();
     const cp = Math.cos(cam.pitch);
     const sp = Math.sin(cam.pitch);
     return [
@@ -61,6 +64,7 @@
   }
 
   function step(cam, now) {
+    if (cam.mode === "first" || cam.mode === "follow" || cam.mode === "fixed") return;
     const last = cam.last || now;
     const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
     cam.last = now;
@@ -157,6 +161,101 @@
     cam.goalDist = Math.max(2.8, (Math.abs(r) * 2 + span) * 2.2);
   }
 
+  function carBasis(yaw) {
+    return {
+      fx: Math.cos(yaw), fz: -Math.sin(yaw),
+      rx: Math.sin(yaw), rz: Math.cos(yaw)
+    };
+  }
+
+  function setMode(cam, mode, doc) {
+    if (mode === "fixed") {
+      /* 固定跟随：记录当前机位相对车体的 along/side/height，
+       * 之后车怎么走，相机保持这个相对位置跟过去。 */
+      const pose = doc && doc.pose;
+      if (pose) {
+        const b = carBasis(Number(pose.yaw) || 0);
+        const eye = cameraEye(cam);
+        const target = cam.target;
+        const rel = function (p) {
+          const dx = p[0] - (Number(pose.x) || 0);
+          const dz = p[2] - (Number(pose.z) || 0);
+          return {
+            along: dx * b.fx + dz * b.fz,
+            side: dx * b.rx + dz * b.rz,
+            y: p[1]
+          };
+        };
+        cam.fixed = { eye: rel(eye), target: rel(target) };
+        cam.eye = eye;
+        cam.target = target.slice();
+      }
+      cam.mode = "fixed";
+      return;
+    }
+    cam.fixed = null;
+    cam.mode = mode === "first" ? "first" : (mode === "follow" ? "follow" : "orbit");
+    if (cam.mode === "orbit") cam.eye = null;
+  }
+
+  /* 车相机：first 是车头眼位，follow 是车后跟随；都直接读车体 pose。 */
+  function followCar(cam, doc) {
+    if (!cam || !doc) return;
+    if (cam.mode === "fixed") {
+      const off = cam.fixed;
+      if (!off) return;
+      const pose = doc.pose || { x: 0, z: 0, yaw: 0 };
+      const b = carBasis(Number(pose.yaw) || 0);
+      cam.eye = [
+        (Number(pose.x) || 0) + b.fx * off.eye.along + b.rx * off.eye.side,
+        off.eye.y,
+        (Number(pose.z) || 0) + b.fz * off.eye.along + b.rz * off.eye.side
+      ];
+      cam.target = [
+        (Number(pose.x) || 0) + b.fx * off.target.along + b.rx * off.target.side,
+        off.target.y,
+        (Number(pose.z) || 0) + b.fz * off.target.along + b.rz * off.target.side
+      ];
+      return;
+    }
+    if (cam.mode !== "first" && cam.mode !== "follow") return;
+    const pose = doc.pose || { x: 0, z: 0, yaw: 0 };
+    const yaw = Number(pose.yaw) || 0;
+    const fx = Math.cos(yaw);
+    /* axisAngle(+Y) 把局部 +X 转到世界 -Z，车相机也用同一朝向。 */
+    const fz = -Math.sin(yaw);
+    const rx = Math.sin(yaw);
+    const rz = Math.cos(yaw);
+    if (cam.mode === "first") {
+      const seatX = 0.17;
+      const seatZ = 0.03;
+      cam.eye = [
+        (Number(pose.x) || 0) + fx * seatX + rx * seatZ,
+        0.15,
+        (Number(pose.z) || 0) + fz * seatX + rz * seatZ
+      ];
+      cam.target = [
+        cam.eye[0] + fx * 0.9,
+        0.105,
+        cam.eye[2] + fz * 0.9
+      ];
+      return;
+    }
+    /* 跟随第三人称：在车后上方看车，目标略在车头前方。 */
+    const back = 1.15;
+    const side = 0.06;
+    cam.eye = [
+      (Number(pose.x) || 0) - fx * back + rx * side,
+      0.42,
+      (Number(pose.z) || 0) - fz * back + rz * side
+    ];
+    cam.target = [
+      (Number(pose.x) || 0) + fx * 0.12,
+      0.10,
+      (Number(pose.z) || 0) + fz * 0.12
+    ];
+  }
+
   function setView(cam, kind, doc) {
     if (kind === "home") {
       fitCamera(doc, cam);
@@ -193,6 +292,8 @@
   F.render.cameraBasis = cameraBasis;
   F.render.viewProjection = viewProjection;
   F.render.cameraStep = step;
+  F.render.cameraFollow = followCar;
+  F.render.cameraSetMode = setMode;
   F.render.cameraFrameAt = frameAt;
   F.render.fitCamera = fitCamera;
   F.render.framePath = framePath;

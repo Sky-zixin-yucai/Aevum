@@ -95,44 +95,89 @@
   }
 
   /*
+   * 控制链只取语义关节，不把车身、底盘、轮毂、工具外壳当成关节。
+   * 机械臂的 glTF 节点可以是平铺的；aevum.body.links 的顺序就是内核平面链。
+   */
+  function controlSegments(doc) {
+    if (!doc || doc.modelKind === "vehicle") return [];
+    const segs = doc && Array.isArray(doc.segments) ? doc.segments : [];
+    const links = doc && doc.aevum && doc.aevum.body && doc.aevum.body.links;
+    if (doc.modelKind === "arm" && Array.isArray(links) && links.length) {
+      const byId = {};
+      segs.forEach(function (s) {
+        if (s.semanticId) byId[s.semanticId] = s;
+      });
+      const out = [];
+      links.forEach(function (link) {
+        if (link && byId[link.id]) out.push(byId[link.id]);
+      });
+      if (out.length === links.length) return out;
+    }
+    return segs.filter(function (s) { return s.actuated; });
+  }
+
+  function controlLength(doc, seg) {
+    const links = doc && doc.aevum && doc.aevum.body && doc.aevum.body.links;
+    if (Array.isArray(links) && seg && seg.semanticId) {
+      const link = links.find(function (l) { return l.id === seg.semanticId; });
+      if (link && link.length > 0) return link.length;
+    }
+    return segmentLength(seg);
+  }
+
+  /*
    * 第一版内核只接受平面串联链：2–8 个关节、单链 parent、Z 轴、总 reach ≤ 16 m。
    * 几何不再要求固定 0.30/0.30/0.20；body descriptor 由页面在连接/换文档时下发。
    */
   function kernelCompatibility(doc) {
-    const segs = doc && Array.isArray(doc.segments) ? doc.segments : [];
-    if (segs.length < 2 || segs.length > 8) {
-      return { ok: false, reason: "需要 2–8 个 segment，当前 " + segs.length };
+    if (!doc || doc.modelKind === "vehicle") {
+      return { ok: false, reason: "车辆由 0x05 路径帧表示，不是平面关节链" };
     }
+    const segs = controlSegments(doc);
+    if (segs.length < 2 || segs.length > 8) {
+      return { ok: false, reason: "需要 2–8 个语义关节，当前 " + segs.length };
+    }
+    const semantic = doc.modelKind === "arm" && doc.aevum && doc.aevum.body && doc.aevum.body.links;
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i];
-      const parent = Number.isInteger(s.parent) ? s.parent : (i === 0 ? -1 : i - 1);
-      if (i === 0 ? parent !== -1 : parent !== i - 1) {
-        return { ok: false, reason: "需要单链 parent -1/0/1…，segment " + s.id + " 是 " + parent };
+      if (!s.actuated) {
+        return { ok: false, reason: "segment " + s.id + " 不是语义关节" };
+      }
+      if (!semantic) {
+        const parent = Number.isInteger(s.parent) ? s.parent : (i === 0 ? -1 : i - 1);
+        if (i === 0 ? parent !== -1 : parent !== i - 1) {
+          return { ok: false, reason: "需要单链 parent -1/0/1…，segment " + s.id + " 是 " + parent };
+        }
       }
       if (isImported(doc)) {
         if (!s.joint) return { ok: false, reason: "segment " + s.id + " 没有 joint" };
         const axis = s.joint.axis || [0, 0, 1];
         if (Math.abs(axis[2]) < 0.95) return { ok: false, reason: "segment " + s.id + " 的轴不是 Z" };
       }
-      const len = segmentLength(s);
+      const len = controlLength(doc, s);
       if (!(len > 0 && len <= 2.0)) {
         return { ok: false, reason: "segment " + s.id + " 长度 " + len.toFixed(2) + " m 超出 0–2 m" };
       }
     }
-    const reach = segs.reduce(function (sum, s) { return sum + segmentLength(s); }, 0);
+    const reach = segs.reduce(function (sum, s) { return sum + controlLength(doc, s); }, 0);
     if (reach > 16.0) return { ok: false, reason: "总 reach " + reach.toFixed(2) + " m 超过 16 m" };
-    return { ok: true, reason: segs.length + "R planar chain · " + reach.toFixed(2) + " m reach" };
+    return {
+      ok: true,
+      n: segs.length,
+      segments: segs,
+      reason: segs.length + "R planar chain · " + reach.toFixed(2) + " m reach"
+    };
   }
 
   function bodyDescriptor(doc) {
     const compat = kernelCompatibility(doc);
     if (!compat.ok) return null;
-    const segs = doc.segments;
+    const segs = compat.segments;
     const rad = function (v) { return (Number(v) || 0) * Math.PI / 180; };
     const clamp = function (v, lo, hi) { return Math.max(lo, Math.min(hi, v)); };
     return {
       n: segs.length,
-      lengths: segs.map(function (s) { return +segmentLength(s).toFixed(6); }),
+      lengths: segs.map(function (s) { return +controlLength(doc, s).toFixed(6); }),
       qMin: segs.map(function (s) { return +clamp(rad(s.min), -3.2, 3.2).toFixed(6); }),
       qMax: segs.map(function (s) { return +clamp(rad(s.max), -3.2, 3.2).toFixed(6); }),
       qHome: segs.map(function (s) {
@@ -149,6 +194,8 @@
   F.model.validate = validate;
   F.model.isImported = isImported;
   F.model.segmentLength = segmentLength;
+  F.model.controlSegments = controlSegments;
+  F.model.controlLength = controlLength;
   F.model.kernelCompatibility = kernelCompatibility;
   F.model.bodyDescriptor = bodyDescriptor;
 })(window.AEVUM.FORGE);

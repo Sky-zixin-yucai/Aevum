@@ -11,8 +11,15 @@
     const syncControls = opts.syncControls || function () {};
     const onKernelState = opts.onKernelState || function () {};
     const updateKernelStatus = opts.updateKernelStatus || function () {};
+    const onControlUpdate = opts.onControlUpdate || function () {};
     const toast = opts.toast || function () {};
+
+    function controlDoc() {
+      return state.control || state.doc;
+    }
     let manualHoldTimer = null;
+    let retryTimer = null;
+    let retryCount = 0;
 
     /*
      * 内核手动目标有 5 秒保持窗口。页面打开时每 2 秒重发当前目标，
@@ -151,11 +158,9 @@
     }
 
     function bodyPacket() {
-      /* 车辆是 0x05 几何路径对象，不走机械臂 2–8 段 body descriptor。 */
-      if (state.doc && state.doc.modelKind === "vehicle") return null;
-      const compat = F.model.kernelCompatibility(state.doc);
+      const compat = F.model.kernelCompatibility(controlDoc());
       if (!compat.ok) return null;
-      const body = F.model.bodyDescriptor(state.doc);
+      const body = F.model.bodyDescriptor(controlDoc());
       return body ? { type: "body", body: body } : null;
     }
 
@@ -164,6 +169,7 @@
       if (!packet) return false;
       state.sim.bodyPending = true;
       state.sim.bodySentAt = performance.now();
+      state.sim.lastBody = packet.body;
       return F.bridge.send(state.bridge, packet, true);
     }
 
@@ -214,11 +220,8 @@
     }
 
     function applyStatus(message) {
-      if (state.doc && state.doc.modelKind === "vehicle") {
-        applyVehicleStatus(message);
-        return;
-      }
-      const compat = F.model.kernelCompatibility(state.doc);
+      const control = controlDoc();
+      const compat = F.model.kernelCompatibility(control);
       if (!compat.ok) {
         if (!state.sim.kernelRejected) {
           state.sim.kernelRejected = true;
@@ -230,7 +233,8 @@
       const values = message.values || {};
       const n = Number(message.n) || 0;
       if (!n || !Array.isArray(message.q) || message.q.length !== n) return;
-      if (state.doc.segments.length !== n) {
+      const chain = compat.segments || F.model.controlSegments(control);
+      if (chain.length !== n) {
         const stale = !state.sim.bodyPending ||
           performance.now() - (state.sim.bodySentAt || 0) > 1500;
         if (stale) sendBody();
@@ -252,14 +256,26 @@
       }
 
       q.forEach(function (v, i) {
-        if (state.doc.segments[i]) {
-          state.doc.segments[i].q = v;
-          if (!state.sim.manual) state.doc.segments[i].target = qt[i];
-          state.sim.q[i] = v;
-          state.sim.qd[i] = dq[i];
+        const seg = chain[i];
+        if (!seg) return;
+        seg.q = v;
+        if (!state.sim.manual) seg.target = qt[i];
+        const si = state.doc.segments.indexOf(seg);
+        if (si >= 0) {
+          state.sim.q[si] = v;
+          state.sim.qd[si] = dq[i];
         }
       });
       state.sim.kernel = true;
+      state.sim.lastStatus = {
+        n: n,
+        values: values,
+        q: q.slice(),
+        qTarget: qt.slice(),
+        at: Date.now()
+      };
+      onControlUpdate();
+      state.sim.statusCount = (state.sim.statusCount || 0) + 1;
       state.sim.kernelStatus = {
         n: n,
         q: q.slice(),
@@ -321,18 +337,23 @@
         rerenderInspector();
       }
       if (Array.isArray(message.target)) {
+        const chain = F.model.controlSegments(state.doc);
         message.target.forEach(function (v, i) {
-          if (state.doc.segments[i]) state.doc.segments[i].target = v;
+          if (chain[i]) chain[i].target = v;
         });
       }
     }
 
     function sendManual() {
       if (!state.sim.kernel) return false;
+      const chain = F.model.controlSegments(controlDoc());
+      if (!chain.length) return false;
+      const q = chain.map(function (s) { return +s.target.toFixed(5); });
+      state.sim.lastCommand = { q: q.slice(), at: Date.now() };
       return F.bridge.send(state.bridge, {
         type: "joint",
-        q: state.doc.segments.map(function (s) { return +s.target.toFixed(5); })
-      });
+        q: q
+      }, true);
     }
 
     function sendRelease() {
@@ -375,7 +396,7 @@
       state.sim.manualSince = performance.now();
       if (state.sim.manual) {
         /* 从 AUTO 进入手动时先锁当前 q，避免跳到上一条 q_target。 */
-        state.doc.segments.forEach(function (s) { s.target = s.q; });
+        F.model.controlSegments(controlDoc()).forEach(function (s) { s.target = s.q; });
         sendManual();
         startManualHold();
         toast("MANUAL 保持已开启；页面每 2 秒续期，桥接断开时 5 秒兜底");
@@ -389,12 +410,13 @@
     }
 
     function pulseManual() {
-      if (!state.sim.kernel) return;
+      if (!state.sim.kernel) return false;
       state.sim.manual = true;
       state.sim.manualSince = performance.now();
-      sendManual();
+      const sent = sendManual();
       startManualHold();
       syncControls();
+      return !!sent;
     }
 
     function resetLink() {
@@ -416,11 +438,25 @@
       rerenderInspector();
     }
 
+    function scheduleRetry() {
+      if (retryTimer || retryCount >= 3 || state.bridge.online) return;
+      retryCount++;
+      retryTimer = setTimeout(function () {
+        retryTimer = null;
+        connect(state.bridge.url);
+      }, 1200);
+    }
+
     function connect(url) {
       state.bridge.url = url || state.bridge.url;
       if (state.bridge.online) return;
       F.bridge.connect(state.bridge, {
         onOpen: function () {
+          if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+          }
+          retryCount = 0;
           setKernelPill("bridge");
           syncControls();
           rerenderInspector();
@@ -430,12 +466,18 @@
         onClose: resetLink,
         onError: function (e) {
           toast("Bridge 不可达；页面仅做模型呈现" + (e && e.message ? "（" + e.message + "）" : ""));
+          scheduleRetry();
         },
         onMessage: applyMessage
       });
     }
 
     function disconnect() {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      retryCount = 0;
       F.bridge.disconnect(state.bridge, { onClose: resetLink });
     }
 

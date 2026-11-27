@@ -7,7 +7,27 @@
     const modePill = F.dom.$("modePill");
     const kernelPill = F.dom.$("kernelPill");
 
+    function hud() {
+      const title = F.dom.$("hudTitle");
+      const sub = document.querySelector(".hud .sub");
+      const doc = state.doc || {};
+      const kind = doc.modelKind || (F.model.isImported(doc) ? "generic" : "arm");
+      const name = kind === "vehicle" ? "TOY OFFROAD" : (kind === "arm" ? "3R ARM" : "IMPORTED");
+      if (title) title.textContent = state.sim.kernel ? name + " / KERNEL LINK" : name + " / MODEL VIEW";
+      if (!sub) return;
+      if (state.sim.kernel) {
+        sub.textContent = kind === "vehicle"
+          ? "3R avatar · 0x03 q · W/S drive · A/D steer"
+          : "0x03 q feedback · W/A/S/D target jog";
+      } else if (state.bridge.online) {
+        sub.textContent = "bridge online · waiting for 0x03";
+      } else {
+        sub.textContent = "glTF 2.0 · kernel offline · model view";
+      }
+    }
+
     function sync() {
+      hud();
       if (!modePill) return;
       if (state.sim.kernel) {
         const manual = !!state.sim.kernelStatus && state.sim.kernelStatus.mode === 1;

@@ -19,10 +19,13 @@
         return;
       }
       F.render.cameraStep(state.cam, now);
+      F.render.cameraFollow(state.cam, state.doc);
       const eye = F.render.cameraEye(state.cam);
       const scene = F.render.buildScene(state.doc);
       const vp = F.render.viewProjection(state.cam, renderer.canvas);
       renderer.draw(state.doc, scene, vp, state.selected, eye);
+      const labelRoot = document.getElementById("labels");
+      if (labelRoot) labelRoot.style.visibility = state.cam.mode === "first" ? "hidden" : "";
 
       telemetry.update(now);
       if (inspector) inspector.updateRuntime();

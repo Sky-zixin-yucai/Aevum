@@ -29,9 +29,26 @@
       const orthoBtn = $("btnOrtho");
       const gridBtn = $("btnGrid");
       const clayBtn = $("btnClay");
+      const camBtn = $("btnCameraMode");
+      const camPicker = $("cameraPicker");
       if (orthoBtn) orthoBtn.classList.toggle("active", ortho);
       if (gridBtn) gridBtn.classList.toggle("active", grid);
       if (clayBtn) clayBtn.classList.toggle("active", clay);
+      if (camPicker && camBtn) {
+        const isCar = !!(state.doc && state.doc.modelKind === "vehicle");
+        camPicker.hidden = !isCar;
+        camBtn.value = state.cam.mode;
+      }
+    }
+
+    function toggleCamera() {
+      if (!state.doc || state.doc.modelKind !== "vehicle") return;
+      const next = state.cam.mode === "orbit" ? "fixed" :
+        (state.cam.mode === "fixed" ? "follow" :
+        (state.cam.mode === "follow" ? "first" : "orbit"));
+      F.render.cameraSetMode(state.cam, next, state.doc);
+      if (next === "orbit") F.render.fitCamera(state.doc, state.cam, true);
+      sync();
     }
 
     function frameSelected() {
@@ -178,11 +195,20 @@
     if (dockBtn) dockBtn.onclick = toggleDock;
 
     if ($("btnImportTop")) $("btnImportTop").onclick = onImport;
+    if ($("btnCameraMode")) {
+      $("btnCameraMode").onchange = function (e) {
+        const mode = e.target.value;
+        F.render.cameraSetMode(state.cam, mode, state.doc);
+        if (mode === "orbit") F.render.fitCamera(state.doc, state.cam, true);
+        sync();
+      };
+    }
 
     window.addEventListener("keydown", function (e) {
       const tag = (e.target && e.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
-      if (e.key === "f" || e.key === "F") { e.preventDefault(); frameSelected(); }
+      if (e.key === "v" || e.key === "V") { e.preventDefault(); toggleCamera(); }
+      else if (e.key === "f" || e.key === "F") { e.preventDefault(); frameSelected(); }
       else if (e.key === "g" || e.key === "G") { e.preventDefault(); renderer.setOptions({ grid: !renderer.options.grid }); sync(); }
       else if (e.key === "o" || e.key === "O") { e.preventDefault(); state.cam.ortho = !state.cam.ortho; sync(); }
       else if (e.key === "1") { e.preventDefault(); setView("front"); }
@@ -192,6 +218,6 @@
     });
 
     sync();
-    return { sync: sync, frame: frameSelected, setView: setView };
+    return { sync: sync, frame: frameSelected, setView: setView, toggleCamera: toggleCamera };
   };
 })(window.AEVUM.FORGE);

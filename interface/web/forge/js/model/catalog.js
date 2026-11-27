@@ -15,7 +15,7 @@
     }
   };
 
-  const DEFAULT_KEY = "toy_offroad";
+  const DEFAULT_KEY = "arm3";
 
   function keyFromLocation() {
     try {

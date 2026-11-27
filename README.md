@@ -21,7 +21,7 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 | --- | --- | --- |
 | 渲染引擎 | `engine/` | 可运行；`validate.html` 是主要验证入口 |
 | 32 位裸机内核 | `src/kernel/host/console/robot/` | 可在 QEMU 运行；已推进到 P12.1，接入 3R 控制、Forge 状态回传和 VGA 方向可视化；此前已完成 ring3、独立 CR3、`int 0x80`、VMA/brk/guard/copyin-copyout、COW fork、同步异常默认信号、用户 handler/signal frame/`sigreturn`、SIGCHLD/wait status、exec/fd/pipe、12 槽内核栈池、P5.3 的 100 轮 fork/wait 压测、不经过 fork 的 `spawn`、`clone/thread_exit/gettid/thread_join` 最小线程组、detach、主线程先退、主线程不 join 的整组回收、用户态与内核态 `#PF` 故障边界，以及 `V` 页 4 页观测面（槽/树/地址/fd） |
-| Forge 工作台 | `interface/web/forge/` | 3D 机械臂结构树、视口、Inspector、身体描述下发、手动目标、GRAB/SWEEP 演示 |
+| Forge 工作台 | `interface/web/forge/` | 3D 机械臂结构树、视口、Inspector、身体描述下发、手动目标、GRAB/SWEEP 演示；车辆作为 3R avatar，带四轮关节反馈和四态车相机 |
 | Fortuna 内核骨架 | `src/kernel/fortuna/` | 有 boot/mm/sched/fs/net/sandbox 等模块；设计验证阶段，没有稳定 CLI |
 | 串口桥 | `src/kernel/host/bridge/` | 把内核 COM1 差量帧/状态帧转为 WebSocket，并下发 `B/J/R` 命令 |
 | Web / 桌面呈现层 | `interface/` | world、desktop、console；不属于引擎核心 |
@@ -41,7 +41,7 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 
 ### 当前机器人状态
 
-- `kernel.bin = 90,312 B`，177/208 扇区，余量 `16,184 B`；`disk.img = 1,474,560 B`。
+- `kernel.bin = 92,744 B`，182/208 扇区，余量 `13,752 B`；`disk.img = 1,474,560 B`。
 - 内核在 QEMU 中最多驱动一台 3R 平面臂；Forge 通过 `B` 下发杆长 `0.62 / 0.52 / 0.24 m`、工具 `0.20 m`、基座高 `0.24 m`。
 - 手动模式接收 `J` 关节目标；`0x03` 状态帧回传 `q/dq/q_target`、末端误差、`sigma`、可操作度和限幅余量。
 - 方块位于 `x=1.30 m`，左端面 `1.24 m`；默认 tool tip 约 `1.19 m`，GRAB 时工具尖端 `1.2396 m`。
@@ -58,7 +58,23 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 
 内核 VGA 现在显示 `±1.45 m` 工作空间、base 十字、`L/R/U/D` 四向标记、关节方向标签、左上小地图、目标/实际轨迹和 `vx/vy` 速度分解。
 
-> Current status: `kernel.bin` is 90,312 bytes; Forge drives a 3R arm with `0.62 / 0.52 / 0.24 m` links and a `0.20 m` tool. Forge `GRAB` performs local 3R IK and marks the block held after joint convergence; the kernel receives joint targets only and has no gripper command. The VGA page shows the workspace, direction labels, a minimap, trails and `vx/vy`.
+> Current status: `kernel.bin` is 92,744 bytes; Forge drives a 3R arm with `0.62 / 0.52 / 0.24 m` links and a `0.20 m` tool. Forge `GRAB` performs local 3R IK and marks the block held after joint convergence; the kernel receives joint targets only and has no gripper command. The VGA page shows the workspace, direction labels, a minimap, trails and `vx/vy`.
+
+### Forge 车辆演示
+
+Forge 的 `TOY OFFROAD` 是 3R 控制链上的车辆 avatar：车身、`FL/FR/RL/RR` 四个轮关节和关节标签一起呈现，控制目标继续以 `q_target` 下发给内核，实际关节角仍由 `0x03` 回传。`W/S` 负责前进/后退，`A/D` 打左/右前轮；四键互斥，按住 `A/D` 时 `W/S` 不响应，行驶中按 `A/D` 也不响应。前轮角度会保留，先打轮、松开后再给油，车会按这个角度走弧；松开 `W/S` 后可以继续用 `A/D` 调整。四个轮子按车体位移滚转，标签跟随车体世界矩阵，不再固定在原地。
+
+车相机提供 `任意 / 固定跟随 / 跟随 / 第一人称` 四个入口。`固定跟随` 会记住选定时的车体相对机位，之后车怎么走，相机保持这个位置跟过去；`任意` 则允许鼠标自由环绕。
+
+![Forge 车辆总览](docs/assets/readme/kernel/forge-vehicle-overview.png)
+
+| 打轮后前进：前轮 9°，车体 yaw 0.1027 | 固定跟随：W×10 后仍保持原构图 |
+| --- | --- |
+| ![Forge 车辆转向](docs/assets/readme/kernel/forge-vehicle-steer.png) | ![Forge 固定跟随](docs/assets/readme/kernel/forge-vehicle-fixed-follow.png) |
+
+当前车辆模型为 `toy_offroad.gltf`：36 个节点、8 个网格、792 个三角形、6 个车轮关节。
+
+> The Forge `TOY OFFROAD` demo is a vehicle avatar on the same 3R control chain. `W/S` drive, `A/D` steer the front wheels, and the four keys are mutually exclusive; the steering angle persists, so steering first and then applying throttle produces an arc. The four wheel joints roll from body displacement and their labels follow the body's world matrix. Camera modes are free orbit, fixed follow, follow and first-person; fixed follow keeps the selected car-relative offset as the car moves.
 
 ## 渲染引擎 / Render Engine
 

@@ -370,10 +370,14 @@
         seg.joint.axis = Array.isArray(joint.axis) ? joint.axis.slice(0, 3) : seg.joint.axis;
         if (Number.isFinite(joint.min)) seg.min = joint.min * 180 / Math.PI;
         if (Number.isFinite(joint.max)) seg.max = joint.max * 180 / Math.PI;
+        if (Number.isFinite(joint.home)) {
+          seg.q = joint.home;
+          seg.target = joint.home;
+        }
       });
     }
 
-    return {
+    const doc = {
       format: "glTF 2.0",
       name: name || "IMPORTED GLTF",
       modelKind: aevum && aevum.kind || "generic",
@@ -397,6 +401,66 @@
         triangleCount: segments.reduce(function (a, s) { return a + (s.mesh ? s.mesh.triangles : 0); }, 0)
       }
     };
+
+    /*
+     * glTF 节点可以是平铺的世界坐标外观件，但 aevum.body 已经声明了平面链。
+     * 这里把语义关节按 body.links 的顺序接成控制链，并采用声明长度，
+     * 不用 mesh 单位盒的包围盒长度误当关节长度。
+     */
+    if (aevum && aevum.kind === "arm" && aevum.body && Array.isArray(aevum.body.links)) {
+      const body = aevum.body;
+      const base = body.base || {};
+      const tool = body.tool || {};
+      const baseSeg = segments.find(function (s) { return s.semanticId === "base"; }) ||
+        segments.find(function (s) { return s.role === "base"; });
+      doc.base = {
+        w: Number(base.width) || 0.54,
+        h: Number(base.height) || 0.24,
+        d: Number(base.depth) || 0.38,
+        mass: Number(base.mass) || 2.2,
+        color: baseSeg && baseSeg.color || [0.15, 0.19, 0.23],
+        hidden: false
+      };
+      doc.tool = {
+        length: Number(tool.length) || 0.20,
+        width: Number(tool.width) || 0.075,
+        depth: Number(tool.depth) || 0.09,
+        mass: Number(tool.mass) || 0.1,
+        grip: 0
+      };
+
+      const byId = {};
+      segments.forEach(function (s) {
+        if (s.semanticId) byId[s.semanticId] = s;
+      });
+      if (baseSeg) {
+        baseSeg.parent = -1;
+        baseSeg.length = doc.base.w;
+        baseSeg.width = doc.base.h;
+        baseSeg.depth = doc.base.d;
+      }
+      let prev = baseSeg ? segments.indexOf(baseSeg) : -1;
+      body.links.forEach(function (link) {
+        const seg = byId[link && link.id];
+        if (!seg) return;
+        seg.parent = prev;
+        seg.length = Number(link.length) || seg.length;
+        seg.width = Number(link.width) || seg.width;
+        seg.depth = Number(link.depth) || seg.depth;
+        seg.mass = Number(link.mass) || seg.mass;
+        prev = segments.indexOf(seg);
+      });
+      const toolSeg = segments.find(function (s) { return s.semanticId === "tool"; }) ||
+        segments.find(function (s) { return s.role === "tool"; });
+      if (toolSeg) {
+        toolSeg.parent = prev;
+        toolSeg.length = doc.tool.length;
+        toolSeg.width = doc.tool.width;
+        toolSeg.depth = doc.tool.depth;
+      }
+    }
+
+    return doc;
   }
 
   function importGltfFiles(files, mainName) {
