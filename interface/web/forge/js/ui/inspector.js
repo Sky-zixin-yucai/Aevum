@@ -117,8 +117,9 @@
           + '<input id="arcSweep" type="number" step="1" value="-90">')
         + row("SPEED m/s", '<input id="arcSpeed" type="number" step="0.01" value="0.15">')
         + '<div class="status" id="arcState">' + esc(arcState) + '</div>'
-        + '<button style="width:100%" id="btnArc"' + (state.bridge.online ? "" : " disabled") + '>Run ARC</button>'
-        + '<div class="note">圆心、半径、起始角和扫角都交给内核；前轮转角由内核回传的曲率换算，页面不本地积分。</div>'
+        + '<div class="actions"><button id="btnArc"' + (state.bridge.online ? "" : " disabled") + '>Run ARC</button>'
+        + '<button id="btnCircle"' + (state.bridge.online ? "" : " disabled") + '>Full Circle</button></div>'
+        + '<div class="note">圆心、半径、起始角和扫角都交给内核；整圆就是扫角 ±360° 的 ARC，不另建 CIRCLE 语义。前轮转角由内核回传的曲率换算，页面不本地积分。</div>'
         + '</details>';
     }
 
@@ -155,6 +156,21 @@
           speed: num("arcSpeed", 0.15),
           tol: 0.01,
           timeout: 5000
+        });
+      };
+      const full = F.dom.$("btnCircle");
+      if (full) full.onclick = function () {
+        if (!opts.onPathArc) return;
+        opts.onPathArc({
+          kind: 2,
+          cx: num("arcCx", 0),
+          cz: num("arcCz", -0.5),
+          r: num("arcR", 0.5),
+          a0: num("arcA0", 90) * M.D2R,
+          sweep: -Math.PI * 2,
+          speed: num("arcSpeed", 0.15),
+          tol: 0.01,
+          timeout: 3000
         });
       };
     }
