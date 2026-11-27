@@ -54,7 +54,7 @@ Aevum 是一个开源 3D 角色与世界运行时。当前仓库的重点是两�
 | --- | --- |
 | ![Forge 3R 初始场景](docs/assets/readme/kernel/forge-v26-initial.png) | ![Forge 3R GRAB](docs/assets/readme/kernel/forge-v26-grab.png) |
 
-![内核 VGA 3R 抓取姿态](docs/assets/readme/kernel/kernel-vga-v26.png)
+![Forge 3R 与内核 VGA 同屏：AUTO 跟踪、q1/q2/q3 与末端误差](docs/assets/readme/kernel/forge-arm-vga.png)
 
 内核 VGA 现在显示 `±1.45 m` 工作空间、base 十字、`L/R/U/D` 四向标记、关节方向标签、左上小地图、目标/实际轨迹和 `vx/vy` 速度分解。
 
@@ -66,7 +66,7 @@ Forge 的 `TOY OFFROAD` 是 3R 控制链上的车辆 avatar：车身、`FL/FR/RL
 
 车相机提供 `任意 / 固定跟随 / 跟随 / 第一人称` 四个入口。`固定跟随` 会记住选定时的车体相对机位，之后车怎么走，相机保持这个位置跟过去；`任意` 则允许鼠标自由环绕。
 
-![Forge 车辆与内核 VGA 同屏：左侧 TOY OFFROAD，右侧 3R 关节姿态](docs/assets/readme/kernel/forge-vehicle-overview.png)
+![Forge TOY OFFROAD 与内核 VGA 同屏：车辆四轮姿态、MANUAL HOLD 与关节角](docs/assets/readme/kernel/forge-vehicle-vga.png)
 
 上图把 Forge 的 `TOY OFFROAD` 和 QEMU 内的 3R VGA 放在同一屏：左侧是车辆、四轮关节和 `固定跟随` 视角，右侧是 `q1/q2/q3`、`MANUAL HOLD` 与关节速度提示，能同时看到“车怎么走”和“内核收到什么”。
 
@@ -76,7 +76,7 @@ Forge 的 `TOY OFFROAD` 是 3R 控制链上的车辆 avatar：车身、`FL/FR/RL
 
 当前车辆模型为 `toy_offroad.gltf`：36 个节点、8 个网格、792 个三角形、6 个车轮关节。
 
-> The Forge `TOY OFFROAD` demo is a vehicle avatar on the same 3R control chain. `W/S` drive, `A/D` steer the front wheels, and the four keys are mutually exclusive; the steering angle persists, so steering first and then applying throttle produces an arc. The four wheel joints roll from body displacement and their labels follow the body's world matrix. Camera modes are free orbit, fixed follow, follow and first-person; fixed follow keeps the selected car-relative offset as the car moves. The overview image shows the vehicle in Forge and the 3R VGA output side by side.
+> The Forge `TOY OFFROAD` demo is a vehicle avatar on the same 3R control chain. `W/S` drive, `A/D` steer the front wheels, and the four keys are mutually exclusive; the steering angle persists, so steering first and then applying throttle produces an arc. The four wheel joints roll from body displacement and their labels follow the body's world matrix. Camera modes are free orbit, fixed follow, follow and first-person; fixed follow keeps the selected car-relative offset as the car moves. The arm and vehicle sections each pair the Forge view with the 3R VGA output.
 
 ## 渲染引擎 / Render Engine
 
