@@ -198,7 +198,12 @@
     onImport: function () { $("fileModel").click(); },
     onToggleBridge: bridgeControl.toggle,
     onBodyChange: function () { if (state.bridge.online) bridgeControl.sendBody(); },
-    onKernelTarget: bridgeControl.pulseManual
+    onKernelTarget: bridgeControl.pulseManual,
+    onPathLine: function (params) {
+      if (!bridgeControl.sendPath(params)) {
+        F.ui.toast.show("LINE 未发送：内核桥未连接");
+      }
+    }
   });
 
   telemetry = F.ui.createTelemetryPanel({

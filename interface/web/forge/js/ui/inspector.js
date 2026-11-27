@@ -53,10 +53,12 @@
         + '<div class="note">' + esc(compat.ok ? "可以把 body descriptor 交给内核，q 只从 0x03 状态帧读取。" : compat.reason) + '</div>'
         + '</div>'
         + documentActions()
-        + bridgeGroup();
+        + bridgeGroup()
+        + pathGroup();
       container.innerHTML = html;
       wireDocumentButtons();
       wireBridgeGroup();
+      wirePathGroup();
     }
 
     function row(label, value) {
@@ -82,6 +84,46 @@
     function wireBridgeGroup() {
       const btn = F.dom.$("btnBridge");
       if (btn) btn.onclick = function () { opts.onToggleBridge(F.dom.$("bridgeUrl").value.trim()); };
+    }
+
+    /* 车辆只暴露几何参数实例；路径生成、停止和超时都在内核。 */
+    function pathGroup() {
+      if (!state.doc || state.doc.modelKind !== "vehicle") return "";
+      const p = state.sim.path;
+      const stateName = p ? (["IDLE", "RUN", "DONE", "FAULT"][p.state] || "?") : "IDLE";
+      return '<details class="group fold" id="pathGroup" open>'
+        + '<summary><span class="chev">›</span>Kernel LINE <span class="meta">0x05</span></summary>'
+        + row("X0 / Z0", '<input id="lineX0" type="number" step="0.01" value="0">'
+          + '<input id="lineZ0" type="number" step="0.01" value="0">')
+        + row("X1 / Z1", '<input id="lineX1" type="number" step="0.01" value="0.40">'
+          + '<input id="lineZ1" type="number" step="0.01" value="0">')
+        + row("SPEED m/s", '<input id="lineSpeed" type="number" step="0.01" value="0.20">')
+        + '<div class="status" id="lineState">' + esc(stateName) + '</div>'
+        + '<button style="width:100%" id="btnLine"' + (state.bridge.online ? "" : " disabled") + '>Run LINE</button>'
+        + '<div class="note">只下发端点与速度；内核按 100 Hz 推进 s，页面只呈现路径点和轮子滚角，不本地积分。</div>'
+        + '</details>';
+    }
+
+    function wirePathGroup() {
+      const btn = F.dom.$("btnLine");
+      if (!btn) return;
+      btn.onclick = function () {
+        if (!opts.onPathLine) return;
+        const num = function (id, fallback) {
+          const el = F.dom.$(id);
+          const v = el ? Number(el.value) : NaN;
+          return isFinite(v) ? v : fallback;
+        };
+        opts.onPathLine({
+          x0: num("lineX0", 0),
+          z0: num("lineZ0", 0),
+          x1: num("lineX1", 0.4),
+          z1: num("lineZ1", 0),
+          speed: num("lineSpeed", 0.2),
+          tol: 0.01,
+          timeout: 3000
+        });
+      };
     }
 
     function kernelStatusMarkup() {

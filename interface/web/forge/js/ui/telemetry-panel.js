@@ -53,6 +53,10 @@
       ctx.font = fs + "px Cascadia Mono, Consolas";
       ctx.textBaseline = "top";
 
+      if (state.sim.path) {
+        drawPathChart(w, h, fs);
+        return;
+      }
       if (state.sim.kernel) {
         drawKernelChart(w, h, fs);
         return;
@@ -64,6 +68,17 @@
       ctx.textAlign = "left";
       ctx.fillStyle = "#66737e";
       ctx.fillText("GLTF NODES / STATIC PREVIEW", Math.round(10 * dpr), Math.round(8 * dpr));
+    }
+
+    function drawPathChart(w, h, fs) {
+      const p = state.sim.path;
+      const t = Math.max(0, Math.min(1, p.t || 0));
+      ctx.fillStyle = "#66737e";
+      ctx.fillText("KERNEL LINE PATH · s / t", Math.round(10 * (fs / 12)), Math.round(8 * (fs / 12)));
+      ctx.fillStyle = "#1b242b";
+      ctx.fillRect(w * 0.10, h / 2 - 4, w * 0.80, 8);
+      ctx.fillStyle = p.state === 3 ? "#d95f5f" : (p.state === 2 ? "#6fbf73" : "#d79a52");
+      ctx.fillRect(w * 0.10, h / 2 - 4, w * 0.80 * t, 8);
     }
 
     function drawKernelChart(w, h, fs) {
@@ -98,6 +113,31 @@
       state.sim.lastUi = now;
 
       const kernel = !!state.sim.kernel;
+      const path = state.sim.path;
+      if (path) {
+        label("mLoop", "Loop");
+        label("mRms", "Arc s");
+        label("mPeak", "Param t");
+        label("mTorque", "Point");
+        label("mLoss", "Length");
+        label("mTime", "State");
+        F.dom.$("mLoop").textContent = "0x05";
+        F.dom.$("mMode").textContent = ["idle", "run", "done", "fault"][path.state] || "?";
+        F.dom.$("mRms").textContent = F.math.fmt(path.s, 3) + " m";
+        F.dom.$("mPeak").textContent = F.math.fmt(path.t, 3);
+        F.dom.$("mTorque").textContent = F.math.fmt(path.x, 3) + " / " + F.math.fmt(path.z, 3);
+        F.dom.$("mLoss").textContent = F.math.fmt(path.length, 3) + " m";
+        F.dom.$("mTime").textContent = path.fault ? "fault " + path.fault : "none";
+        F.dom.$("mRms").nextElementSibling.textContent = "kernel arc length";
+        F.dom.$("mPeak").nextElementSibling.textContent = "normalized arc";
+        F.dom.$("mTorque").nextElementSibling.textContent = "path point x / z";
+        F.dom.$("mLoss").nextElementSibling.textContent = "line segment";
+        F.dom.$("mTime").nextElementSibling.textContent = "fault code";
+        drawChart();
+        onMetrics({ kernel: true, path: F.model.clone(path), pose: state.doc.pose ? F.model.clone(state.doc.pose) : null });
+        return;
+      }
+
       const dockMeta = F.dom.$("dockMeta");
       if (dockMeta) {
         dockMeta.textContent = kernel

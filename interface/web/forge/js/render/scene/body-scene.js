@@ -11,7 +11,9 @@
     const world = [];
 
     function rootMatrix(seg) {
-      return childMatrix(seg, M.mat4());
+      const pose = doc.pose || { x: 0, z: 0, yaw: 0 };
+      const base = M.mul(M.trans(pose.x || 0, 0, pose.z || 0), M.axisAngle([0, 1, 0], pose.yaw || 0));
+      return childMatrix(seg, base);
     }
 
     function childMatrix(seg, parentWorld) {

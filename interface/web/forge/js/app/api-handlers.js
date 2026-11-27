@@ -25,6 +25,7 @@
         kernel: state.sim.kernel,
         manual: state.sim.manual,
         kernelStatus: state.sim.kernelStatus ? F.model.clone(state.sim.kernelStatus) : null,
+        path: state.sim.path ? F.model.clone(state.sim.path) : null,
         q: state.sim.q.slice(),
         target: doc.segments.map(function (s) { return s.target; }),
         selected: { kind: state.selected.kind, index: state.selected.index },
@@ -70,6 +71,13 @@
         bridgeControl.setManual(on);
       },
       getTelemetry: function () {
+        if (state.sim.path) {
+          return {
+            kernel: true,
+            path: F.model.clone(state.sim.path),
+            pose: state.doc.pose ? F.model.clone(state.doc.pose) : null
+          };
+        }
         if (state.sim.kernel) {
           const st = state.sim.kernelStatus || {};
           return {
@@ -100,7 +108,11 @@
         };
       },
       connect: bridgeControl.connect,
-      disconnect: bridgeControl.disconnect
+      disconnect: bridgeControl.disconnect,
+      runLine: function (params) {
+        if (!state.bridge.online) throw new Error("runLine 需要 bridge 连接");
+        return bridgeControl.sendPath(params);
+      }
     };
   };
 })(window.AEVUM.FORGE);

@@ -5,6 +5,7 @@ CC      = gcc
 AS      = nasm
 LD      = ld
 QEMU    = qemu-system-i386
+HOST_CC = cc
 
 BUILD   = build
 DEFS    =
@@ -42,6 +43,8 @@ SRCS = \
 	lib/fixed/fixed.c \
 	lib/math/trig.c \
 	lib/format/format.c \
+	lib/geom/line.c \
+	app/path/path.c \
 	app/arm/app/app.c \
 	app/arm/kinematics/kinematics.c \
 	app/arm/control/control.c \
@@ -70,7 +73,7 @@ IMG     = os.img
 
 GENERATED = boot.bin $(IMG) disk.img kernel.bin kernel.elf $(BUILD)
 
-.PHONY: all clean rebuild run debug size
+.PHONY: all clean rebuild run debug size test-host
 
 all: disk.img
 
@@ -135,6 +138,18 @@ size: kernel.bin
 
 clean:
 	rm -rf $(GENERATED)
+
+# 纯几何/路径函数在宿主机上用原生工具链编译测试；不产出内核镜像。
+test-host:
+	@mkdir -p $(BUILD)/host
+	$(HOST_CC) -std=c99 -Wall -Wextra -Iinclude \
+		tests/host/line_test.c lib/geom/line.c lib/fixed/fixed.c \
+		-o $(BUILD)/host/line_test
+	$(HOST_CC) -std=c99 -Wall -Wextra -Iinclude \
+		tests/host/path_line_test.c app/path/path.c lib/geom/line.c lib/fixed/fixed.c \
+		-o $(BUILD)/host/path_line_test
+	$(BUILD)/host/line_test
+	$(BUILD)/host/path_line_test
 
 rebuild:
 	$(MAKE) clean

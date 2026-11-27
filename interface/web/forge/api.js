@@ -28,6 +28,7 @@
     getTelemetry: function () { return requireHandlers().getTelemetry(); },
     connect: function (url) { return requireHandlers().connect(url); },
     disconnect: function () { return requireHandlers().disconnect(); },
+    runLine: function (params) { return requireHandlers().runLine(params); },
     subscribe: function (fn) {
       listeners.push(fn);
       return function () {

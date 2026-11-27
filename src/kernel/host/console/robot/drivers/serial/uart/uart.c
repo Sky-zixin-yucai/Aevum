@@ -8,6 +8,7 @@
 #define FRAME_SYNC1      0x5A
 #define FRAME_TYPE_DELTA 0x01
 #define FRAME_TYPE_STATUS 0x03
+#define FRAME_TYPE_PATH  0x05
 #define FRAME_HDR        4
 #define FRAME_BUF        (FRAME_HDR + 34 * 4 + 1)
 #define FRAME_STATUS_MAX 34
@@ -62,6 +63,22 @@ static i32 cmd_i32(const u8 *p)
 static int cmd_finish(struct uart_input *out)
 {
     int i;
+    if (cmd_mode == 3) {
+        if (cmd_buf[0] != PATH_KIND_LINE) {
+            cmd_reset();
+            return 0;
+        }
+        out->path.x0 = cmd_i32(cmd_buf + 1);
+        out->path.z0 = cmd_i32(cmd_buf + 5);
+        out->path.x1 = cmd_i32(cmd_buf + 9);
+        out->path.z1 = cmd_i32(cmd_buf + 13);
+        out->path.speed = cmd_i32(cmd_buf + 17);
+        out->path.tol = cmd_i32(cmd_buf + 21);
+        out->path.timeout = cmd_i32(cmd_buf + 25);
+        out->type = UART_CMD_PATH;
+        cmd_reset();
+        return 1;
+    }
     if (cmd_mode == 2) {
         out->n = (int)cmd_count;
         out->body.n = (int)cmd_count;
@@ -96,6 +113,7 @@ static int cmd_finish(struct uart_input *out)
  * 宿主命令：
  *   J + u8 n + n * int16 LE      关节目标，单位 0.001 rad
  *   B + u8 n + n * 4 * i32 LE    平面身体描述（length/min/max/home）
+ *   P + u8 kind + 8 * i32 LE    几何路径参数（kind=1: x0/z0/x1/z1/speed/tol/timeout/reserved）
  *   R                            释放手动
  *   F                            请求全量 VGA
  * 命令字节只在空闲时识别；J/B 的载荷可能恰好是 'F'/'R'/'J'，不能误判。
@@ -125,6 +143,20 @@ int uart_poll_input(struct uart_input *out)
                 cmd_count = 0;
                 cmd_need = 0;
                 cmd_len = 0;
+            } else if (value == 'P') {
+                cmd_mode = 3;
+                cmd_count = 0;
+                cmd_need = 33;
+                cmd_len = 0;
+            }
+            continue;
+        }
+
+        if (cmd_mode == 3) {
+            cmd_buf[cmd_len++] = value;
+            if (cmd_len == cmd_need) {
+                if (cmd_finish(out)) return 1;
+                got = 1;
             }
             continue;
         }
@@ -203,10 +235,10 @@ void uart_scan(void)
 }
 
 /*
- * 完整状态帧：A5 5A 03 COUNT + COUNT 个 i32 LE + XOR CRC。
+ * 完整状态帧：A5 5A TYPE COUNT + COUNT 个 i32 LE + XOR CRC。
  * count 是 4 字节字段数，不是 VGA 单元数；app 层负责字段顺序。
  */
-void uart_status_frame(const i32 *values, u32 count)
+static void uart_value_frame(u8 type, const i32 *values, u32 count)
 {
     u32 i;
     u32 total;
@@ -216,7 +248,7 @@ void uart_status_frame(const i32 *values, u32 count)
     total = FRAME_HDR + count * 4;
     serial_frame[0] = FRAME_SYNC0;
     serial_frame[1] = FRAME_SYNC1;
-    serial_frame[2] = FRAME_TYPE_STATUS;
+    serial_frame[2] = type;
     serial_frame[3] = (u8)count;
     for (i = 0; i < count; i++) {
         u32 v = (u32)values[i];
@@ -229,4 +261,14 @@ void uart_status_frame(const i32 *values, u32 count)
     for (i = 0; i < total; i++) crc ^= serial_frame[i];
     serial_frame[total] = crc;
     uart_write(serial_frame, total + 1);
+}
+
+void uart_status_frame(const i32 *values, u32 count)
+{
+    uart_value_frame(FRAME_TYPE_STATUS, values, count);
+}
+
+void uart_path_frame(const i32 *values, u32 count)
+{
+    uart_value_frame(FRAME_TYPE_PATH, values, count);
 }

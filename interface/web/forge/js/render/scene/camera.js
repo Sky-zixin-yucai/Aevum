@@ -121,6 +121,29 @@
     }
   }
 
+  /*
+   * 一条有界路径整段入画：相机目标落在路径中点，距离覆盖线段和车体。
+   * 页面只调整呈现，不改变内核路径或车辆位姿。
+   */
+  function framePath(cam, doc, ax, az, bx, bz, radius) {
+    const scene = F.render.buildScene(doc);
+    const bounds = F.render.sceneBounds(scene);
+    const pose = doc.pose || { x: 0, z: 0 };
+    const localX = bounds ? (bounds.min[0] + bounds.max[0]) / 2 - pose.x : 0;
+    const localZ = bounds ? (bounds.min[2] + bounds.max[2]) / 2 - pose.z : 0;
+    const cx = (ax + bx) / 2 + localX;
+    const cz = (az + bz) / 2 + localZ;
+    const length = Math.hypot(bx - ax, bz - az);
+    const span = bounds
+      ? Math.max(bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1],
+                 bounds.max[2] - bounds.min[2], 0.5)
+      : Math.max(0.5, radius || 0.12);
+    cam.goalTarget[0] = cx;
+    cam.goalTarget[2] = cz;
+    if (bounds) cam.goalTarget[1] = (bounds.min[1] + bounds.max[1]) / 2;
+    cam.goalDist = Math.max(1.35, length * 1.4 + span * 1.4);
+  }
+
   function setView(cam, kind, doc) {
     if (kind === "home") {
       fitCamera(doc, cam);
@@ -159,6 +182,7 @@
   F.render.cameraStep = step;
   F.render.cameraFrameAt = frameAt;
   F.render.fitCamera = fitCamera;
+  F.render.framePath = framePath;
   F.render.setCameraView = setView;
   F.render.panCamera = pan;
 })(window.AEVUM.FORGE);

@@ -1,6 +1,7 @@
 #include "app/arm/app.h"
 #include "app/arm/control.h"
 #include "app/arm/render.h"
+#include "app/path/path.h"
 #include "app/fpu/demo.h"
 #include "app/fpu/render.h"
 #include "app/tree/demo.h"
@@ -51,6 +52,7 @@ static volatile int pool_exiting;
 static volatile u8 duel_tape[DUEL_TAPE];
 static volatile u32 duel_tape_head;
 static u32 probe_runs;
+static u32 path_frame_div;
 static volatile int idle_pid;
 static volatile u32 idle_block_req;
 static volatile u32 idle_blocked;
@@ -100,6 +102,27 @@ static void send_arm_status(const struct arm_status *st)
     v[base + 8] = st->mode;
     v[base + 9] = st->null_on;
     uart_status_frame(v, (u32)(base + 10));
+}
+
+static void send_path_status(void)
+{
+    struct path_status st;
+    i32 v[12];
+
+    path_status_get(&st);
+    v[0] = st.tick;
+    v[1] = st.kind;
+    v[2] = st.state;
+    v[3] = st.fault;
+    v[4] = st.s;
+    v[5] = st.t;
+    v[6] = st.x;
+    v[7] = st.z;
+    v[8] = st.dx;
+    v[9] = st.dz;
+    v[10] = st.speed;
+    v[11] = st.length;
+    uart_path_frame(v, 12);
 }
 
 static void kthread_demo_entry(void *arg)
@@ -205,8 +228,16 @@ static void proc_control(void)
                 arm_control_set_body(&in.body);
             else if (in.type == UART_CMD_JOINT)
                 arm_control_set_joint_targets(in.q, in.n);
+            else if (in.type == UART_CMD_PATH)
+                path_line_start(&in.path);
         }
         arm_control_step();
+        path_step();
+
+        if (path_has_status() && ++path_frame_div >= 3u) {
+            path_frame_div = 0;
+            send_path_status();
+        }
 
         /* 控制步按 PIT 100 Hz 走；不能再让调度器跑多快就积分多快。 */
         next_tick++;

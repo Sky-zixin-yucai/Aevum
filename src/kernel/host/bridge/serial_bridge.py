@@ -3,7 +3,9 @@
 AEVUM serial bridge: reads TCP-framed serial from QEMU, forwards to WebSocket.
 Delta frame: A5 5A 01 COUNT [row col ch attr] * COUNT CRC
 Status frame: A5 5A 03 19 + 19 * i32 LE + CRC
+Path frame: A5 5A 05 12 + 12 * i32 LE + CRC
 Joint command to kernel: b"J" + 3 * i16 LE (0.001 rad)
+Line path command: b"P" + kind + 8 * i32 LE (Q16.16)
 Release manual: b"R"
 """
 import asyncio
@@ -24,10 +26,13 @@ SYNC1 = 0x5A
 FRAME_TYPE_DELTA = 0x01
 FRAME_TYPE_STATE = 0x02
 FRAME_TYPE_STATUS = 0x03
+FRAME_TYPE_PATH = 0x05
 FRAME_HDR = 4
 MAX_CELLS = 32
 MAX_STATUS_FIELDS = 34
 STATE_VALS = 3
+PATH_FIELDS = 12
+PATH_KIND_LINE = 1
 BODY_MIN_JOINTS = 2
 BODY_MAX_JOINTS = 8
 Q16_ONE = 65536.0
@@ -113,6 +118,28 @@ def pack_joint(q):
     return b"J" + bytes([n]) + struct.pack("<%dh" % n, *raw_q)
 
 
+def pack_path(params):
+    """WS path line -> P + kind + 8 * i32 LE (Q16.16 meters / m/s)."""
+    try:
+        kind = int(params.get("kind", PATH_KIND_LINE))
+        if kind != PATH_KIND_LINE:
+            return None
+        vals = [
+            float(params.get("x0", 0)),
+            float(params.get("z0", 0)),
+            float(params.get("x1", 0)),
+            float(params.get("z1", 0)),
+            float(params.get("speed", 0)),
+            float(params.get("tol", 0)),
+            float(params.get("timeout", 0)),
+            0,
+        ]
+        raw = [int(round(v * Q16_ONE)) for v in vals]
+        return b"P" + bytes([kind]) + struct.pack("<8i", *raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class FrameParser:
     def __init__(self):
         self.buf = bytearray()
@@ -158,6 +185,30 @@ class FrameParser:
                 out.append({
                     "type": "state",
                     "q": [round(v / Q16_ONE, 6) for v in q],
+                })
+                del self.buf[:total]
+                self.frames_ok += 1
+                continue
+            if ftype == FRAME_TYPE_PATH:
+                if count != PATH_FIELDS:
+                    del self.buf[:1]
+                    self.frames_bad += 1
+                    continue
+                vals = struct.unpack_from("<12i", self.buf, FRAME_HDR)
+                out.append({
+                    "type": "path",
+                    "tick": vals[0],
+                    "kind": vals[1],
+                    "state": vals[2],
+                    "fault": vals[3],
+                    "s": round(vals[4] / Q16_ONE, 6),
+                    "t": round(vals[5] / Q16_ONE, 6),
+                    "x": round(vals[6] / Q16_ONE, 6),
+                    "z": round(vals[7] / Q16_ONE, 6),
+                    "dx": round(vals[8] / Q16_ONE, 6),
+                    "dz": round(vals[9] / Q16_ONE, 6),
+                    "speed": round(vals[10] / Q16_ONE, 6),
+                    "length": round(vals[11] / Q16_ONE, 6),
                 })
                 del self.buf[:total]
                 self.frames_ok += 1
@@ -225,6 +276,7 @@ async def main():
     clients = set()
     state = {}
     last_status = {"frame": None}
+    last_path = {"frame": None}
     link = {"writer": None}
 
     async def send_status(ws, frame):
@@ -239,6 +291,8 @@ async def main():
             # 新订阅者补最近一次完整状态，避免等下一次 8 帧扫描。
             if last_status["frame"] is not None:
                 await send_status(ws, last_status["frame"])
+            if last_path["frame"] is not None:
+                await ws.send(json.dumps(last_path["frame"]))
             # 不在连接瞬间发 F：全量 VGA 扫描会占住串口/桥接，
             # 把紧随其后的第一条 J 手动命令拖到 5 秒保持窗口之外。
             # 内核自身每 120 次扫描会补一帧全量，静态单元仍能补齐。
@@ -263,6 +317,14 @@ async def main():
                             await link["writer"].drain()
                         except Exception:
                             pass
+                elif msg.get("type") == "path":
+                    payload = pack_path(msg)
+                    if payload is not None and link["writer"]:
+                        try:
+                            link["writer"].write(payload)
+                            await link["writer"].drain()
+                        except Exception:
+                            pass
                 elif msg.get("type") == "release":
                     if link["writer"]:
                         try:
@@ -281,6 +343,18 @@ async def main():
             clients.discard(ws)
 
     async def broadcast(frame):
+        if frame["type"] == "path":
+            last_path["frame"] = frame
+            dead = []
+            for ws in list(clients):
+                try:
+                    await ws.send(json.dumps(frame))
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                clients.discard(ws)
+            return
+
         if frame["type"] == "status":
             last_status["frame"] = frame
             dead = []

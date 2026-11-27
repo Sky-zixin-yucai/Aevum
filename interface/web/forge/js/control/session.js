@@ -8,6 +8,7 @@
       manual: false,
       manualSince: 0,
       kernelStatus: null,
+      path: null,
       kernelRejected: false,
       bodyPending: false,
       bodySentAt: 0,
