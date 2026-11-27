@@ -299,10 +299,14 @@
       }
       usedIds[id] = true;
       const meshData = node.mesh != null ? readMesh(gltf, node.mesh, buffers) : null;
+      const nodeMeta = (node.extras && node.extras.aevum) || null;
       const seg = {
         id: id,
         name: node.name || id,
         parent: parentSeg,
+        role: nodeMeta && nodeMeta.role || null,
+        semanticId: nodeMeta && nodeMeta.id || null,
+        actuated: false,
         q: 0,
         target: 0,
         min: -170,
@@ -346,15 +350,41 @@
     }
     roots.forEach(function (r) { addNode(r, -1); });
 
+    const aevum = gltf.asset && gltf.asset.extras && gltf.asset.extras.aevum || null;
+    if (aevum && Array.isArray(aevum.joints) && aevum.joints.length) {
+      const byTarget = {};
+      aevum.joints.forEach(function (joint) {
+        if (!joint || !joint.target) return;
+        if (!byTarget[joint.target]) byTarget[joint.target] = [];
+        byTarget[joint.target].push(joint);
+      });
+      segments.forEach(function (seg) {
+        const joints = seg.semanticId ? byTarget[seg.semanticId] : null;
+        seg.actuated = !!(joints && joints.length);
+        if (!seg.actuated) return;
+        const joint = joints[0];
+        seg.jointType = joint.type || "";
+        seg.channel = joint.channel || "";
+        seg.jointCount = joints.length;
+        seg.continuous = !!joint.continuous;
+        seg.joint.axis = Array.isArray(joint.axis) ? joint.axis.slice(0, 3) : seg.joint.axis;
+        if (Number.isFinite(joint.min)) seg.min = joint.min * 180 / Math.PI;
+        if (Number.isFinite(joint.max)) seg.max = joint.max * 180 / Math.PI;
+      });
+    }
+
     return {
-      format: "aevum.body/1",
+      format: "glTF 2.0",
       name: name || "IMPORTED GLTF",
+      modelKind: aevum && aevum.kind || "generic",
+      aevum: aevum || null,
       base: { w: 0.01, h: 0.01, d: 0.01, mass: 0, color: [0.1, 0.1, 0.1], hidden: true },
       segments: segments,
       tool: null,
-      control: { loop_hz: 100, dt: 0.01 },
+      control: aevum && aevum.control || { loop_hz: 100, dt: 0.01 },
       source: {
         kind: "gltf",
+        format: "glTF 2.0",
         file: name || "",
         nodes: nodes.length,
         meshes: (gltf.meshes || []).length,

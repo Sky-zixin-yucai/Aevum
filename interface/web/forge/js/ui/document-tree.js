@@ -1,4 +1,4 @@
-/* Left-side BodyDocument tree. Reads state, emits selection, never touches the 3D scene. */
+/* Left-side model tree. A glTF node is a part; only nodes listed by the model become joints. */
 (function (F) {
   "use strict";
 
@@ -28,7 +28,7 @@
           empty.className = "tree-empty";
           treeEl.appendChild(empty);
         }
-        empty.textContent = "No link or joint matches “" + q + "”.";
+        empty.textContent = "No node or joint matches “" + q + "”.";
       } else if (empty) {
         empty.remove();
       }
@@ -39,12 +39,10 @@
     }
 
     function detailFor(s) {
-      if (F.model.isImported(state.doc)) {
-        return s.mesh
-          ? (s.mesh.triangles + " tris · q " + fmt(s.q * R2D, 0) + "°")
-          : ("transform · q " + fmt(s.q * R2D, 0) + "°");
-      }
-      return "L " + fmt(s.length, 2) + " m · q " + fmt(s.q * R2D, 0) + "° · " + fmt(s.torque, 0) + " N·m";
+      const tris = s.mesh ? s.mesh.triangles + " tris" : "no mesh";
+      if (!s.actuated) return "part · " + tris;
+      const kind = s.jointType === "prismatic" ? "prismatic" : s.jointType || "joint";
+      return kind + " · " + (s.channel || "-") + " · q " + fmt((s.q || 0) * R2D, 0) + "°";
     }
 
     function depthOf(index) {
@@ -57,23 +55,29 @@
       return depth;
     }
 
+    function kindLabel(doc) {
+      if (doc.modelKind === "vehicle") return "VEHICLE";
+      if (doc.modelKind === "arm") return "3R ARM";
+      return doc.modelKind === "generic" ? "GENERIC" : "MODEL";
+    }
+
     function render() {
       const doc = state.doc;
       const selected = state.selected;
+      const actuated = doc.segments.filter(function (s) { return s.actuated; }).length;
       let html = '<div class="tree-item ' + (selected.kind === "base" ? "active" : "") + '" data-kind="base" data-index="-1">'
-        + '<span class="icon">' + (F.model.isImported(doc) ? "S" : "B") + '</span>'
-        + '<span class="tag">' + (F.model.isImported(doc) ? "SCENE" : "FIXED") + '</span><div class="k">'
-        + (F.model.isImported(doc) ? "IMPORTED ROOT" : "BASE") + '</div><div class="v">'
-        + (F.model.isImported(doc)
-          ? doc.segments.length + " link · " + ((doc.meta && doc.meta.triangleCount) || 0) + " tris"
-          : "ground frame · " + fmt(doc.base.w, 2) + " × " + fmt(doc.base.d, 2) + " m")
-        + '</div></div>';
+        + '<span class="icon">S</span>'
+        + '<span class="tag">SCENE</span><div class="k">' + (doc.name || "MODEL") + '</div><div class="v">'
+        + kindLabel(doc) + ' · ' + doc.segments.length + ' nodes · ' + actuated + ' joints</div></div>';
 
       doc.segments.forEach(function (s, i) {
         const active = selected.kind === "joint" && selected.index === i;
         const depth = depthOf(i);
+        const icon = s.actuated ? "J" : "P";
+        const tag = s.actuated ? "JOINT" : "PART";
         html += '<div class="tree-item ' + (active ? "active" : "") + '" data-kind="joint" data-index="' + i + '" style="padding-left:' + (6 + depth * 14) + 'px">'
-          + '<span class="icon">J</span><span class="tag">' + s.id + '</span><div class="k">' + s.name + '</div>'
+          + '<span class="icon">' + icon + '</span><span class="tag">' + (s.semanticId || s.id) + '</span>'
+          + '<div class="k">' + (s.name || s.id) + '</div>'
           + '<div class="v" data-q="' + i + '">' + detailFor(s) + '</div></div>';
       });
 
@@ -96,32 +100,23 @@
     function updatePurpose() {
       const stat = document.getElementById("statSelection");
       if (state.selected.kind === "base") {
-        if (F.model.isImported(state.doc)) {
-          purposeEl.innerHTML = "<b>Scene / imported graph</b>导入模型的节点集合。每个节点生成一个 link；父子节点之间自动生成 joint。";
-          selIdEl.textContent = "SCENE";
-          if (stat) stat.textContent = "SCENE";
-          return;
-        }
-        purposeEl.innerHTML = "<b>Base / fixed frame</b>整机唯一固定基准，只提供世界坐标和承重，不参与驱动。";
-        selIdEl.textContent = "BASE";
-        if (stat) stat.textContent = "BASE";
+        purposeEl.innerHTML = "<b>Scene / " + kindLabel(state.doc) + "</b>glTF 场景。静态节点只呈现外观；只有模型声明的关节交给内核。";
+        selIdEl.textContent = "SCENE";
+        if (stat) stat.textContent = "SCENE";
         return;
       }
       const s = state.doc.segments[state.selected.index];
       if (!s) return;
-      if (stat) stat.textContent = s.id;
-      if (F.model.isImported(state.doc)) {
-        const compat = F.model.kernelCompatibility(state.doc);
-        purposeEl.innerHTML = "<b>" + s.id + " / imported joint</b>parent "
-          + (s.parent < 0 ? "SCENE" : "L" + s.parent) + " · axis "
-          + s.joint.axis.map(function (v) { return fmt(v, 2); }).join("/")
-          + " · <span class=\"accent\">" + (compat.ok ? "kernel compatible" : "local only") + "</span>";
-        selIdEl.textContent = s.id;
-        return;
+      if (stat) stat.textContent = s.semanticId || s.id;
+      if (s.actuated) {
+        purposeEl.innerHTML = "<b>" + (s.semanticId || s.id) + " / " + (s.jointType || "joint") + "</b>"
+          + " parent " + (s.parent < 0 ? "SCENE" : "node " + state.doc.segments[s.parent].id)
+          + " · channel " + (s.channel || "-")
+          + " · <span class=\"accent\">kernel controls</span>";
+      } else {
+        purposeEl.innerHTML = "<b>" + s.id + " / static part</b>几何与材质节点，不产生关节，不接受运动目标。";
       }
-      purposeEl.innerHTML = "<b>" + s.id + " / kinematic joint</b>" + s.name
-        + " 的关节与连杆段：负责这一节的姿态和力矩传递，不参与整机路径规划。";
-      selIdEl.textContent = s.id;
+      selIdEl.textContent = s.semanticId || s.id;
     }
 
     function updateRuntime() {

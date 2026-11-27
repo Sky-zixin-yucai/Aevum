@@ -22,7 +22,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [design/robot-control-philosophy.md](design/robot-control-philosophy.md) | 身体自描述、几何能力与参数化动作的设计哲学和工程经验 |
-| [design/toy-vehicle.md](design/toy-vehicle.md) | 车辆与 3R 机械臂的 glTF 模型、内核在环 3D 联调与硬件顺序 |
+| [design/toy-vehicle.md](design/toy-vehicle.md) | 车辆与 3R 机械臂的 glTF 模型、Forge 通用模型查看、内核在环 3D 联调与硬件顺序 |
 
 ## 目录说明
 

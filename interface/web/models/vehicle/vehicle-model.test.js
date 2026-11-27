@@ -14,10 +14,13 @@ assert.strictEqual(gltf.asset.version, "2.0");
 assert.strictEqual(gltf.asset.extras.aevum.kind, "vehicle");
 assert.strictEqual(gltf.asset.extras.aevum.placeholder, true);
 assert.strictEqual(gltf.asset.extras.aevum.coordinate_system.up, "y");
-assert.strictEqual(gltf.meshes.length, 3);
-assert.strictEqual(gltf.nodes.length, 6);
+assert.strictEqual(gltf.meshes.length, 7);
+assert.strictEqual(gltf.nodes.length, 30);
 assert.strictEqual(gltf.asset.extras.aevum.wheels.length, 4);
 assert.strictEqual(gltf.asset.extras.aevum.joints.length, 4);
+assert.ok(gltf.asset.extras.aevum.joints.every(function (j) {
+  return gltf.asset.extras.aevum.wheels.some(function (w) { return w.id === j.target; });
+}));
 assert.ok(gltf.buffers[0].uri.startsWith("data:application/octet-stream;base64,"));
 
 const bin = Buffer.from(gltf.buffers[0].uri.split(",")[1], "base64");

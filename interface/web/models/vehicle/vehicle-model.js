@@ -1,5 +1,5 @@
 /*
- * 职责唯一：只负责玩具越野车的 glTF 模型语义。
+ * 职责唯一：只负责玩具越野车的 glTF 模型语义与视觉件。
  *
  * glTF 结构由 gltf-builder.js 负责，公共 extras 语义由 model-meta.js 负责。
  * 本文件不写 buffer/accessor，也不处理机械臂。
@@ -21,9 +21,15 @@ const DIMENSIONS = {
   mass: 0.8
 };
 
-const WHEEL_COLOR = [0.11, 0.12, 0.13];
-const CHASSIS_COLOR = [0.22, 0.26, 0.20];
-const CABIN_COLOR = [0.30, 0.36, 0.28];
+const COLORS = {
+  body: [0.86, 0.34, 0.10],
+  trim: [0.055, 0.060, 0.062],
+  glass: [0.035, 0.095, 0.130],
+  cream: [0.86, 0.81, 0.68],
+  headlight: [1.00, 0.92, 0.62],
+  taillight: [0.78, 0.10, 0.07],
+  tire: [0.035, 0.035, 0.038]
+};
 
 function build() {
   const dim = Object.assign({}, DIMENSIONS);
@@ -31,9 +37,10 @@ function build() {
   const frontX = dim.wheelbase / 2;
   const rearX = -dim.wheelbase / 2;
   const wheelY = dim.wheel_radius;
-  const bodyY = dim.ground_clearance + dim.height / 2;
-  const cabinHeight = dim.height * 0.35;
-  const cabinY = dim.ground_clearance + dim.height + cabinHeight / 2;
+  const chassisY = dim.ground_clearance + 0.030;
+  const bodyY = 0.108;
+  const cabinHeight = 0.042;
+  const cabinY = 0.151;
 
   const wheels = [
     { id: "FL", node: "wheel_fl", pos: [frontX, wheelY, halfTrack], radius: dim.wheel_radius, width: dim.wheel_width },
@@ -50,32 +57,64 @@ function build() {
   ];
 
   const parts = [
-    { name: "chassis", geometry: builder.boxGeometry(), material: 0 },
-    { name: "cabin", geometry: builder.boxGeometry(), material: 1 },
-    { name: "wheel", geometry: builder.cylinderGeometry(16), material: 2 }
+    { name: "body", geometry: builder.boxGeometry(), material: 0 },
+    { name: "trim", geometry: builder.boxGeometry(), material: 1 },
+    { name: "glass", geometry: builder.boxGeometry(), material: 2 },
+    { name: "cream", geometry: builder.boxGeometry(), material: 3 },
+    { name: "headlight", geometry: builder.boxGeometry(), material: 4 },
+    { name: "taillight", geometry: builder.boxGeometry(), material: 5 },
+    { name: "wheel", geometry: builder.cylinderGeometry(18), material: 6 }
   ];
 
-  const nodes = [
-    builder.meshNode({
-      name: "chassis",
-      mesh: 0,
-      translation: [0, bodyY, 0],
-      scale: [dim.length, dim.height, dim.width],
-      extras: { aevum: { role: "chassis", id: "chassis" } }
-    }),
-    builder.meshNode({
-      name: "cabin",
-      mesh: 0,
-      translation: [-dim.length * 0.10, cabinY, 0],
-      scale: [dim.length * 0.45, cabinHeight, dim.width * 0.78],
-      extras: { aevum: { role: "cabin", id: "cabin" } }
-    })
-  ];
+  const nodes = [];
+  function box(name, mesh, translation, scale, role, id, rotation) {
+    nodes.push(builder.meshNode({
+      name: name,
+      mesh: mesh,
+      translation: translation,
+      scale: scale,
+      rotation: rotation,
+      extras: { aevum: { role: role, id: id } }
+    }));
+  }
+
+  /* Running chassis and orange body shell. */
+  box("chassis", 1, [0, chassisY, 0], [0.300, 0.060, 0.148], "chassis", "chassis");
+  box("body", 0, [0, bodyY, 0], [0.310, 0.050, 0.184], "body", "body");
+  box("hood", 0, [0.083, 0.137, 0], [0.132, 0.012, 0.176], "body", "hood");
+  box("rocker_l", 1, [0, 0.078, 0.096], [0.250, 0.028, 0.012], "part", "rocker_l");
+  box("rocker_r", 1, [0, 0.078, -0.096], [0.250, 0.028, 0.012], "part", "rocker_r");
+
+  /* Cabin, glass, cream roof, and a small roof rack. */
+  box("cabin", 0, [-0.032, cabinY, 0], [0.142, cabinHeight, 0.166], "cabin", "cabin");
+  box("windshield", 2, [0.041, 0.151, 0], [0.006, 0.040, 0.134], "glass", "windshield", [0, 0, 0.314, 0.950]);
+  box("rear_window", 2, [-0.105, 0.151, 0], [0.006, 0.036, 0.128], "glass", "rear_window", [0, 0, -0.279, 0.960]);
+  box("side_glass_l", 2, [-0.034, 0.154, 0.084], [0.094, 0.024, 0.004], "glass", "side_glass_l");
+  box("side_glass_r", 2, [-0.034, 0.154, -0.084], [0.094, 0.024, 0.004], "glass", "side_glass_r");
+  box("roof", 3, [-0.032, 0.175, 0], [0.128, 0.008, 0.144], "roof", "roof");
+  box("rack_l", 1, [-0.035, 0.181, 0.060], [0.118, 0.006, 0.010], "part", "rack_l");
+  box("rack_r", 1, [-0.035, 0.181, -0.060], [0.118, 0.006, 0.010], "part", "rack_r");
+
+  /* Bumpers, grille, lights, and side stripes. */
+  box("bumper_f", 1, [0.168, 0.080, 0], [0.026, 0.038, 0.196], "part", "bumper_f");
+  box("bumper_r", 1, [-0.168, 0.080, 0], [0.024, 0.036, 0.190], "part", "bumper_r");
+  box("grille", 1, [0.160, 0.070, 0], [0.010, 0.026, 0.104], "part", "grille");
+  box("headlight_l", 4, [0.160, 0.116, 0.063], [0.012, 0.016, 0.030], "light", "headlight_l");
+  box("headlight_r", 4, [0.160, 0.116, -0.063], [0.012, 0.016, 0.030], "light", "headlight_r");
+  box("taillight_l", 5, [-0.158, 0.116, 0.061], [0.010, 0.014, 0.026], "light", "taillight_l");
+  box("taillight_r", 5, [-0.158, 0.116, -0.061], [0.010, 0.014, 0.026], "light", "taillight_r");
+  box("stripe_l", 3, [0, 0.108, 0.094], [0.218, 0.010, 0.003], "part", "stripe_l");
+  box("stripe_r", 3, [0, 0.108, -0.094], [0.218, 0.010, 0.003], "part", "stripe_r");
+
+  /* Fender flares keep the tall tires visually attached to the body. */
+  [[frontX, 1], [frontX, -1], [rearX, 1], [rearX, -1]].forEach(function (row, i) {
+    box("fender_" + i, 1, [row[0], 0.078, row[1] * 0.102], [0.082, 0.020, 0.034], "part", "fender_" + i);
+  });
 
   wheels.forEach(function (wheel) {
     nodes.push(builder.meshNode({
       name: wheel.node,
-      mesh: 1,
+      mesh: 6,
       translation: wheel.pos,
       scale: [wheel.radius, wheel.radius, wheel.width],
       extras: { aevum: { role: "wheel", id: wheel.id } }
@@ -110,14 +149,18 @@ function build() {
   };
 
   const gltf = builder.buildModel({
-    name: "TOY OFFROAD PLACEHOLDER",
-    sceneName: "TOY OFFROAD PLACEHOLDER",
+    name: "TOY OFFROAD",
+    sceneName: "TOY OFFROAD",
     parts: parts,
     nodes: nodes,
     materials: [
-      builder.pbrMaterial("chassis", CHASSIS_COLOR, 0.8),
-      builder.pbrMaterial("cabin", CABIN_COLOR, 0.7),
-      builder.pbrMaterial("wheel", WHEEL_COLOR, 0.9)
+      builder.pbrMaterial("body_orange", COLORS.body, 0.55),
+      builder.pbrMaterial("trim_black", COLORS.trim, 0.75),
+      builder.pbrMaterial("glass_dark", COLORS.glass, 0.25),
+      builder.pbrMaterial("roof_cream", COLORS.cream, 0.65),
+      builder.pbrMaterial("headlight_warm", COLORS.headlight, 0.35),
+      builder.pbrMaterial("taillight_red", COLORS.taillight, 0.45),
+      builder.pbrMaterial("tire_black", COLORS.tire, 0.90)
     ],
     aevum: aevum
   });
@@ -156,6 +199,7 @@ function validate(gltf) {
 
 module.exports = {
   DIMENSIONS,
+  COLORS,
   build: build,
   validate: validate
 };

@@ -78,6 +78,70 @@
     return F.render.buildArmScene(doc);
   }
 
+  function linkBounds(link) {
+    if (!link.mesh) {
+      const seg = link.seg || {};
+      const c = M.translation(link.model);
+      const half = [Math.max(0.04, (seg.length || 0.1)) / 2, Math.max(0.02, (seg.width || 0.06)) / 2, Math.max(0.02, (seg.depth || 0.06)) / 2];
+      const mn = [c[0] - half[0], c[1] - half[1], c[2] - half[2]];
+      const mx = [c[0] + half[0], c[1] + half[1], c[2] + half[2]];
+      const size = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+      return {
+        min: mn,
+        max: mx,
+        center: c,
+        size: size,
+        span: Math.max(size[0], size[1], size[2])
+      };
+    }
+    const localMin = link.mesh.bounds && link.mesh.bounds.min || [-0.5, -0.5, -0.5];
+    const localMax = link.mesh && link.mesh.bounds && link.mesh.bounds.max || [0.5, 0.5, 0.5];
+    const mn = [Infinity, Infinity, Infinity];
+    const mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < 8; i++) {
+      const p = M.transformPoint(link.model, [
+        (i & 1) ? localMax[0] : localMin[0],
+        (i & 2) ? localMax[1] : localMin[1],
+        (i & 4) ? localMax[2] : localMin[2]
+      ]);
+      for (let c = 0; c < 3; c++) {
+        mn[c] = Math.min(mn[c], p[c]);
+        mx[c] = Math.max(mx[c], p[c]);
+      }
+    }
+    const size = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+    return {
+      min: mn,
+      max: mx,
+      center: [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2],
+      size: size,
+      span: Math.max(size[0], size[1], size[2])
+    };
+  }
+
+  function sceneBounds(scene) {
+    const mn = [Infinity, Infinity, Infinity];
+    const mx = [-Infinity, -Infinity, -Infinity];
+    (scene.links || []).forEach(function (link) {
+      if (!link) return;
+      const b = linkBounds(link);
+      for (let c = 0; c < 3; c++) {
+        mn[c] = Math.min(mn[c], b.min[c]);
+        mx[c] = Math.max(mx[c], b.max[c]);
+      }
+    });
+    if (!isFinite(mn[0])) return null;
+    return {
+      min: mn,
+      max: mx,
+      center: [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2],
+      size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]],
+      span: Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 0.3)
+    };
+  }
+
   F.render.buildBodyScene = buildBodyScene;
   F.render.buildScene = buildScene;
+  F.render.linkBounds = linkBounds;
+  F.render.sceneBounds = sceneBounds;
 })(window.AEVUM.FORGE);

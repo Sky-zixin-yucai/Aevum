@@ -23,6 +23,13 @@ node interface/web/models/vehicle/vehicle-model.test.js
 
 当前是占位尺寸，`placeholder: true`；不是实车测量值。
 
+## 外观
+
+- 底盘、车身、引擎盖、车顶、车窗、前后保险杠、格栅、前后灯、侧条纹、轮眉、行李架；
+- 4 个车轮是唯一关节：前轮 `steer`，后轮 `drive`；
+- 其余节点是静态 `part`，不产生关节；
+- 当前统计：30 nodes / 7 meshes / 600 triangles。
+
 ## 不做什么
 
 - 不写 buffer/accessor；

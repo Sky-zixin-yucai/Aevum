@@ -89,9 +89,17 @@
       drawBuffer(buffer, model, color);
     }
 
-    function linkColor(seg, i, selected) {
-      if (selected) return [0.78, 0.83, 0.87];
+    function linkColor(seg, i, selected, doc) {
+      if (selected) return [0.82, 0.86, 0.90];
       if (options.clay) return CLAY[i % CLAY.length];
+      if (doc && doc.modelKind === "vehicle") {
+        const v = seg.color || [0.6, 0.6, 0.6];
+        return [
+          Math.min(1, 0.06 + v[0] * 0.96),
+          Math.min(1, 0.06 + v[1] * 0.96),
+          Math.min(1, 0.06 + v[2] * 0.96)
+        ];
+      }
       /* Neutral steel keeps the arm readable without turning it into a toy. */
       const c = mute(seg.color);
       const l = c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
@@ -185,26 +193,6 @@
       }
     }
 
-    function sceneBounds(scene) {
-      const mn = [Infinity, Infinity, Infinity];
-      const mx = [-Infinity, -Infinity, -Infinity];
-      scene.links.forEach(function (l) {
-        const p = M.translation(l.model);
-        const b = l.mesh && l.mesh.bounds && l.mesh.bounds.size
-          ? l.mesh.bounds.size
-          : [Math.max(0.08, l.seg.length || 0.1), Math.max(0.04, l.seg.width || 0.06), Math.max(0.04, l.seg.depth || 0.06)];
-        for (let c = 0; c < 3; c++) {
-          mn[c] = Math.min(mn[c], p[c] - b[c] / 2);
-          mx[c] = Math.max(mx[c], p[c] + b[c] / 2);
-        }
-      });
-      if (!isFinite(mn[0])) return null;
-      return {
-        center: [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2],
-        span: Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 0.3)
-      };
-    }
-
     function drawShadow(scene, vp, native, doc) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -213,7 +201,7 @@
       if (native) {
         model = M.mul(M.trans(0, 0.004, 0), M.scale(doc.base.w * 1.2, 1, doc.base.d * 1.2));
       } else {
-        const b = sceneBounds(scene);
+        const b = F.render.sceneBounds(scene);
         if (!b) {
           gl.depthMask(true);
           gl.disable(gl.BLEND);
@@ -247,7 +235,7 @@
       for (let i = 0; i < scene.links.length; i++) {
         const l = scene.links[i];
         const sel = selected.kind === "joint" && selected.index === i;
-        drawBuffer(buffers.boxMesh, l.model, linkColor(l.seg, i, sel));
+        drawBuffer(buffers.boxMesh, l.model, linkColor(l.seg, i, sel, doc));
         if (sel) drawSelectionBox(l);
       }
 
@@ -308,15 +296,17 @@
     }
 
     function drawBody(doc, scene, selected) {
-      if (doc.base && doc.base.hidden) drawFixture(scene);
+      if (doc.base && doc.base.hidden && doc.modelKind !== "vehicle") drawFixture(scene);
       for (let i = 0; i < scene.links.length; i++) {
         const l = scene.links[i];
         const sel = selected.kind === "joint" && selected.index === i;
         if (!l.mesh) continue;
-        drawData(l.mesh, l.model, linkColor(l.seg, i, sel));
+        drawData(l.mesh, l.model, linkColor(l.seg, i, sel, doc));
         if (sel) drawSelectionBox(l);
       }
       for (let i = 0; i < scene.joints.length; i++) {
+        const link = scene.links[i];
+        if (!link || !link.seg || !link.seg.actuated) continue;
         drawJoint(scene.joints[i], jointRadius(scene, i), selected.kind === "joint" && selected.index === i, false);
       }
     }

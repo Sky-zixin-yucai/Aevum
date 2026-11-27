@@ -13,13 +13,10 @@
     const labels = opts.labels;
     const doc = function () { return state.doc; };
     const onSelect = opts.onSelect || function () {};
-    const onSave = opts.onSave || function () {};
     const onImport = opts.onImport || function () {};
     const app = $("workbench");
     const left = $("leftPanel");
     const right = $("rightPanel");
-    const menu = $("moreMenu");
-    const more = $("btnMore");
     const dock = $("dock");
     const dockBtn = $("btnDock");
 
@@ -103,6 +100,15 @@
         const d = Math.hypot(j.x - x, j.y - y);
         if (d < bestD) { bestD = d; best = j; }
       });
+      if (best) {
+        onSelect("joint", best.index);
+        return;
+      }
+      bestD = 26;
+      labels.parts().forEach(function (p) {
+        const d = Math.hypot(p.x - x, p.y - y);
+        if (d < bestD) { bestD = d; best = p; }
+      });
       if (best) onSelect("joint", best.index);
       else onSelect("base", -1);
     }
@@ -172,23 +178,6 @@
     if (dockBtn) dockBtn.onclick = toggleDock;
 
     if ($("btnImportTop")) $("btnImportTop").onclick = onImport;
-    if ($("btnSaveTop")) $("btnSaveTop").onclick = onSave;
-
-    if (more) {
-      more.onclick = function (e) {
-        e.stopPropagation();
-        const open = menu.hasAttribute("hidden");
-        if (open) menu.removeAttribute("hidden");
-        else menu.setAttribute("hidden", "");
-        more.setAttribute("aria-expanded", open ? "true" : "false");
-      };
-    }
-    document.addEventListener("pointerdown", function (e) {
-      if (!menu || menu.hasAttribute("hidden")) return;
-      if (menu.contains(e.target) || more.contains(e.target)) return;
-      menu.setAttribute("hidden", "");
-      more.setAttribute("aria-expanded", "false");
-    });
 
     window.addEventListener("keydown", function (e) {
       const tag = (e.target && e.target.tagName || "").toLowerCase();
@@ -200,10 +189,6 @@
       else if (e.key === "3") { e.preventDefault(); setView("right"); }
       else if (e.key === "7") { e.preventDefault(); setView("top"); }
       else if (e.key === "0") { e.preventDefault(); setView("home"); }
-      else if (e.key === "Escape" && menu) {
-        menu.setAttribute("hidden", "");
-        more.setAttribute("aria-expanded", "false");
-      }
     });
 
     sync();

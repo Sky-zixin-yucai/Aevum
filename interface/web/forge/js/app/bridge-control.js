@@ -57,7 +57,7 @@
       if (!compat.ok) {
         if (!state.sim.kernelRejected) {
           state.sim.kernelRejected = true;
-          toast("当前模型不接内核：" + compat.reason + "；仅本地建模/仿真");
+          toast("当前模型不接内核：" + compat.reason + "；仅模型呈现");
         }
         return;
       }
@@ -89,14 +89,12 @@
       q.forEach(function (v, i) {
         if (state.doc.segments[i]) {
           state.doc.segments[i].q = v;
-          if (!state.sim.manual && !state.sim.demoDrive) state.doc.segments[i].target = qt[i];
+          if (!state.sim.manual) state.doc.segments[i].target = qt[i];
           state.sim.q[i] = v;
           state.sim.qd[i] = dq[i];
         }
       });
       state.sim.kernel = true;
-      state.sim.running = false;
-      state.sim.sine = false;
       state.sim.kernelStatus = {
         n: n,
         q: q.slice(),
@@ -143,15 +141,13 @@
           }
         });
         state.sim.kernel = true;
-        state.sim.running = false;
-        state.sim.sine = false;
         state.sim.qHist.push(message.q.slice());
         if (state.sim.qHist.length > 360) state.sim.qHist.shift();
         if (!wasKernel) {
           setKernelPill("kernel");
           syncControls();
           onKernelState();
-          toast("Kernel q 已接入；本地 PD 已暂停");
+          toast("Kernel q 已接入；页面控制已停用");
         }
         rerenderInspector();
       }
@@ -210,8 +206,6 @@
       state.sim.manualSince = 0;
       state.sim.bodyPending = false;
       state.sim.kernelStatus = null;
-      state.sim.running = false;
-      state.sim.sine = false;
       state.sim.qHist.length = 0;
       syncControls();
       rerenderInspector();
@@ -230,7 +224,7 @@
         },
         onClose: resetLink,
         onError: function (e) {
-          toast("Bridge 不可达；本地仿真继续" + (e && e.message ? "（" + e.message + "）" : ""));
+          toast("Bridge 不可达；页面仅做模型呈现" + (e && e.message ? "（" + e.message + "）" : ""));
         },
         onMessage: applyMessage
       });

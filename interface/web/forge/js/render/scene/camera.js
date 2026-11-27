@@ -80,20 +80,13 @@
 
   function fitCamera(doc, cam, immediate) {
     const scene = F.render.buildScene(doc);
-    let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
-    scene.links.forEach(function (l) {
-      const p = F.math.translation(l.model);
-      const b = l.mesh && l.mesh.bounds && l.mesh.bounds.size
-        ? l.mesh.bounds.size
-        : [Math.max(0.08, l.seg.length || 0.1), Math.max(0.04, l.seg.width || 0.06), Math.max(0.04, l.seg.depth || 0.06)];
-      for (let c = 0; c < 3; c++) {
-        const lo = p[c] - b[c] / 2;
-        const hi = p[c] + b[c] / 2;
-        if (c === 0) { mnx = Math.min(mnx, lo); mxx = Math.max(mxx, hi); }
-        if (c === 1) { mny = Math.min(mny, lo); mxy = Math.max(mxy, hi); }
-        if (c === 2) { mnz = Math.min(mnz, lo); mxz = Math.max(mxz, hi); }
-      }
-    });
+    const bounds = F.render.sceneBounds(scene);
+    let mnx = bounds ? bounds.min[0] : Infinity;
+    let mny = bounds ? bounds.min[1] : Infinity;
+    let mnz = bounds ? bounds.min[2] : Infinity;
+    let mxx = bounds ? bounds.max[0] : -Infinity;
+    let mxy = bounds ? bounds.max[1] : -Infinity;
+    let mxz = bounds ? bounds.max[2] : -Infinity;
     const end = scene.end || [0, 0, 0];
     const tool = doc.tool;
     const tip = tool && scene.endMat

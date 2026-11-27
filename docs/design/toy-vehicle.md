@@ -4,7 +4,7 @@
 
 适用范围：玩具越野车的 3D 外观建模、模型格式、模型加载、内核在环 3D 世界联调、硬件接入与验收。
 
-本文档面向 Aevum 开源项目的维护者、贡献者和使用者，不按个人对话写。本文档是控制契约，不是实现完成证明。车辆与机械臂的 glTF 生成器、校验器、测试和占位模型已经落地；3D 页面、模型加载器、车辆控制和内核链路尚未实现。
+本文档面向 Aevum 开源项目的维护者、贡献者和使用者，不按个人对话写。本文档是控制契约，不是实现完成证明。车辆与机械臂的 glTF 生成器、校验器、测试和占位模型已经落地；Forge 已默认加载 `toy_offroad` 并做通用模型查看，车辆的内核在环控制与执行器通道尚未实现。
 
 ## 一、顺序
 
@@ -23,24 +23,22 @@
 
 ## 二、旧格式是什么关系
 
-机械臂的**源模型文件**是 glTF/GLB；Forge 的 Import 接受 `.glb`，或 `.gltf` + `.bin`。
+机械臂和车辆的**源模型文件**都是 glTF/GLB；Forge 的 Import 接受 `.glb`，或 `.gltf` + `.bin`。
 
 导入后，Forge 在内部生成 `BodyDocument`：
 
 | 文档 | 用途 | 是不是模型文件格式 |
 | --- | --- | --- |
-| `aevum.body/0` | 原生 2–8R 平面链预设 | 不是；内部工作文档 |
+| `aevum.body/0` | 原生 3R 平面链回退文档 | 不是；内部工作文档 |
 | `aevum.body/1` | glTF/GLB 导入后的 link/joint 树 | 不是；内部工作文档 |
 
 对应代码：
 
 - `interface/web/forge/js/model/body-document.js`：内部文档 schema、默认文档、校验、`body descriptor`。
-- `interface/web/forge/js/model/gltf-loader.js`：`.glb` / `.gltf` → 内部 link/joint 树。
-- `interface/web/forge/js/model/exporters.js`：内部文档导出。
+- `interface/web/forge/js/model/gltf-loader.js`：`.glb` / `.gltf` → 内部文档，保留 `asset.extras.aevum` 与节点 `actuated`。
+- `interface/web/forge/js/model/catalog.js`：已入库模型与 URL 加载。
 
-关键：**模型文件格式是 glTF 2.0；`aevum.body/0`、`aevum.body/1` 是 Forge 的内部文档，不是源模型格式。** 不要把内部文档当成模型格式，也不要把车模做成新的自定义 JSON。
-
-注意：Forge 当前 `Save` / `exportJson()` 保存的是内部 `BodyDocument`，不是源 glTF。模型的保存格式是 glTF，不沿用这条内部 JSON 作为源模型格式。
+关键：**模型文件格式是 glTF 2.0；`aevum.body/0`、`aevum.body/1` 是 Forge 的内部文档，不是源模型格式。** 页面不再提供 `Save JSON` / `Load JSON`，也不把内部 JSON 当模型交付格式。
 
 ## 三、模型格式：glTF 2.0（车辆与机械臂共用）
 
@@ -123,7 +121,7 @@
 - 加载器负责校验和转换；内核只认通用描述；
 - 批量加载、批量联调、批量记录。
 
-这是长期目标，不是当前完成度。当前有 2 个占位 glTF 模型（车辆和 3R 机械臂），3D 页面、加载器和内核适配都还没接。
+这是长期目标，不是当前完成度。当前有 2 个占位 glTF 模型（车辆和 3R 机械臂），Forge 已默认加载车辆并支持模型目录与通用导入；车辆的内核执行器通道与 3D 被控对象还没有接。
 
 ### 生成代码职责唯一
 
@@ -158,6 +156,11 @@
 - `interface/web/models/arm/arm-model.test.js`
 - `interface/web/models/arm/arm3.gltf`
 
+当前统计：
+
+- `toy_offroad.gltf`：30 nodes / 7 meshes / 600 triangles / 4 轮关节；车身、车顶、车窗、灯、保险杠、轮眉和行李架都是静态 part。
+- `arm3.gltf`：5 nodes / 5 meshes / 60 triangles / 3 关节。
+
 生成与测试：
 
 ```bash
@@ -179,6 +182,8 @@ node interface/web/models/arm/arm-model.test.js
 - **呈现**：相机、车身、车轮、地面、HUD、回放。
 
 3D 世界**不负责控制**：不自己算转向/油门，不自己决定目标，不在内核掉线时接管。
+
+当前 Forge 只完成“呈现 + 模型加载 + 内核状态桥接”这一段：默认加载 `toy_offroad.gltf`，只绘制静态模型和 4 个轮关节，不积分车辆运动，也不跑本地 PD。车辆的执行器通道映射和内核在环被控对象属于下一阶段。
 
 ### 2. 控制链
 
@@ -305,6 +310,8 @@ node interface/web/models/arm/arm-model.test.js
 - 模型文件能保存、能重新加载；
 - 车壳、车轮、轴距、轮距、轮半径、离地间隙与文档一致；
 - 模型不是代码里写死的几何；
+- Forge 默认从 `interface/web/models/vehicle/toy_offroad.gltf` 加载，树里只有 4 个轮关节，其余节点显示为 part；
+- 页面没有 `RUN / SWEEP / GRAB / SINE`、没有本地 PD，角度在未接内核时只读；
 - 静态截图标注“静态外观模型”。
 
 ### 内核在环 3D 联调验收

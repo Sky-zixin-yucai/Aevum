@@ -33,6 +33,11 @@ node interface/web/models/generate.js vehicle
 node interface/web/models/generate.js arm
 ```
 
+## 当前模型
+
+- `vehicle/toy_offroad.gltf`：30 nodes / 7 meshes / 600 triangles。车身、车顶、车窗、灯、保险杠、轮眉、行李架都是静态 part；只有 `wheel_fl/fr/rl/rr` 是关节。
+- `arm/arm3.gltf`：5 nodes / 5 meshes / 60 triangles。`link1/link2/link3` 是关节，`base/tool` 是静态 part。
+
 ## 边界
 
 - 模型文件格式是 **glTF 2.0**；模型参数在 `asset.extras.aevum`。

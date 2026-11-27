@@ -8,9 +8,9 @@
       name: "AEVUM 3R ARM",
       base: { w: 0.54, h: 0.24, d: 0.38, mass: 2.2, color: [0.15, 0.19, 0.23] },
       segments: [
-        { id: "J1", name: "SHOULDER", q: 1.05, target: 1.05, min: -170, max: 170, torque: 12, inertia: 0.035, damping: 0.05, kp: 38, kd: 9, length: 0.62, width: 0.12, depth: 0.14, mass: 1.1, color: [0.18, 0.62, 0.72] },
-        { id: "J2", name: "ELBOW", q: -1.60, target: -1.60, min: -150, max: 150, torque: 9, inertia: 0.022, damping: 0.04, kp: 32, kd: 7, length: 0.52, width: 0.10, depth: 0.12, mass: 0.8, color: [0.22, 0.50, 0.70] },
-        { id: "J3", name: "WRIST", q: 0.55, target: 0.55, min: -170, max: 170, torque: 5, inertia: 0.012, damping: 0.03, kp: 24, kd: 5, length: 0.24, width: 0.075, depth: 0.09, mass: 0.35, color: [0.70, 0.45, 0.18] }
+        { id: "J1", name: "SHOULDER", actuated: true, jointType: "revolute", q: 1.05, target: 1.05, min: -170, max: 170, torque: 12, inertia: 0.035, damping: 0.05, kp: 38, kd: 9, length: 0.62, width: 0.12, depth: 0.14, mass: 1.1, color: [0.18, 0.62, 0.72] },
+        { id: "J2", name: "ELBOW", actuated: true, jointType: "revolute", q: -1.60, target: -1.60, min: -150, max: 150, torque: 9, inertia: 0.022, damping: 0.04, kp: 32, kd: 7, length: 0.52, width: 0.10, depth: 0.12, mass: 0.8, color: [0.22, 0.50, 0.70] },
+        { id: "J3", name: "WRIST", actuated: true, jointType: "revolute", q: 0.55, target: 0.55, min: -170, max: 170, torque: 5, inertia: 0.012, damping: 0.03, kp: 24, kd: 5, length: 0.24, width: 0.075, depth: 0.09, mass: 0.35, color: [0.70, 0.45, 0.18] }
       ],
       tool: { length: 0.20, width: 0.075, depth: 0.09, grip: 0, color: [0.82, 0.55, 0.22] },
       prop: { type: "box", size: [0.12, 0.12, 0.12], pos: [1.30, 0.06, 0], color: [0.78, 0.42, 0.18] },
@@ -58,6 +58,7 @@
       seg.joint.origin = norm3(seg.joint.origin, [0, 0, 0]);
       seg.joint.axis = norm3(seg.joint.axis, [0, 0, 1]);
     }
+    if (seg.actuated === undefined) seg.actuated = true;
     return seg;
   }
 
@@ -65,7 +66,7 @@
     if (!doc || !Array.isArray(doc.segments) || !doc.segments.length) {
       throw new Error("missing segments");
     }
-    if (doc.format === "aevum.body/1") {
+    if (isImported(doc)) {
       if (!doc.control) doc.control = { loop_hz: 100, dt: 0.01 };
       if (!doc.base) {
         doc.base = { w: 0.01, h: 0.01, d: 0.01, mass: 0, color: [0.1, 0.1, 0.1], hidden: true };
@@ -78,11 +79,12 @@
     if (!doc.base || !doc.tool || !doc.control) {
       throw new Error("missing base/tool/control");
     }
+    doc.segments.forEach(normalizeSegment);
     return doc;
   }
 
   function isImported(doc) {
-    return !!doc && doc.format === "aevum.body/1";
+    return !!doc && (doc.format === "aevum.body/1" || !!(doc.source && doc.source.kind === "gltf"));
   }
 
   function segmentLength(seg) {
@@ -141,50 +143,6 @@
     };
   }
 
-  /* 演示用平面链预设；几何由宿主下发，不是内核写死的。 */
-  function presetDoc(n) {
-    n = Math.max(2, Math.min(8, Math.round(Number(n) || 3)));
-    const names = ["SHOULDER", "ELBOW", "WRIST", "J4", "J5", "J6", "J7", "J8"];
-    const palette = [
-      [0.18, 0.62, 0.72], [0.22, 0.50, 0.70], [0.70, 0.45, 0.18],
-      [0.42, 0.66, 0.40], [0.62, 0.42, 0.68], [0.72, 0.36, 0.32],
-      [0.34, 0.58, 0.52], [0.58, 0.52, 0.26]
-    ];
-    const baseLengths = [0.62, 0.52, 0.24];
-    const segs = [];
-    for (let i = 0; i < n; i++) {
-      const length = i < baseLengths.length ? baseLengths[i] : 0.28;
-      const home = i === 0 ? 0.35 : (i % 2 ? -0.45 : 0.55);
-      segs.push({
-        id: "J" + (i + 1),
-        name: names[i],
-        q: home,
-        target: home,
-        min: -170,
-        max: 170,
-        torque: Math.max(3, 12 - i * 1.2),
-        inertia: Math.max(0.006, 0.035 - i * 0.004),
-        damping: 0.05,
-        kp: Math.max(20, 38 - i * 2),
-        kd: Math.max(4, 9 - i * 0.6),
-        length: length,
-        width: Math.max(0.065, 0.12 - i * 0.007),
-        depth: Math.max(0.075, 0.14 - i * 0.008),
-        mass: Math.max(0.2, 1.1 - i * 0.11),
-        color: palette[i % palette.length]
-      });
-    }
-    return {
-      format: "aevum.body/0",
-      name: "AEVUM " + n + "R PLANAR",
-      base: { w: 0.54, h: 0.24, d: 0.38, mass: 2.2, color: [0.15, 0.19, 0.23] },
-      segments: segs,
-      tool: { length: 0.20, width: 0.075, depth: 0.09, grip: 0, color: [0.82, 0.55, 0.22] },
-      prop: { type: "box", size: [0.12, 0.12, 0.12], pos: [1.30, 0.06, 0], color: [0.78, 0.42, 0.18] },
-      control: { loop_hz: 100, dt: 0.01 }
-    };
-  }
-
   F.model = F.model || {};
   F.model.defaultDoc = defaultDoc;
   F.model.clone = clone;
@@ -193,5 +151,4 @@
   F.model.segmentLength = segmentLength;
   F.model.kernelCompatibility = kernelCompatibility;
   F.model.bodyDescriptor = bodyDescriptor;
-  F.model.presetDoc = presetDoc;
 })(window.AEVUM.FORGE);

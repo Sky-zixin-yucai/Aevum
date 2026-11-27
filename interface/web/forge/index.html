@@ -21,40 +21,27 @@
       <small>ROBOTICS WORKBENCH</small>
     </div>
   </div>
-  <div class="docbar" title="当前文档">
+  <div class="docbar" title="当前模型">
     <span class="dot"></span>
     <div>
-      <b id="docName">ARM3 / NATIVE</b>
-      <span id="docMeta">3 joints · 1.58 m reach</span>
+      <b id="docName">TOY OFFROAD</b>
+      <span id="docMeta">加载模型中…</span>
     </div>
   </div>
   <div class="top-status">
-    <span class="pill" id="modePill">LOCAL SIM</span>
+    <span class="pill" id="modePill">MODEL VIEW</span>
     <span class="pill warn" id="kernelPill">KERNEL OFFLINE</span>
   </div>
   <div class="top-actions">
-    <label class="body-picker" title="切换平面链预设；几何会作为 body descriptor 下发给内核">
-      <span>BODY</span>
-      <select id="bodyPreset" aria-label="平面链预设">
-        <option value="2">2R</option>
-        <option value="3" selected>3R</option>
-        <option value="4">4R</option>
-        <option value="5">5R</option>
-        <option value="6">6R</option>
-        <option value="7">7R</option>
-        <option value="8">8R</option>
+    <label class="body-picker" title="切换已入库模型；页面只呈现，不运行本地控制">
+      <span>MODEL</span>
+      <select id="modelPreset" aria-label="模型">
+        <option value="toy_offroad" selected>TOY OFFROAD</option>
+        <option value="arm3">3R ARM</option>
         <option value="custom" disabled>IMPORTED</option>
       </select>
     </label>
-    <button type="button" class="btn subtle" id="btnImportTop">Import</button>
-    <button type="button" class="btn subtle" id="btnSaveTop">Save</button>
-    <div class="menu-wrap">
-      <button type="button" class="btn subtle btn-icon" id="btnMore" aria-label="更多操作" aria-expanded="false">···</button>
-      <div class="menu" id="moreMenu" hidden>
-        <button type="button" id="btnSine">Sine test</button>
-        <div class="menu-note">Sine 是本地调试激励；Kernel 接管后会停用。</div>
-      </div>
-    </div>
+    <button type="button" class="btn subtle" id="btnImportTop">Import glTF</button>
   </div>
 </header>
 
@@ -78,8 +65,8 @@
 
     <div class="viewport-top">
       <div class="hud">
-        <div class="big" id="hudTitle">ARM3 / KINEMATIC BENCH</div>
-        <div class="sub">own renderer · 3R chain · 100 Hz control seam</div>
+        <div class="big" id="hudTitle">TOY OFFROAD / MODEL VIEW</div>
+        <div class="sub">glTF 2.0 · vehicle placeholder · kernel external</div>
       </div>
       <div class="viewcube" id="viewCube" aria-label="视图方向">
         <button type="button" class="face vc-top" data-view="top" title="顶视图">TOP</button>
@@ -106,13 +93,6 @@
 
     <button type="button" class="panel-restore" id="btnShowLeft" title="展开结构面板">OUTLINER</button>
     <button type="button" class="panel-restore" id="btnShowRight" title="展开属性面板">INSPECTOR</button>
-
-    <div class="transport" aria-label="运动控制">
-      <button type="button" class="btn primary" id="btnRun">RUN</button>
-      <button type="button" class="btn subtle" id="btnSweep">SWEEP</button>
-      <button type="button" class="btn subtle" id="btnGrab">GRAB</button>
-      <button type="button" class="btn subtle" id="btnReset">Reset</button>
-    </div>
 
     <div class="axis-triad" aria-hidden="true">
       <svg viewBox="0 0 80 80">
@@ -143,17 +123,17 @@
 
 <footer class="dock" id="dock">
   <div class="dock-head">
-    <div class="dock-label"><span class="eyebrow">Motion</span><span class="dock-title">Telemetry</span></div>
-    <div class="dock-meta" id="dockMeta">100 Hz · local PD</div>
+    <div class="dock-label"><span class="eyebrow">Model</span><span class="dock-title">Telemetry</span></div>
+    <div class="dock-meta" id="dockMeta">glTF 2.0 · model view</div>
     <button type="button" class="btn ghost" id="btnDock">Expand</button>
   </div>
   <div class="dock-body">
-    <div class="metric primary"><div class="m">Control</div><div class="v" id="mLoop">100 Hz</div><div class="s" id="mMode">local PD · paused</div></div>
-    <div class="metric"><div class="m">Tracking error</div><div class="v" id="mRms">0.0°</div><div class="s">target vs actual</div></div>
-    <div class="metric"><div class="m">Sim time</div><div class="v" id="mTime">0.00</div><div class="s">seconds</div></div>
-    <div class="metric optional"><div class="m">Peak error</div><div class="v" id="mPeak">0.0°</div><div class="s">last 3 seconds</div></div>
-    <div class="metric optional"><div class="m">Torque</div><div class="v" id="mTorque">0.0</div><div class="s">N·m / all joints</div></div>
-    <div class="metric optional"><div class="m">Packet loss</div><div class="v" id="mLoss">0</div><div class="s">virtual bus</div></div>
+    <div class="metric primary"><div class="m">Kernel link</div><div class="v" id="mLoop">OFFLINE</div><div class="s" id="mMode">page does not run control</div></div>
+    <div class="metric"><div class="m">Nodes</div><div class="v" id="mRms">--</div><div class="s">glTF scene</div></div>
+    <div class="metric"><div class="m">Joints</div><div class="v" id="mPeak">--</div><div class="s">semantic</div></div>
+    <div class="metric optional"><div class="m">Triangles</div><div class="v" id="mTorque">--</div><div class="s">mesh faces</div></div>
+    <div class="metric optional"><div class="m">Meshes</div><div class="v" id="mLoss">--</div><div class="s">glTF mesh</div></div>
+    <div class="metric optional"><div class="m">Kind</div><div class="v" id="mTime">--</div><div class="s">asset kind</div></div>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
 </footer>
@@ -165,43 +145,40 @@
   <span class="sep"></span>
   <span id="statSelection">J1</span>
   <span class="sep"></span>
-  <span id="statUnits">METERS · DEG</span>
+  <span id="statUnits">METERS · glTF 2.0</span>
   <span class="right">Drag to orbit · MMB pan · Wheel zoom · F frame</span>
 </div>
 
 <div id="toast"></div>
-<input type="file" id="fileDoc" accept=".json,application/json" hidden>
 <input type="file" id="fileModel" accept=".glb,.gltf,.bin,model/gltf-binary,model/gltf+json" multiple hidden>
 
 <script src="js/core/namespace.js"></script>
 <script src="js/core/math.js"></script>
 <script src="js/core/dom.js"></script>
-<script src="js/model/body-document.js?v=26"></script>
-<script src="js/model/gltf-loader.js"></script>
-<script src="js/model/exporters.js"></script>
-<script src="js/control/pd-loop.js"></script>
-<script src="js/control/demo-motion.js?v=26"></script>
-<script src="js/control/telemetry.js"></script>
+<script src="js/model/body-document.js?v=32"></script>
+<script src="js/model/gltf-loader.js?v=32"></script>
+<script src="js/model/catalog.js?v=32"></script>
+<script src="js/control/session.js?v=32"></script>
 <script src="js/render/gl/shaders.js"></script>
 <script src="js/render/gl/meshes.js"></script>
 <script src="js/render/gl/context.js"></script>
 <script src="js/render/gl/buffers.js"></script>
-<script src="js/render/scene/camera.js?v=26"></script>
+<script src="js/render/scene/camera.js?v=32"></script>
 <script src="js/render/scene/arm-scene.js"></script>
-<script src="js/render/scene/body-scene.js"></script>
-<script src="js/render/scene/joint-labels.js"></script>
-<script src="js/render/viewport/renderer.js?v=26"></script>
+<script src="js/render/scene/body-scene.js?v=32"></script>
+<script src="js/render/scene/joint-labels.js?v=32"></script>
+<script src="js/render/viewport/renderer.js?v=32"></script>
 <script src="js/ui/toast.js"></script>
-<script src="js/ui/document-tree.js"></script>
-<script src="js/ui/inspector.js?v=26"></script>
-<script src="js/ui/controls.js?v=26"></script>
-<script src="js/ui/telemetry-panel.js"></script>
+<script src="js/ui/document-tree.js?v=32"></script>
+<script src="js/ui/inspector.js?v=32"></script>
+<script src="js/ui/status.js?v=32"></script>
+<script src="js/ui/telemetry-panel.js?v=32"></script>
 <script src="js/bridge/websocket.js"></script>
-<script src="js/app/bridge-control.js?v=26"></script>
-<script src="js/app/workbench.js"></script>
-<script src="js/app/api-handlers.js?v=26"></script>
-<script src="js/app/frame-loop.js?v=26"></script>
-<script src="api.js?v=26"></script>
-<script src="app.js?v=26"></script>
+<script src="js/app/bridge-control.js?v=32"></script>
+<script src="js/app/workbench.js?v=32"></script>
+<script src="js/app/api-handlers.js?v=32"></script>
+<script src="js/app/frame-loop.js?v=32"></script>
+<script src="api.js?v=32"></script>
+<script src="app.js?v=32"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-/* Public API surface. Only commands and snapshots; no renderer or DOM implementation. */
+/* Public API surface. Commands and snapshots only; no renderer or DOM implementation. */
 (function (F) {
   "use strict";
 
@@ -11,8 +11,9 @@
   }
 
   const api = {
-    version: "0.1.0",
-    body: "3R",
+    version: "0.2.0",
+    model: "glTF 2.0",
+    viewOnly: true,
     bind: function (h) {
       handlers = h;
       return api;
@@ -23,18 +24,8 @@
     setTarget: function (index, degrees) { return requireHandlers().setTarget(index, degrees); },
     setTargets: function (degrees) { return requireHandlers().setTargets(degrees); },
     setManual: function (on) { return requireHandlers().setManual(on); },
-    sweep: function (on) { return requireHandlers().sweep(on); },
-    grab: function () { return requireHandlers().grab(); },
-    releaseGrip: function () { return requireHandlers().releaseGrip(); },
     importModel: function (name, buffer) { return requireHandlers().importModel(name, buffer); },
-    run: function () { return requireHandlers().run(); },
-    pause: function () { return requireHandlers().pause(); },
-    reset: function () { return requireHandlers().reset(); },
-    sine: function (on) { return requireHandlers().sine(on); },
     getTelemetry: function () { return requireHandlers().getTelemetry(); },
-    exportJson: function () { return requireHandlers().exportJson(); },
-    exportXml: function () { return requireHandlers().exportXml(); },
-    exportManifest: function () { return requireHandlers().exportManifest(); },
     connect: function (url) { return requireHandlers().connect(url); },
     disconnect: function () { return requireHandlers().disconnect(); },
     subscribe: function (fn) {

@@ -1,4 +1,4 @@
-/* Footer telemetry + error chart. Read-only view of state. */
+/* Footer telemetry: model stats by default, kernel 0x03 state when the kernel is in the loop. */
 (function (F) {
   "use strict";
 
@@ -18,16 +18,13 @@
       }
     }
 
-    function drawChart() {
-      resize();
-      const w = chart.width;
-      const h = chart.height;
-      const dpr = Math.max(1, w / Math.max(1, chart.clientWidth || 1));
-      const fs = Math.round(12 * dpr);
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = "#0d1115";
-      ctx.fillRect(0, 0, w, h);
+    function label(id, text) {
+      const el = F.dom.$(id);
+      const m = el && el.parentElement && el.parentElement.querySelector(".m");
+      if (m) m.textContent = text;
+    }
 
+    function drawGrid(w, h) {
       ctx.strokeStyle = "#1b242b";
       ctx.lineWidth = 1;
       for (let i = 1; i < 4; i++) {
@@ -40,7 +37,18 @@
         ctx.lineTo(x, h);
         ctx.stroke();
       }
+    }
 
+    function drawChart() {
+      resize();
+      const w = chart.width;
+      const h = chart.height;
+      const dpr = Math.max(1, w / Math.max(1, chart.clientWidth || 1));
+      const fs = Math.round(12 * dpr);
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#0d1115";
+      ctx.fillRect(0, 0, w, h);
+      drawGrid(w, h);
       ctx.fillStyle = "#66737e";
       ctx.font = fs + "px Cascadia Mono, Consolas";
       ctx.textBaseline = "top";
@@ -50,27 +58,12 @@
         return;
       }
 
-      const data = state.sim.errHist;
-      if (data.length > 1) {
-        ctx.strokeStyle = "#5b9dff";
-        ctx.lineWidth = Math.max(1.2, 1.4 * dpr);
-        ctx.beginPath();
-        data.forEach(function (v, i) {
-          const x = i / (data.length - 1) * w;
-          const y = h - F.math.clamp(v, 0, 40) / 40 * h;
-          if (i) ctx.lineTo(x, y);
-          else ctx.moveTo(x, y);
-        });
-        ctx.stroke();
-      } else {
-        ctx.fillStyle = "#52606b";
-        ctx.textAlign = "center";
-        ctx.fillText("RUN to stream joint tracking error", w / 2, h / 2 - fs / 2);
-        ctx.textAlign = "left";
-      }
-
+      ctx.fillStyle = "#52606b";
+      ctx.textAlign = "center";
+      ctx.fillText("MODEL VIEW · NO CONTROL STREAM", w / 2, h / 2 - fs / 2);
+      ctx.textAlign = "left";
       ctx.fillStyle = "#66737e";
-      ctx.fillText("JOINT ERROR / 40° FULL SCALE", Math.round(10 * dpr), Math.round(8 * dpr));
+      ctx.fillText("GLTF NODES / STATIC PREVIEW", Math.round(10 * dpr), Math.round(8 * dpr));
     }
 
     function drawKernelChart(w, h, fs) {
@@ -109,11 +102,18 @@
       if (dockMeta) {
         dockMeta.textContent = kernel
           ? "KERNEL 0x03 · " + (state.sim.kernelStatus && state.sim.kernelStatus.mode === 1 ? "manual hold" : "auto")
-          : (state.sim.running ? "100 Hz · local PD" : "local PD · paused");
+          : "glTF 2.0 · " + (state.bridge.online ? "bridge online · wait 0x03" : "model view");
       }
+
       if (kernel) {
         const st = state.sim.kernelStatus || {};
-        F.dom.$("mLoop").textContent = "KERNEL 0x03";
+        label("mLoop", "Kernel link");
+        label("mRms", "Err");
+        label("mPeak", "Manip");
+        label("mTorque", "Sigma");
+        label("mLoss", "Null");
+        label("mTime", "Limit");
+        F.dom.$("mLoop").textContent = "0x03";
         F.dom.$("mMode").textContent = st.mode === 1 ? "manual hold" : "auto fallback";
         F.dom.$("mRms").textContent = st.errMm == null ? "N/A" : F.math.fmt(st.errMm, 2) + " mm";
         F.dom.$("mPeak").textContent = st.wManip == null ? "N/A" : F.math.fmt(st.wManip, 4);
@@ -130,8 +130,8 @@
           kernel: true,
           manual: !!state.sim.manual,
           q: state.sim.q.slice(),
-          dq: (st.dq || [0, 0, 0]).slice(),
-          qTarget: (st.qTarget || [0, 0, 0]).slice(),
+          dq: (st.dq || []).slice(),
+          qTarget: (st.qTarget || []).slice(),
           target: (st.target || [0, 0]).slice(),
           errMm: st.errMm,
           wManip: st.wManip,
@@ -139,32 +139,44 @@
           sigmaMax: st.sigmaMax,
           nullShare: st.nullShare,
           limitMargin: st.limitMargin,
-          mode: st.mode,
-          rms: null,
-          peak: null,
-          torque: null,
-          loss: 0
+          mode: st.mode
         });
         return;
       }
 
       const doc = state.doc;
-      const metrics = F.control.metrics(doc, state.sim);
-
-      F.dom.$("mLoop").textContent = state.sim.running ? "100 Hz" : "PAUSED";
-      F.dom.$("mMode").textContent = state.bridge.online ? "bridge live" : (state.sim.sine ? "sine injection" : "local PD");
-      F.dom.$("mRms").textContent = F.math.fmt(metrics.rms, 1) + "°";
-      F.dom.$("mPeak").textContent = F.math.fmt(metrics.peak, 1) + "°";
-      F.dom.$("mTorque").textContent = F.math.fmt(metrics.torque, 1);
-      F.dom.$("mLoss").textContent = "0";
-      F.dom.$("mTime").textContent = F.math.fmt(state.sim.time, 2);
-      F.dom.$("mRms").nextElementSibling.textContent = "target vs actual";
-      F.dom.$("mPeak").nextElementSibling.textContent = "last 3 seconds";
-      F.dom.$("mTorque").nextElementSibling.textContent = "N·m / all joints";
-      F.dom.$("mTime").nextElementSibling.textContent = "seconds";
+      const meta = doc.meta || {};
+      const nodes = doc.source && doc.source.nodes || doc.segments.length;
+      const joints = doc.segments.filter(function (s) { return s.actuated; }).length;
+      label("mLoop", "Kernel link");
+      label("mRms", "Nodes");
+      label("mPeak", "Joints");
+      label("mTorque", "Triangles");
+      label("mLoss", "Meshes");
+      label("mTime", "Kind");
+      F.dom.$("mLoop").textContent = state.bridge.online ? "BRIDGE WAIT" : "OFFLINE";
+      F.dom.$("mMode").textContent = state.bridge.online ? "kernel did not send 0x03" : "page does not run control";
+      F.dom.$("mRms").textContent = String(nodes);
+      F.dom.$("mPeak").textContent = String(joints);
+      F.dom.$("mTorque").textContent = String(meta.triangleCount || 0);
+      F.dom.$("mLoss").textContent = String(doc.source && doc.source.meshes || 0);
+      F.dom.$("mTime").textContent = doc.modelKind || (F.model.isImported(doc) ? "generic" : "arm");
+      F.dom.$("mRms").nextElementSibling.textContent = "glTF scene";
+      F.dom.$("mPeak").nextElementSibling.textContent = "semantic joints";
+      F.dom.$("mTorque").nextElementSibling.textContent = "mesh faces";
+      F.dom.$("mLoss").nextElementSibling.textContent = "glTF mesh";
+      F.dom.$("mTime").nextElementSibling.textContent = "asset kind";
 
       drawChart();
-      onMetrics(metrics);
+      onMetrics({
+        kernel: false,
+        manual: false,
+        nodes: nodes,
+        joints: joints,
+        triangles: meta.triangleCount || 0,
+        meshes: doc.source && doc.source.meshes || 0,
+        kind: doc.modelKind || "generic"
+      });
     }
 
     return { update: update, resize: resize, drawChart: drawChart };
