@@ -26,9 +26,10 @@ node interface/web/models/vehicle/vehicle-model.test.js
 ## 外观
 
 - 底盘、车身、引擎盖、车顶、车窗、前后保险杠、格栅、前后灯、侧条纹、轮眉、行李架；
-- 4 个车轮是唯一关节：前轮 `steer`，后轮 `drive`；
+- 前轮是“转向枢轴 + 轮胎”两级：`wheel_fl/fr` 只做 `steer`，子节点 `tire_fl/fr` 做 `drive`；后轮 `wheel_rl/rr` 直接做 `drive`；
+- 每个车轮都有独立轮毂 `hub_*`，作为轮胎子节点随转向和滚动一起运动；
 - 其余节点是静态 `part`，不产生关节；
-- 当前统计：30 nodes / 7 meshes / 600 triangles。
+- 当前统计：36 nodes / 8 meshes / 792 triangles / 6 关节。
 
 ## 不做什么
 

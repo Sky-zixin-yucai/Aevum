@@ -35,7 +35,7 @@ node interface/web/models/generate.js arm
 
 ## 当前模型
 
-- `vehicle/toy_offroad.gltf`：30 nodes / 7 meshes / 600 triangles。车身、车顶、车窗、灯、保险杠、轮眉、行李架都是静态 part；只有 `wheel_fl/fr/rl/rr` 是关节。
+- `vehicle/toy_offroad.gltf`：36 nodes / 8 meshes / 792 triangles / 6 关节。车身、车顶、车窗、灯、保险杠、轮眉、行李架都是静态 part；前轮是 `steer` 枢轴加 `drive` 轮胎，后轮直接 `drive`，四个轮毂跟随轮胎。
 - `arm/arm3.gltf`：5 nodes / 5 meshes / 60 triangles。`link1/link2/link3` 是关节，`base/tool` 是静态 part。
 
 ## 边界

@@ -39,12 +39,12 @@ python -m http.server 8080
 
 | key | 文件 | 内容 |
 | --- | --- | --- |
-| `toy_offroad` | `interface/web/models/vehicle/toy_offroad.gltf` | 30 nodes / 7 meshes / 600 tris / 4 轮关节 |
+| `toy_offroad` | `interface/web/models/vehicle/toy_offroad.gltf` | 36 nodes / 8 meshes / 792 tris / 6 关节（前轮转向+滚动） |
 | `arm3` | `interface/web/models/arm/arm3.gltf` | 5 nodes / 5 meshes / 60 tris / 3 关节 |
 
-车辆参数（`asset.extras.aevum`）：车长 0.32、车宽 0.18、车高 0.10、轴距 0.22、轮距 0.18、离地间隙 0.03、轮半径 0.04、轮宽 0.025、质量 0.8。前轮 `steer`，后轮 `drive`，控制周期 100 Hz。
+车辆参数（`asset.extras.aevum`）：车长 0.32、车宽 0.18、车高 0.10、轴距 0.22、轮距 0.18、离地间隙 0.03、轮半径 0.04、轮宽 0.025、质量 0.8。前轮 `steer` + `drive` 两级，后轮 `drive`，四个轮毂随轮胎运动，控制周期 100 Hz。
 
-外观件全部在 `vehicle-model.js` 里生成：车身、车顶、车窗、保险杠、格栅、前后灯、侧条纹、轮眉、车顶行李架。改外观不改加载器和页面。
+外观件全部在 `vehicle-model.js` 里生成：车身、车顶、车窗、保险杠、格栅、前后灯、侧条纹、轮眉、车顶行李架和四个轮毂。改外观不改加载器和页面。
 
 生成与测试：
 

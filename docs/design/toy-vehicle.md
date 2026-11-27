@@ -62,7 +62,7 @@
 车辆参数至少包括：
 
 - `chassis`：车长、车宽、车高、轴距、轮距、离地间隙、质量；
-- `wheels`：轮子 id、node 名、位置、半径、宽度；转向/驱动只由 `joints` 表达，不再在轮子上重复标记；
+- `wheels`：轮子 id、转向 node、滚动 tire node、位置、半径、宽度；转向/驱动只由 `joints` 表达，不在轮子上重复标记。前轮的 `node` 是 steer 枢轴，`tire` 是它的滚动子节点；后轮两者同为轮节点；
 - `joints`：转向/滚动关节、轴、限位、通道；
 - `control`：100 Hz、dt、通道、限位、超时；
 - `sensors`：有没有轮速/转向反馈。
@@ -158,7 +158,7 @@
 
 当前统计：
 
-- `toy_offroad.gltf`：30 nodes / 7 meshes / 600 triangles / 4 轮关节；车身、车顶、车窗、灯、保险杠、轮眉和行李架都是静态 part。
+- `toy_offroad.gltf`：36 nodes / 8 meshes / 792 triangles / 6 关节；车身、车顶、车窗、灯、保险杠、轮眉和行李架都是静态 part。前轮是 `steer` 枢轴 + `drive` 轮胎两级，后轮直接 `drive`，四个轮毂跟随轮胎。
 - `arm3.gltf`：5 nodes / 5 meshes / 60 triangles / 3 关节。
 
 生成与测试：
@@ -183,7 +183,7 @@ node interface/web/models/arm/arm-model.test.js
 
 3D 世界**不负责控制**：不自己算转向/油门，不自己决定目标，不在内核掉线时接管。
 
-当前 Forge 只完成“呈现 + 模型加载 + 内核状态桥接”这一段：默认加载 `toy_offroad.gltf`，只绘制静态模型和 4 个轮关节，不积分车辆运动，也不跑本地 PD。车辆的执行器通道映射和内核在环被控对象属于下一阶段。
+当前 Forge 只完成“呈现 + 模型加载 + 内核状态桥接”这一段：默认加载 `toy_offroad.gltf`，只绘制静态模型和 6 个轮关节（前轮转向 + 四轮滚动），不积分车辆运动，也不跑本地 PD。车辆的执行器通道映射和内核在环被控对象属于下一阶段。
 
 ### 2. 控制链
 
@@ -310,7 +310,7 @@ node interface/web/models/arm/arm-model.test.js
 - 模型文件能保存、能重新加载；
 - 车壳、车轮、轴距、轮距、轮半径、离地间隙与文档一致；
 - 模型不是代码里写死的几何；
-- Forge 默认从 `interface/web/models/vehicle/toy_offroad.gltf` 加载，树里只有 4 个轮关节，其余节点显示为 part；
+- Forge 默认从 `interface/web/models/vehicle/toy_offroad.gltf` 加载，树里前轮是“转向枢轴 → 滚动轮胎 → 轮毂”，后轮是“滚动轮 → 轮毂”，共 6 个关节，其余节点显示为 part；
 - 页面没有 `RUN / SWEEP / GRAB / SINE`、没有本地 PD，角度在未接内核时只读；
 - 静态截图标注“静态外观模型”。
 

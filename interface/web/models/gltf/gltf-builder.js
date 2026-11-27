@@ -111,7 +111,8 @@ function pbrMaterial(name, color, roughness) {
 }
 
 function meshNode(spec) {
-  const node = { name: spec.name, mesh: spec.mesh };
+  const node = { name: spec.name };
+  if (spec.mesh != null) node.mesh = spec.mesh;
   if (spec.translation) node.translation = spec.translation;
   if (spec.rotation) node.rotation = spec.rotation;
   if (spec.scale) node.scale = spec.scale;
@@ -226,7 +227,9 @@ function buildModel(input) {
     scene: 0,
     scenes: [{
       name: input.sceneName || input.name,
-      nodes: input.nodes.map(function (_, index) { return index; })
+      nodes: Array.isArray(input.roots)
+        ? input.roots.slice()
+        : input.nodes.map(function (_, index) { return index; })
     }],
     nodes: input.nodes,
     meshes: built.meshes,

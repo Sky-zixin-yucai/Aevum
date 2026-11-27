@@ -13,6 +13,8 @@
       for (let i = 0; i < doc.segments.length; i++) {
         const seg = doc.segments[i];
         if (!seg.actuated) continue;
+        const parent = seg.parent >= 0 ? doc.segments[seg.parent] : null;
+        if (parent && parent.jointType === "steer" && seg.jointType === "spin") continue;
         const d = document.createElement("div");
         d.className = "joint-label";
         d.innerHTML = '<span class="id">' + (seg.semanticId || seg.id) + '</span><span class="val"></span>';
