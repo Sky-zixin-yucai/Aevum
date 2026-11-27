@@ -101,6 +101,10 @@
         }
       }
       ctx.fillStyle = "#66737e";
+      if (state.doc && state.doc.modelKind === "vehicle") {
+        ctx.fillText("KERNEL 0x03 / VEHICLE LINK", Math.round(10 * (fs / 12)), Math.round(8 * (fs / 12)));
+        return;
+      }
       ctx.fillText(state.sim.manual ? "KERNEL q / MANUAL HOLD · DEG" : "KERNEL q / AUTO · DEG", Math.round(10 * (fs / 12)), Math.round(8 * (fs / 12)));
       for (let j = 0; j < n; j++) {
         ctx.fillStyle = colors[j % colors.length];
@@ -115,6 +119,8 @@
       const kernel = !!state.sim.kernel;
       const path = state.sim.path;
       if (path) {
+        const dock = F.dom.$("dockMeta");
+        if (dock) dock.textContent = "KERNEL 0x05 · path";
         label("mLoop", "Loop");
         label("mRms", "Arc s");
         label("mPeak", "Param t");
@@ -141,9 +147,35 @@
 
       const dockMeta = F.dom.$("dockMeta");
       if (dockMeta) {
+        const vehicle = state.doc && state.doc.modelKind === "vehicle";
         dockMeta.textContent = kernel
-          ? "KERNEL 0x03 · " + (state.sim.kernelStatus && state.sim.kernelStatus.mode === 1 ? "manual hold" : "auto")
+          ? "KERNEL 0x03 · " + (vehicle ? "vehicle link" : (state.sim.kernelStatus && state.sim.kernelStatus.mode === 1 ? "manual hold" : "auto"))
           : "glTF 2.0 · " + (state.bridge.online ? "bridge online · wait 0x03" : "model view");
+      }
+
+      if (kernel && state.doc && state.doc.modelKind === "vehicle") {
+        const joints = state.doc.segments.filter(function (s) { return s.actuated; }).length;
+        label("mLoop", "Kernel link");
+        label("mRms", "Pose stream");
+        label("mPeak", "Joints");
+        label("mTorque", "Path");
+        label("mLoss", "Position");
+        label("mTime", "State");
+        F.dom.$("mLoop").textContent = "0x03";
+        F.dom.$("mMode").textContent = "vehicle linked";
+        F.dom.$("mRms").textContent = "0x05";
+        F.dom.$("mPeak").textContent = joints;
+        F.dom.$("mTorque").textContent = "--";
+        F.dom.$("mLoss").textContent = "--";
+        F.dom.$("mTime").textContent = "wait path";
+        F.dom.$("mRms").nextElementSibling.textContent = "pose from path frames";
+        F.dom.$("mPeak").nextElementSibling.textContent = "actuated joints";
+        F.dom.$("mTorque").nextElementSibling.textContent = "geometry path";
+        F.dom.$("mLoss").nextElementSibling.textContent = "from 0x05";
+        F.dom.$("mTime").nextElementSibling.textContent = "path state";
+        drawChart();
+        onMetrics({ kernel: true, vehicle: true });
+        return;
       }
 
       if (kernel) {

@@ -151,6 +151,8 @@
     }
 
     function bodyPacket() {
+      /* 车辆是 0x05 几何路径对象，不走机械臂 2–8 段 body descriptor。 */
+      if (state.doc && state.doc.modelKind === "vehicle") return null;
       const compat = F.model.kernelCompatibility(state.doc);
       if (!compat.ok) return null;
       const body = F.model.bodyDescriptor(state.doc);
@@ -165,7 +167,57 @@
       return F.bridge.send(state.bridge, packet, true);
     }
 
+    /*
+     * 车辆不是 2–8 段平面链：0x03 只作为“内核在线”证据，
+     * 位姿、曲率和轮角全部由 0x05 路径帧给出，不能把 q 按节点下标写回 36 个 glTF 节点。
+     */
+    function applyVehicleStatus(message) {
+      const values = message.values || {};
+      const n = Number(message.n) || 0;
+      const q = Array.isArray(message.q) ? message.q.slice(0, n) : [];
+      const dq = Array.isArray(message.dq) ? message.dq.slice(0, n) : q.map(function () { return 0; });
+      const qt = Array.isArray(message.qTarget) ? message.qTarget.slice(0, n) : q.slice();
+      const wasKernel = state.sim.kernel;
+      const wasMode = state.sim.kernelStatus ? state.sim.kernelStatus.mode : -1;
+      const mode = Number(values.mode) || 0;
+
+      state.sim.kernelRejected = false;
+      state.sim.bodyPending = false;
+      state.sim.kernel = true;
+      state.sim.kernelStatus = {
+        n: n,
+        q: q,
+        dq: dq,
+        qTarget: qt,
+        target: [q16(values.tx), q16(values.ty)],
+        errMm: q16(values.err_mm),
+        wManip: q16(values.w_manip),
+        sigmaMin: q16(values.sigma_min),
+        sigmaMax: q16(values.sigma_max),
+        nullShare: q16(values.null_share),
+        limitMargin: q16(values.limit_margin),
+        mode: mode,
+        nullOn: Number(values.null_on) || 0,
+        at: performance.now()
+      };
+
+      if (!wasKernel) {
+        setKernelPill("kernel");
+        toast("Kernel 0x03 已接入；车辆位姿由 0x05 路径帧驱动");
+      }
+      syncControls();
+      if (!wasKernel || wasMode !== mode) {
+        rerenderInspector();
+        onKernelState();
+      }
+      updateKernelStatus();
+    }
+
     function applyStatus(message) {
+      if (state.doc && state.doc.modelKind === "vehicle") {
+        applyVehicleStatus(message);
+        return;
+      }
       const compat = F.model.kernelCompatibility(state.doc);
       if (!compat.ok) {
         if (!state.sim.kernelRejected) {

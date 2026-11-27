@@ -20,6 +20,15 @@
       return "GENERIC";
     }
 
+    function kernelCompat(doc) {
+      if (doc && doc.modelKind === "vehicle") {
+        return { ok: true, vehicle: true, reason: "vehicle · 0x05 path" };
+      }
+      return F.model.isImported(doc)
+        ? F.model.kernelCompatibility(doc)
+        : { ok: true, reason: "native 3R chain" };
+    }
+
     function render() {
       if (state.selected.kind === "base") renderScene();
       else renderNode();
@@ -31,7 +40,7 @@
       const source = doc.source || {};
       const aevum = doc.aevum || {};
       const joints = doc.segments.filter(function (s) { return s.actuated; }).length;
-      const compat = F.model.isImported(doc) ? F.model.kernelCompatibility(doc) : { ok: true, reason: "native 3R chain" };
+      const compat = kernelCompat(doc);
       let html = '<div class="group"><div class="gtitle">MODEL / ' + esc(kindName(doc)) + '</div>'
         + row("NAME", esc(doc.name || "-"))
         + row("NODES", doc.segments.length)
@@ -49,8 +58,10 @@
         + '<div class="note">节点是几何；只有 joints[].target 指向的节点被标为 actuated。页面不积分、不跑 PD。</div>'
         + '</details>'
         + '<div class="group"><div class="gtitle">KERNEL HANDOFF</div>'
-        + row("COMPAT", compat.ok ? "COMPATIBLE" : "MODEL VIEW")
-        + '<div class="note">' + esc(compat.ok ? "可以把 body descriptor 交给内核，q 只从 0x03 状态帧读取。" : compat.reason) + '</div>'
+        + row("COMPAT", compat.vehicle ? "VEHICLE PATH" : (compat.ok ? "COMPATIBLE" : "MODEL VIEW"))
+        + '<div class="note">' + esc(compat.vehicle
+          ? "车辆走 0x05 路径帧；0x03 只证明内核在线，不发送 2–8 段 body descriptor。"
+          : (compat.ok ? "可以把 body descriptor 交给内核，q 只从 0x03 状态帧读取。" : compat.reason)) + '</div>'
         + '</div>'
         + documentActions()
         + bridgeGroup()
@@ -176,7 +187,15 @@
     }
 
     function kernelStatusMarkup() {
-      return state.sim.kernel ? (
+      if (!state.sim.kernel) return "";
+      if (state.doc && state.doc.modelKind === "vehicle") {
+        return '<div class="group"><div class="gtitle">Kernel status <span class="meta">0x03</span></div>'
+          + row("LINK", "KERNEL ONLINE")
+          + row("POSE STREAM", "0x05 PATH")
+          + '<div class="note">车辆没有 2–8 段 body q；位姿、切向、曲率与轮角只从 0x05 路径帧读取。</div>'
+          + '</div>';
+      }
+      return (
         '<details class="group fold" id="kernelStatusGroup" open><summary><span class="chev">›</span>Kernel status <span class="meta">0x03</span></summary>'
         + row("MODE", '<span id="ksMode">AUTO</span>')
         + row("END ERROR", '<span id="ksErr">-- mm</span>')
@@ -189,7 +208,7 @@
         + row("TARGET X / Y", '<span id="ksXY">--</span>')
         + '</details>'
         + '<div class="note">q 来自内核状态帧。手动保持 5 秒无新命令回 AUTO。</div></details>'
-      ) : "";
+      );
     }
 
     function renderNode() {
@@ -200,7 +219,8 @@
       const mesh = s.mesh || {};
       const tris = mesh.triangles || 0;
       const parent = s.parent >= 0 && doc.segments[s.parent];
-      const compat = F.model.isImported(doc) ? F.model.kernelCompatibility(doc) : { ok: true, reason: "native 3R chain" };
+      const compat = kernelCompat(doc);
+      const manualAllowed = compat.ok && doc.modelKind !== "vehicle";
 
       let html = '<div class="group"><div class="gtitle">' + (s.actuated ? "JOINT" : "PART") + ' / ' + esc(s.semanticId || s.id) + '</div>'
         + row("NAME", esc(s.name || s.id))
@@ -214,16 +234,18 @@
       if (s.actuated) {
         html += '<div class="group"><div class="gtitle">KERNEL-OWNED MOTION</div>'
           + row("TARGET ANGLE", '<span id="vTarget">' + M.fmt((s.target || 0) * M.R2D, 1) + '°</span>')
-          + '<input id="inTarget" type="range" min="' + s.min + '" max="' + s.max + '" step="0.1" value="' + M.fmt((s.target || 0) * M.R2D, 1) + '"' + (state.sim.kernel && compat.ok ? "" : " disabled") + '>'
+          + '<input id="inTarget" type="range" min="' + s.min + '" max="' + s.max + '" step="0.1" value="' + M.fmt((s.target || 0) * M.R2D, 1) + '"' + (state.sim.kernel && manualAllowed ? "" : " disabled") + '>'
           + row("ACTUAL ANGLE", '<span id="vActual">' + M.fmt((s.q || 0) * M.R2D, 1) + '°</span>')
           + row("LIMITS", M.fmt(s.min, 0) + "° / " + M.fmt(s.max, 0) + "°")
-          + '<div class="note">' + (state.sim.kernel && compat.ok
-            ? "拖动只下发 q_target；显示角度来自内核 0x03。"
-            : "未接内核：角度只读。页面不做本地 PD。") + '</div>'
+          + '<div class="note">' + (doc.modelKind === "vehicle"
+            ? "车辆关节由 0x05 路径帧驱动，不接受单关节目标。"
+            : (state.sim.kernel && compat.ok
+              ? "拖动只下发 q_target；显示角度来自内核 0x03。"
+              : "未接内核：角度只读。页面不做本地 PD。")) + '</div>'
           + '</div>'
           + kernelStatusMarkup();
         bind("inTarget", function (v) {
-          if (!state.sim.kernel || !compat.ok) return;
+          if (!state.sim.kernel || !manualAllowed) return;
           s.target = +v * M.D2R;
           const out = F.dom.$("vTarget");
           if (out) out.textContent = M.fmt(+v, 1) + "°";

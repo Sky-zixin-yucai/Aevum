@@ -13,13 +13,9 @@
 
 # 3) 启动 WebSocket 桥接；默认 5555 -> 8765
 .\scripts\kernel\run-bridge.ps1
-
-# 4) 另开终端启动 Forge 静态页面，工作目录必须是 interface\web
-cd interface\web
-python -m http.server 8080
 ```
 
-打开 `http://127.0.0.1:8080/forge/?model=toy_offroad&v=52`，在 Inspector 的 `KERNEL BRIDGE WEBSOCKET` 面板点 `Connect`，再在 `KERNEL ARC 0x05` 面板点 `Full Circle`。整圆沿用 ARC 的 `sweep=-2π`，半径 `0.5 m`、速度 `0.30 m/s` 时，期望 `s` 从 `0` 推进到 `3.1416 m`、`t=1.0`、`DONE`，前轮约 `24°`，终点回到起点附近。
+Forge 页面从站点现有的静态入口打开，仓库不绑定本机端口或绝对目录。
 
 三个脚本都支持 `-Check`，只解析路径、检查依赖并打印将要执行的命令，不启动进程：
 
@@ -35,8 +31,9 @@ python -m http.server 8080
 ./scripts/kernel/build-kernel.sh
 ./scripts/kernel/run-qemu.sh
 ./scripts/kernel/run-bridge.sh
-cd interface/web && python3 -m http.server 8080
 ```
+
+Forge 页面从站点现有的静态入口打开，仓库不绑定本机端口或绝对目录。
 
 ## 可选覆盖项
 
