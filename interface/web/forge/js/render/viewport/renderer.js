@@ -275,6 +275,7 @@
       }
 
       for (let i = 0; i < scene.joints.length; i++) {
+        if (nestedSpin(scene, i)) continue;
         drawJoint(scene.joints[i], jointRadius(scene, i), selected.kind === "joint" && selected.index === i, true);
       }
     }
@@ -295,6 +296,14 @@
         M.mat3(M.mat4()), [0.26, 0.30, 0.34]);
     }
 
+    function nestedSpin(scene, i) {
+      const link = scene.links[i];
+      const seg = link && link.seg;
+      if (!seg || seg.parent == null || seg.parent < 0) return false;
+      const parent = scene.links[seg.parent] && scene.links[seg.parent].seg;
+      return !!(parent && parent.jointType === "steer" && seg.jointType === "spin");
+    }
+
     function drawBody(doc, scene, selected) {
       if (doc.base && doc.base.hidden && doc.modelKind !== "vehicle") drawFixture(scene);
       for (let i = 0; i < scene.links.length; i++) {
@@ -307,7 +316,10 @@
       for (let i = 0; i < scene.joints.length; i++) {
         const link = scene.links[i];
         if (!link || !link.seg || !link.seg.actuated) continue;
-        drawJoint(scene.joints[i], jointRadius(scene, i), selected.kind === "joint" && selected.index === i, false);
+        if (nestedSpin(scene, i)) continue;
+        const sel = selected.kind === "joint" && selected.index === i;
+        if (doc.modelKind === "vehicle" && !sel) continue;
+        drawJoint(scene.joints[i], jointRadius(scene, i), sel, false);
       }
     }
 

@@ -33,6 +33,7 @@ python -m http.server 8080
 - 公共语义在 `asset.extras.aevum`，节点角色在 `node.extras.aevum`。
 - 只有 `asset.extras.aevum.joints[].target` 指向的节点被加载器标为 `actuated`。
 - 其它节点是静态 part：底盘、车身、车窗、灯、保险杠、工具外壳；它们随父节点变换，但不产生关节、不接受目标。
+- 车辆视图默认只画关节标签；选中关节时才画关节环。转向枢轴下的滚动子关节不重复画环，避免前轮出现两套圆环。
 - 加载器保留 `modelKind`、`aevum`、`role`、`semanticId`、`jointType`、`channel`、限位与 `continuous`。
 
 已入库模型：
