@@ -50,6 +50,11 @@ engine/tests/
 *.glb
 # 通用建模的 3R 示例是小型测试模型，允许入库
 !interface/web/forge/samples/arm3.glb
+# 项目专用模型目录允许入库，供其他维护者复用
+!interface/web/models/
+!interface/web/models/**/*.gltf
+!interface/web/models/**/*.glb
+!interface/web/models/**/*.bin
 engine/assets/
 # 外部参考实现与源码包只在本地
 labs/reference/

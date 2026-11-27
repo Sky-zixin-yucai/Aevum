@@ -1,0 +1,564 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Aevum glTF model generator",
+    "extras": {
+      "aevum": {
+        "schema": "aevum.model.gltf/1",
+        "kind": "vehicle",
+        "placeholder": true,
+        "units": "m",
+        "coordinate_system": {
+          "forward": "x",
+          "up": "y",
+          "right": "z",
+          "ground_plane": "xz"
+        },
+        "source": {
+          "kind": "generated",
+          "note": "占位尺寸；不是实车测量值"
+        },
+        "chassis": {
+          "length": 0.32,
+          "width": 0.18,
+          "height": 0.1,
+          "wheelbase": 0.22,
+          "track": 0.18,
+          "ground_clearance": 0.03,
+          "mass": 0.8
+        },
+        "wheels": [
+          {
+            "id": "FL",
+            "node": "wheel_fl",
+            "pos": [
+              0.11,
+              0.04,
+              0.09
+            ],
+            "radius": 0.04,
+            "width": 0.025
+          },
+          {
+            "id": "FR",
+            "node": "wheel_fr",
+            "pos": [
+              0.11,
+              0.04,
+              -0.09
+            ],
+            "radius": 0.04,
+            "width": 0.025
+          },
+          {
+            "id": "RL",
+            "node": "wheel_rl",
+            "pos": [
+              -0.11,
+              0.04,
+              0.09
+            ],
+            "radius": 0.04,
+            "width": 0.025
+          },
+          {
+            "id": "RR",
+            "node": "wheel_rr",
+            "pos": [
+              -0.11,
+              0.04,
+              -0.09
+            ],
+            "radius": 0.04,
+            "width": 0.025
+          }
+        ],
+        "joints": [
+          {
+            "id": "steer_fl",
+            "type": "steer",
+            "parent": "chassis",
+            "target": "FL",
+            "axis": [
+              0,
+              1,
+              0
+            ],
+            "min": -0.6,
+            "max": 0.6,
+            "home": 0,
+            "continuous": false,
+            "channel": "steer"
+          },
+          {
+            "id": "steer_fr",
+            "type": "steer",
+            "parent": "chassis",
+            "target": "FR",
+            "axis": [
+              0,
+              1,
+              0
+            ],
+            "min": -0.6,
+            "max": 0.6,
+            "home": 0,
+            "continuous": false,
+            "channel": "steer"
+          },
+          {
+            "id": "spin_rl",
+            "type": "spin",
+            "parent": "chassis",
+            "target": "RL",
+            "axis": [
+              0,
+              0,
+              1
+            ],
+            "min": -1000000,
+            "max": 1000000,
+            "home": 0,
+            "continuous": true,
+            "channel": "drive"
+          },
+          {
+            "id": "spin_rr",
+            "type": "spin",
+            "parent": "chassis",
+            "target": "RR",
+            "axis": [
+              0,
+              0,
+              1
+            ],
+            "min": -1000000,
+            "max": 1000000,
+            "home": 0,
+            "continuous": true,
+            "channel": "drive"
+          }
+        ],
+        "control": {
+          "loop_hz": 100,
+          "dt": 0.01,
+          "channels": {
+            "steer": [
+              "steer_fl",
+              "steer_fr"
+            ],
+            "drive": [
+              "spin_rl",
+              "spin_rr"
+            ]
+          },
+          "limits": {
+            "steer": 0.6,
+            "speed": 1,
+            "timeout_ms": 200
+          }
+        },
+        "sensors": {
+          "wheel_speed": false,
+          "steering": false
+        }
+      }
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "TOY OFFROAD PLACEHOLDER",
+      "nodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "chassis",
+      "mesh": 0,
+      "translation": [
+        0,
+        0.08,
+        0
+      ],
+      "scale": [
+        0.32,
+        0.1,
+        0.18
+      ],
+      "extras": {
+        "aevum": {
+          "role": "chassis",
+          "id": "chassis"
+        }
+      }
+    },
+    {
+      "name": "cabin",
+      "mesh": 0,
+      "translation": [
+        -0.032,
+        0.1475,
+        0
+      ],
+      "scale": [
+        0.14400000000000002,
+        0.034999999999999996,
+        0.1404
+      ],
+      "extras": {
+        "aevum": {
+          "role": "cabin",
+          "id": "cabin"
+        }
+      }
+    },
+    {
+      "name": "wheel_fl",
+      "mesh": 1,
+      "translation": [
+        0.11,
+        0.04,
+        0.09
+      ],
+      "scale": [
+        0.04,
+        0.04,
+        0.025
+      ],
+      "extras": {
+        "aevum": {
+          "role": "wheel",
+          "id": "FL"
+        }
+      }
+    },
+    {
+      "name": "wheel_fr",
+      "mesh": 1,
+      "translation": [
+        0.11,
+        0.04,
+        -0.09
+      ],
+      "scale": [
+        0.04,
+        0.04,
+        0.025
+      ],
+      "extras": {
+        "aevum": {
+          "role": "wheel",
+          "id": "FR"
+        }
+      }
+    },
+    {
+      "name": "wheel_rl",
+      "mesh": 1,
+      "translation": [
+        -0.11,
+        0.04,
+        0.09
+      ],
+      "scale": [
+        0.04,
+        0.04,
+        0.025
+      ],
+      "extras": {
+        "aevum": {
+          "role": "wheel",
+          "id": "RL"
+        }
+      }
+    },
+    {
+      "name": "wheel_rr",
+      "mesh": 1,
+      "translation": [
+        -0.11,
+        0.04,
+        -0.09
+      ],
+      "scale": [
+        0.04,
+        0.04,
+        0.025
+      ],
+      "extras": {
+        "aevum": {
+          "role": "wheel",
+          "id": "RR"
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "chassis",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "cabin",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 3,
+            "NORMAL": 4
+          },
+          "indices": 5,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "wheel",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 6,
+            "NORMAL": 7
+          },
+          "indices": 8,
+          "material": 2
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "chassis",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.22,
+          0.26,
+          0.2,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.8
+      }
+    },
+    {
+      "name": "cabin",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.3,
+          0.36,
+          0.28,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.7
+      }
+    },
+    {
+      "name": "wheel",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.11,
+          0.12,
+          0.13,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.9
+      }
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 3360,
+      "uri": "data:application/octet-stream;base64,AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcAAAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcAAACAPwAAAAAAAAC/AACAPwAAAAAAAAA/XoNsPxXvwz4AAAC/XoNsPxXvwz4AAAA/8wQ1P/MENT8AAAC/8wQ1P/MENT8AAAA/Fe/DPl6DbD8AAAC/Fe/DPl6DbD8AAAA/MjGNJAAAgD8AAAC/MjGNJAAAgD8AAAA/Fe/Dvl6DbD8AAAC/Fe/Dvl6DbD8AAAA/8wQ1v/MENT8AAAC/8wQ1v/MENT8AAAA/XoNsvxXvwz4AAAC/XoNsvxXvwz4AAAA/AACAvzIxDSUAAAC/AACAvzIxDSUAAAA/XoNsvxXvw74AAAC/XoNsvxXvw74AAAA/8wQ1v/MENb8AAAC/8wQ1v/MENb8AAAA/Fe/Dvl6DbL8AAAC/Fe/Dvl6DbL8AAAA/yslTpQAAgL8AAAC/yslTpQAAgL8AAAA/Fe/DPl6DbL8AAAC/Fe/DPl6DbL8AAAA/8wQ1P/MENb8AAAC/8wQ1P/MENb8AAAA/XoNsPxXvw74AAAC/XoNsPxXvw74AAAA/AACAPzIxjaUAAAC/AACAPzIxjaUAAAA/AAAAAAAAAAAAAAC/AACAPwAAAAAAAAC/XoNsPxXvwz4AAAC/8wQ1P/MENT8AAAC/Fe/DPl6DbD8AAAC/MjGNJAAAgD8AAAC/Fe/Dvl6DbD8AAAC/8wQ1v/MENT8AAAC/XoNsvxXvwz4AAAC/AACAvzIxDSUAAAC/XoNsvxXvw74AAAC/8wQ1v/MENb8AAAC/Fe/Dvl6DbL8AAAC/yslTpQAAgL8AAAC/Fe/DPl6DbL8AAAC/8wQ1P/MENb8AAAC/XoNsPxXvw74AAAC/AACAPzIxjaUAAAC/AAAAAAAAAAAAAAA/AACAPwAAAAAAAAA/XoNsPxXvwz4AAAA/8wQ1P/MENT8AAAA/Fe/DPl6DbD8AAAA/MjGNJAAAgD8AAAA/Fe/Dvl6DbD8AAAA/8wQ1v/MENT8AAAA/XoNsvxXvwz4AAAA/AACAvzIxDSUAAAA/XoNsvxXvw74AAAA/8wQ1v/MENb8AAAA/Fe/Dvl6DbL8AAAA/yslTpQAAgL8AAAA/Fe/DPl6DbL8AAAA/8wQ1P/MENb8AAAA/XoNsPxXvw74AAAA/AACAPzIxjaUAAAA/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAXoNsPxXvwz4AAAAAXoNsPxXvwz4AAAAA8wQ1P/MENT8AAAAA8wQ1P/MENT8AAAAAFe/DPl6DbD8AAAAAFe/DPl6DbD8AAAAAMjGNJAAAgD8AAAAAMjGNJAAAgD8AAAAAFe/Dvl6DbD8AAAAAFe/Dvl6DbD8AAAAA8wQ1v/MENT8AAAAA8wQ1v/MENT8AAAAAXoNsvxXvwz4AAAAAXoNsvxXvwz4AAAAAAACAvzIxDSUAAAAAAACAvzIxDSUAAAAAXoNsvxXvw74AAAAAXoNsvxXvw74AAAAA8wQ1v/MENb8AAAAA8wQ1v/MENb8AAAAAFe/Dvl6DbL8AAAAAFe/Dvl6DbL8AAAAAyslTpQAAgL8AAAAAyslTpQAAgL8AAAAAFe/DPl6DbL8AAAAAFe/DPl6DbL8AAAAA8wQ1P/MENb8AAAAA8wQ1P/MENb8AAAAAXoNsPxXvw74AAAAAXoNsPxXvw74AAAAAAACAPzIxjaUAAAAAAACAPzIxjaUAAAAAAAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIAAQADAAIAAgADAAQAAwAFAAQABAAFAAYABQAHAAYABgAHAAgABwAJAAgACAAJAAoACQALAAoACgALAAwACwANAAwADAANAA4ADQAPAA4ADgAPABAADwARABAAEAARABIAEQATABIAEgATABQAEwAVABQAFAAVABYAFQAXABYAFgAXABgAFwAZABgAGAAZABoAGQAbABoAGgAbABwAGwAdABwAHAAdAB4AHQAfAB4AHgAfACAAHwAhACAAIgAjACQAIgAkACUAIgAlACYAIgAmACcAIgAnACgAIgAoACkAIgApACoAIgAqACsAIgArACwAIgAsAC0AIgAtAC4AIgAuAC8AIgAvADAAIgAwADEAIgAxADIAIgAyADMANAA2ADUANAA3ADYANAA4ADcANAA5ADgANAA6ADkANAA7ADoANAA8ADsANAA9ADwANAA+AD0ANAA/AD4ANABAAD8ANABBAEAANABCAEEANABDAEIANABEAEMANABFAEQA"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 72,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 648,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 936,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1224,
+      "byteLength": 72,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1296,
+      "byteLength": 840,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 2136,
+      "byteLength": 840,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 2976,
+      "byteLength": 384,
+      "target": 34963
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 70,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        -0.5
+      ],
+      "max": [
+        1,
+        1,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 7,
+      "componentType": 5126,
+      "count": 70,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "bufferView": 8,
+      "componentType": 5123,
+      "count": 192,
+      "type": "SCALAR"
+    }
+  ]
+}
