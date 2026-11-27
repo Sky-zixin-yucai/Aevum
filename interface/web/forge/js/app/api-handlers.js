@@ -111,7 +111,11 @@
       disconnect: bridgeControl.disconnect,
       runLine: function (params) {
         if (!state.bridge.online) throw new Error("runLine 需要 bridge 连接");
-        return bridgeControl.sendPath(params);
+        return bridgeControl.sendPath(Object.assign({}, params || {}, { kind: 1 }));
+      },
+      runArc: function (params) {
+        if (!state.bridge.online) throw new Error("runArc 需要 bridge 连接");
+        return bridgeControl.sendPath(Object.assign({}, params || {}, { kind: 2 }));
       }
     };
   };

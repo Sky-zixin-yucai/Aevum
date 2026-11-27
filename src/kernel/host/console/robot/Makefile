@@ -44,6 +44,7 @@ SRCS = \
 	lib/math/trig.c \
 	lib/format/format.c \
 	lib/geom/line.c \
+	lib/geom/arc.c \
 	app/path/path.c \
 	app/arm/app/app.c \
 	app/arm/kinematics/kinematics.c \
@@ -146,10 +147,20 @@ test-host:
 		tests/host/line_test.c lib/geom/line.c lib/fixed/fixed.c \
 		-o $(BUILD)/host/line_test
 	$(HOST_CC) -std=c99 -Wall -Wextra -Iinclude \
-		tests/host/path_line_test.c app/path/path.c lib/geom/line.c lib/fixed/fixed.c \
+		tests/host/arc_test.c lib/geom/arc.c lib/math/trig.c lib/fixed/fixed.c \
+		-o $(BUILD)/host/arc_test
+	$(HOST_CC) -std=c99 -Wall -Wextra -Iinclude \
+		tests/host/path_line_test.c app/path/path.c lib/geom/line.c lib/geom/arc.c \
+		lib/math/trig.c lib/fixed/fixed.c \
 		-o $(BUILD)/host/path_line_test
+	$(HOST_CC) -std=c99 -Wall -Wextra -Iinclude \
+		tests/host/path_arc_test.c app/path/path.c lib/geom/line.c lib/geom/arc.c \
+		lib/math/trig.c lib/fixed/fixed.c \
+		-o $(BUILD)/host/path_arc_test
 	$(BUILD)/host/line_test
+	$(BUILD)/host/arc_test
 	$(BUILD)/host/path_line_test
+	$(BUILD)/host/path_arc_test
 
 rebuild:
 	$(MAKE) clean

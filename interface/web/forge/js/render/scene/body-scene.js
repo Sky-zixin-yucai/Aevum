@@ -70,6 +70,9 @@
       mode: "body",
       links: links.filter(Boolean),
       joints: joints.filter(Boolean),
+      guides: doc.guide && doc.guide.length >= 6
+        ? [{ points: doc.guide, color: [0.95, 0.64, 0.30] }]
+        : [],
       end: M.translation(world[world.length - 1] || M.mat4()),
       endMat: world[world.length - 1] || M.mat4()
     };

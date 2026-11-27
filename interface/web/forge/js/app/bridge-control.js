@@ -42,6 +42,22 @@
       return wheels && wheels.length ? (Number(wheels[0].radius) || 0.04) : 0.04;
     }
 
+    function wheelbase() {
+      const wheels = state.doc && state.doc.aevum && state.doc.aevum.wheels;
+      if (!wheels || !wheels.length) return 0.22;
+      const pos = function (front) {
+        const list = wheels.filter(function (w) { return !!w.front === front; });
+        if (!list.length) return null;
+        return list.reduce(function (sum, w) {
+          return sum + (Number(w.pos && w.pos[0]) || 0);
+        }, 0) / list.length;
+      };
+      const front = pos(true);
+      const rear = pos(false);
+      if (front == null || rear == null) return 0.22;
+      return Math.abs(front - rear) || 0.22;
+    }
+
     /*
      * 0x05 是内核几何路径状态，不是车辆状态：页面只把 (x,z)/切向/弧长
      * 当作被控对象位姿和轮子角度来呈现，不发命令、不积分路径。
@@ -62,6 +78,7 @@
         z: Number(message.z) || 0,
         dx: Number(message.dx) || 0,
         dz: Number(message.dz) || 0,
+        kappa: Number(message.kappa) || 0,
         speed: Number(message.speed) || 0,
         length: Number(message.length) || 0,
         at: performance.now()
@@ -78,42 +95,57 @@
         prevPath.kind !== state.sim.path.kind ||
         prevPath.length !== state.sim.path.length;
       if (pathChanged && state.cam && (state.sim.path.state === 1 || state.sim.path.state === 2)) {
-        const sx = state.sim.path.x - state.sim.path.dx * state.sim.path.s;
-        const sz = state.sim.path.z - state.sim.path.dz * state.sim.path.s;
-        F.render.framePath(
-          state.cam,
-          state.doc,
-          sx, sz,
-          sx + state.sim.path.dx * state.sim.path.length,
-          sz + state.sim.path.dz * state.sim.path.length,
-          0.30
-        );
+        if (state.sim.path.kind === 2 && Math.abs(state.sim.path.kappa) > 1e-6) {
+          F.render.frameArc(
+            state.cam,
+            state.doc,
+            state.sim.path.x,
+            state.sim.path.z,
+            1 / Math.abs(state.sim.path.kappa)
+          );
+        } else {
+          const sx = state.sim.path.x - state.sim.path.dx * state.sim.path.s;
+          const sz = state.sim.path.z - state.sim.path.dz * state.sim.path.s;
+          F.render.framePath(
+            state.cam,
+            state.doc,
+            sx, sz,
+            sx + state.sim.path.dx * state.sim.path.length,
+            sz + state.sim.path.dz * state.sim.path.length,
+            0.30
+          );
+        }
       }
 
       /* 滚动角只做呈现：-s/r 对应车体沿 +x 前进时轮子向前滚。 */
       const spin = -state.sim.path.s / wheelRadius();
+      const steer = state.sim.path.kind === 2
+        ? Math.atan(wheelbase() * state.sim.path.kappa)
+        : 0;
       state.doc.segments.forEach(function (seg) {
-        if (seg.jointType === "steer") seg.q = 0;
+        if (seg.jointType === "steer") seg.q = steer;
         else if (seg.jointType === "spin") seg.q = spin;
       });
 
       state.sim.kernel = true;
       if (!wasKernel) {
         setKernelPill("kernel");
-        toast("Kernel LINE 已接入；路径点与滚角来自 0x05");
+        toast("Kernel path 已接入；路径点、曲率与滚角来自 0x05");
       }
       if (!wasKernel || wasState !== state.sim.path.state) {
         syncControls();
         rerenderInspector();
         onKernelState();
       }
-      const line = document.getElementById("lineState");
-      if (line) {
+      const pathLabel = document.getElementById(
+        state.sim.path.kind === 2 ? "arcState" : "lineState");
+      if (pathLabel) {
         const states = ["IDLE", "RUN", "DONE", "FAULT"];
         const stateName = states[state.sim.path.state] || "?";
-        line.textContent = stateName +
+        pathLabel.textContent = stateName +
           " · s " + state.sim.path.s.toFixed(3) + " / " + state.sim.path.length.toFixed(3) + " m" +
-          " · t " + state.sim.path.t.toFixed(3);
+          " · t " + state.sim.path.t.toFixed(3) +
+          " · k " + state.sim.path.kappa.toFixed(2);
       }
       updateKernelStatus();
     }
@@ -255,11 +287,34 @@
       return F.bridge.send(state.bridge, { type: "release" }, true);
     }
 
+    /* 命令几何的只读引导线；不是轨迹积分，当前点仍只来自 0x05。 */
+    function setGuide(cmd) {
+      if (!state.doc) return;
+      const pts = [];
+      const y = 0.006;
+      const push = function (x, z) {
+        if (isFinite(x) && isFinite(z)) pts.push(x, y, z);
+      };
+      if (cmd.kind === 1) {
+        push(cmd.x0, cmd.z0);
+        push(cmd.x1, cmd.z1);
+      } else if (cmd.kind === 2 && cmd.r > 0 && cmd.sweep) {
+        const n = 48;
+        for (let i = 0; i <= n; i++) {
+          const a = cmd.a0 + cmd.sweep * i / n;
+          push(cmd.cx + cmd.r * Math.cos(a), cmd.cz + cmd.r * Math.sin(a));
+        }
+      }
+      state.doc.guide = pts.length >= 6 ? pts : null;
+    }
+
     /* 外部动作实例参数；内核按几何生成器执行，页面不本地积分。 */
     function sendPath(params) {
       if (!state.bridge.online) return false;
-      const packet = Object.assign({ type: "path", kind: 1 }, params || {});
-      return F.bridge.send(state.bridge, packet);
+      const cmd = Object.assign({ kind: 1 }, params || {});
+      setGuide(cmd);
+      state.sim.pathCmd = Object.assign({}, cmd);
+      return F.bridge.send(state.bridge, Object.assign({ type: "path" }, cmd), true);
     }
 
     function setManual(on) {
@@ -299,7 +354,11 @@
       state.sim.bodyPending = false;
       state.sim.kernelStatus = null;
       state.sim.path = null;
-      if (state.doc) state.doc.pose = { x: 0, z: 0, yaw: 0 };
+      state.sim.pathCmd = null;
+      if (state.doc) {
+        state.doc.guide = null;
+        state.doc.pose = { x: 0, z: 0, yaw: 0 };
+      }
       state.sim.qHist.length = 0;
       syncControls();
       rerenderInspector();

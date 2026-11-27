@@ -203,6 +203,11 @@
       if (!bridgeControl.sendPath(params)) {
         F.ui.toast.show("LINE 未发送：内核桥未连接");
       }
+    },
+    onPathArc: function (params) {
+      if (!bridgeControl.sendPath(params)) {
+        F.ui.toast.show("ARC 未发送：内核桥未连接");
+      }
     }
   });
 

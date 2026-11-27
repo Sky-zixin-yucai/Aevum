@@ -74,7 +74,7 @@
       const p = state.sim.path;
       const t = Math.max(0, Math.min(1, p.t || 0));
       ctx.fillStyle = "#66737e";
-      ctx.fillText("KERNEL LINE PATH · s / t", Math.round(10 * (fs / 12)), Math.round(8 * (fs / 12)));
+      ctx.fillText("KERNEL PATH · s / t", Math.round(10 * (fs / 12)), Math.round(8 * (fs / 12)));
       ctx.fillStyle = "#1b242b";
       ctx.fillRect(w * 0.10, h / 2 - 4, w * 0.80, 8);
       ctx.fillStyle = p.state === 3 ? "#d95f5f" : (p.state === 2 ? "#6fbf73" : "#d79a52");
@@ -127,11 +127,12 @@
         F.dom.$("mPeak").textContent = F.math.fmt(path.t, 3);
         F.dom.$("mTorque").textContent = F.math.fmt(path.x, 3) + " / " + F.math.fmt(path.z, 3);
         F.dom.$("mLoss").textContent = F.math.fmt(path.length, 3) + " m";
-        F.dom.$("mTime").textContent = path.fault ? "fault " + path.fault : "none";
+        F.dom.$("mTime").textContent = path.fault ? "fault " + path.fault : "k " + F.math.fmt(path.kappa, 2);
         F.dom.$("mRms").nextElementSibling.textContent = "kernel arc length";
         F.dom.$("mPeak").nextElementSibling.textContent = "normalized arc";
         F.dom.$("mTorque").nextElementSibling.textContent = "path point x / z";
-        F.dom.$("mLoss").nextElementSibling.textContent = "line segment";
+        F.dom.$("mLoss").nextElementSibling.textContent = "path length";
+        F.dom.$("mTime").nextElementSibling.textContent = "state / curvature 1/m";
         F.dom.$("mTime").nextElementSibling.textContent = "fault code";
         drawChart();
         onMetrics({ kernel: true, path: F.model.clone(path), pose: state.doc.pose ? F.model.clone(state.doc.pose) : null });

@@ -107,7 +107,7 @@ static void send_arm_status(const struct arm_status *st)
 static void send_path_status(void)
 {
     struct path_status st;
-    i32 v[12];
+    i32 v[13];
 
     path_status_get(&st);
     v[0] = st.tick;
@@ -120,9 +120,10 @@ static void send_path_status(void)
     v[7] = st.z;
     v[8] = st.dx;
     v[9] = st.dz;
-    v[10] = st.speed;
-    v[11] = st.length;
-    uart_path_frame(v, 12);
+    v[10] = st.kappa;
+    v[11] = st.speed;
+    v[12] = st.length;
+    uart_path_frame(v, 13);
 }
 
 static void kthread_demo_entry(void *arg)
@@ -229,7 +230,7 @@ static void proc_control(void)
             else if (in.type == UART_CMD_JOINT)
                 arm_control_set_joint_targets(in.q, in.n);
             else if (in.type == UART_CMD_PATH)
-                path_line_start(&in.path);
+                path_start(in.path_kind, in.path_raw, 8);
         }
         arm_control_step();
         path_step();

@@ -29,6 +29,7 @@
     connect: function (url) { return requireHandlers().connect(url); },
     disconnect: function () { return requireHandlers().disconnect(); },
     runLine: function (params) { return requireHandlers().runLine(params); },
+    runArc: function (params) { return requireHandlers().runArc(params); },
     subscribe: function (fn) {
       listeners.push(fn);
       return function () {

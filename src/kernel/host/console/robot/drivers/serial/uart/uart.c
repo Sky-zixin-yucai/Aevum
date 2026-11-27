@@ -64,17 +64,13 @@ static int cmd_finish(struct uart_input *out)
 {
     int i;
     if (cmd_mode == 3) {
-        if (cmd_buf[0] != PATH_KIND_LINE) {
+        if (cmd_buf[0] != PATH_KIND_LINE && cmd_buf[0] != PATH_KIND_ARC) {
             cmd_reset();
             return 0;
         }
-        out->path.x0 = cmd_i32(cmd_buf + 1);
-        out->path.z0 = cmd_i32(cmd_buf + 5);
-        out->path.x1 = cmd_i32(cmd_buf + 9);
-        out->path.z1 = cmd_i32(cmd_buf + 13);
-        out->path.speed = cmd_i32(cmd_buf + 17);
-        out->path.tol = cmd_i32(cmd_buf + 21);
-        out->path.timeout = cmd_i32(cmd_buf + 25);
+        out->path_kind = (int)cmd_buf[0];
+        for (i = 0; i < 8; i++)
+            out->path_raw[i] = cmd_i32(cmd_buf + 1 + i * 4);
         out->type = UART_CMD_PATH;
         cmd_reset();
         return 1;

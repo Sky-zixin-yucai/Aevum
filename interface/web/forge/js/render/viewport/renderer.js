@@ -347,6 +347,11 @@
       if (scene.mode === "body") drawBody(doc, scene, selected);
       else drawNative(doc, scene, selected);
 
+      (scene.guides || []).forEach(function (guide) {
+        buffers.drawPolyline(guide.points, vp, guide.color || [0.95, 0.64, 0.30], 0.85);
+      });
+      useMesh(vp);
+
       labels.update(scene, vp, selected);
     }
 

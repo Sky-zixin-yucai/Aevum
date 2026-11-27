@@ -62,6 +62,10 @@
     }
 
     function row(label, value) {
+      if (typeof value === "string" && value.indexOf("<input") !== -1) {
+        return '<div class="row input-row"><span>' + label + '</span>'
+          + '<div class="ctl">' + value + '</div></div>';
+      }
       return '<div class="row"><span>' + label + '</span><output>' + value + '</output></div>';
     }
 
@@ -90,7 +94,9 @@
     function pathGroup() {
       if (!state.doc || state.doc.modelKind !== "vehicle") return "";
       const p = state.sim.path;
-      const stateName = p ? (["IDLE", "RUN", "DONE", "FAULT"][p.state] || "?") : "IDLE";
+      const isArc = p && p.kind === 2;
+      const lineState = p && !isArc ? (["IDLE", "RUN", "DONE", "FAULT"][p.state] || "?") : "IDLE";
+      const arcState = isArc ? (["IDLE", "RUN", "DONE", "FAULT"][p.state] || "?") : "IDLE";
       return '<details class="group fold" id="pathGroup" open>'
         + '<summary><span class="chev">›</span>Kernel LINE <span class="meta">0x05</span></summary>'
         + row("X0 / Z0", '<input id="lineX0" type="number" step="0.01" value="0">'
@@ -98,23 +104,35 @@
         + row("X1 / Z1", '<input id="lineX1" type="number" step="0.01" value="0.40">'
           + '<input id="lineZ1" type="number" step="0.01" value="0">')
         + row("SPEED m/s", '<input id="lineSpeed" type="number" step="0.01" value="0.20">')
-        + '<div class="status" id="lineState">' + esc(stateName) + '</div>'
+        + '<div class="status" id="lineState">' + esc(lineState) + '</div>'
         + '<button style="width:100%" id="btnLine"' + (state.bridge.online ? "" : " disabled") + '>Run LINE</button>'
         + '<div class="note">只下发端点与速度；内核按 100 Hz 推进 s，页面只呈现路径点和轮子滚角，不本地积分。</div>'
+        + '</details>'
+        + '<details class="group fold" id="arcGroup" open>'
+        + '<summary><span class="chev">›</span>Kernel ARC <span class="meta">0x05</span></summary>'
+        + row("CENTER X / Z", '<input id="arcCx" type="number" step="0.01" value="0">'
+          + '<input id="arcCz" type="number" step="0.01" value="-0.50">')
+        + row("RADIUS m", '<input id="arcR" type="number" step="0.01" value="0.50">')
+        + row("START / SWEEP °", '<input id="arcA0" type="number" step="1" value="90">'
+          + '<input id="arcSweep" type="number" step="1" value="-90">')
+        + row("SPEED m/s", '<input id="arcSpeed" type="number" step="0.01" value="0.15">')
+        + '<div class="status" id="arcState">' + esc(arcState) + '</div>'
+        + '<button style="width:100%" id="btnArc"' + (state.bridge.online ? "" : " disabled") + '>Run ARC</button>'
+        + '<div class="note">圆心、半径、起始角和扫角都交给内核；前轮转角由内核回传的曲率换算，页面不本地积分。</div>'
         + '</details>';
     }
 
     function wirePathGroup() {
-      const btn = F.dom.$("btnLine");
-      if (!btn) return;
-      btn.onclick = function () {
+      const num = function (id, fallback) {
+        const el = F.dom.$(id);
+        const v = el ? Number(el.value) : NaN;
+        return isFinite(v) ? v : fallback;
+      };
+      const line = F.dom.$("btnLine");
+      if (line) line.onclick = function () {
         if (!opts.onPathLine) return;
-        const num = function (id, fallback) {
-          const el = F.dom.$(id);
-          const v = el ? Number(el.value) : NaN;
-          return isFinite(v) ? v : fallback;
-        };
         opts.onPathLine({
+          kind: 1,
           x0: num("lineX0", 0),
           z0: num("lineZ0", 0),
           x1: num("lineX1", 0.4),
@@ -122,6 +140,21 @@
           speed: num("lineSpeed", 0.2),
           tol: 0.01,
           timeout: 3000
+        });
+      };
+      const arc = F.dom.$("btnArc");
+      if (arc) arc.onclick = function () {
+        if (!opts.onPathArc) return;
+        opts.onPathArc({
+          kind: 2,
+          cx: num("arcCx", 0),
+          cz: num("arcCz", -0.5),
+          r: num("arcR", 0.5),
+          a0: num("arcA0", 90) * M.D2R,
+          sweep: num("arcSweep", -90) * M.D2R,
+          speed: num("arcSpeed", 0.15),
+          tol: 0.01,
+          timeout: 5000
         });
       };
     }

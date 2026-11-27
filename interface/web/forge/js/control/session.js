@@ -9,6 +9,7 @@
       manualSince: 0,
       kernelStatus: null,
       path: null,
+      pathCmd: null,
       kernelRejected: false,
       bodyPending: false,
       bodySentAt: 0,

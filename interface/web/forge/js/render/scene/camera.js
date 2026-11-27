@@ -144,6 +144,19 @@
     cam.goalDist = Math.max(1.35, length * 1.4 + span * 1.4);
   }
 
+  function frameArc(cam, doc, cx, cz, r) {
+    const scene = F.render.buildScene(doc);
+    const bounds = F.render.sceneBounds(scene);
+    const span = bounds
+      ? Math.max(bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1],
+                 bounds.max[2] - bounds.min[2], 0.5)
+      : 0.5;
+    cam.goalTarget[0] = cx;
+    cam.goalTarget[2] = cz;
+    if (bounds) cam.goalTarget[1] = (bounds.min[1] + bounds.max[1]) / 2;
+    cam.goalDist = Math.max(2.8, (Math.abs(r) * 2 + span) * 2.2);
+  }
+
   function setView(cam, kind, doc) {
     if (kind === "home") {
       fitCamera(doc, cam);
@@ -183,6 +196,7 @@
   F.render.cameraFrameAt = frameAt;
   F.render.fitCamera = fitCamera;
   F.render.framePath = framePath;
+  F.render.frameArc = frameArc;
   F.render.setCameraView = setView;
   F.render.panCamera = pan;
 })(window.AEVUM.FORGE);

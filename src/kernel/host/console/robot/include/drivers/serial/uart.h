@@ -20,7 +20,8 @@ struct uart_input {
     int n;
     i32 q[AEVUM_BODY_MAX_JOINTS];
     struct body_desc body;
-    struct path_line_params path;
+    int path_kind;
+    i32 path_raw[8];
 };
 
 /* COM1 的唯一实现入口：初始化、发送、收 B/J/R/F 命令、扫描 VGA 差量帧。 */

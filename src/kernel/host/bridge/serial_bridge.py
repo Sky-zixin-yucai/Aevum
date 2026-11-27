@@ -3,9 +3,9 @@
 AEVUM serial bridge: reads TCP-framed serial from QEMU, forwards to WebSocket.
 Delta frame: A5 5A 01 COUNT [row col ch attr] * COUNT CRC
 Status frame: A5 5A 03 19 + 19 * i32 LE + CRC
-Path frame: A5 5A 05 12 + 12 * i32 LE + CRC
+Path frame: A5 5A 05 13 + 13 * i32 LE + CRC
 Joint command to kernel: b"J" + 3 * i16 LE (0.001 rad)
-Line path command: b"P" + kind + 8 * i32 LE (Q16.16)
+Path command: b"P" + kind + 8 * i32 LE (Q16.16)
 Release manual: b"R"
 """
 import asyncio
@@ -31,8 +31,9 @@ FRAME_HDR = 4
 MAX_CELLS = 32
 MAX_STATUS_FIELDS = 34
 STATE_VALS = 3
-PATH_FIELDS = 12
+PATH_FIELDS = 13
 PATH_KIND_LINE = 1
+PATH_KIND_ARC = 2
 BODY_MIN_JOINTS = 2
 BODY_MAX_JOINTS = 8
 Q16_ONE = 65536.0
@@ -119,21 +120,33 @@ def pack_joint(q):
 
 
 def pack_path(params):
-    """WS path line -> P + kind + 8 * i32 LE (Q16.16 meters / m/s)."""
+    """WS path -> P + kind + 8 * i32 LE (Q16.16 meters / radians / m/s)."""
     try:
         kind = int(params.get("kind", PATH_KIND_LINE))
-        if kind != PATH_KIND_LINE:
+        if kind == PATH_KIND_LINE:
+            vals = [
+                float(params.get("x0", 0)),
+                float(params.get("z0", 0)),
+                float(params.get("x1", 0)),
+                float(params.get("z1", 0)),
+                float(params.get("speed", 0)),
+                float(params.get("tol", 0)),
+                float(params.get("timeout", 0)),
+                0,
+            ]
+        elif kind == PATH_KIND_ARC:
+            vals = [
+                float(params.get("cx", 0)),
+                float(params.get("cz", 0)),
+                float(params.get("r", 0)),
+                float(params.get("a0", 0)),
+                float(params.get("sweep", 0)),
+                float(params.get("speed", 0)),
+                float(params.get("tol", 0)),
+                float(params.get("timeout", 0)),
+            ]
+        else:
             return None
-        vals = [
-            float(params.get("x0", 0)),
-            float(params.get("z0", 0)),
-            float(params.get("x1", 0)),
-            float(params.get("z1", 0)),
-            float(params.get("speed", 0)),
-            float(params.get("tol", 0)),
-            float(params.get("timeout", 0)),
-            0,
-        ]
         raw = [int(round(v * Q16_ONE)) for v in vals]
         return b"P" + bytes([kind]) + struct.pack("<8i", *raw)
     except (TypeError, ValueError):
@@ -194,7 +207,7 @@ class FrameParser:
                     del self.buf[:1]
                     self.frames_bad += 1
                     continue
-                vals = struct.unpack_from("<12i", self.buf, FRAME_HDR)
+                vals = struct.unpack_from("<13i", self.buf, FRAME_HDR)
                 out.append({
                     "type": "path",
                     "tick": vals[0],
@@ -207,8 +220,9 @@ class FrameParser:
                     "z": round(vals[7] / Q16_ONE, 6),
                     "dx": round(vals[8] / Q16_ONE, 6),
                     "dz": round(vals[9] / Q16_ONE, 6),
-                    "speed": round(vals[10] / Q16_ONE, 6),
-                    "length": round(vals[11] / Q16_ONE, 6),
+                    "kappa": round(vals[10] / Q16_ONE, 6),
+                    "speed": round(vals[11] / Q16_ONE, 6),
+                    "length": round(vals[12] / Q16_ONE, 6),
                 })
                 del self.buf[:total]
                 self.frames_ok += 1
