@@ -636,3 +636,16 @@ P13.7 在单锁 PI 上增加固定 2 层持锁栈，验证 high 等外层锁、o
 - P13.6 回归各 1 次：mode0 `32,132 / lock_p=3 / med_ticks=3 / boost=restore=0`，mode1 `9,767 / 3 / 0 / 1/1`，mode2 `7,677 / 0 / 0 / 1/1`。
 - 边界：固定 2 层，不提供任意深度、环/死锁检测、用户态 futex、SMP per-CPU 锁、IOAPIC 或真实硬件；任务异常退出不自动清锁。
 - 证据：`tests/kernel/results/2026-11-28/p137-matrix.md`、`p137-c0-r1..r3.log`、`p137-c1-r1..r3.log`、`p137-normal-smoke.log`、`p136-reg-m0/1/2.log`。
+
+## P13.8 全量回归与两层锁压力
+
+P13.8 不做新调度机制，先把普通镜像上的旧验收重新跑一遍，再加两层锁压力。回归发现 P11.7 的真实失败，因此结论不是全绿。
+
+- `app/rtbench/rtbench.c`：新增 `RT_LOCK_STRESS`、`out_i32()`、三把无 PI/无 ceiling 的 `rt_mutex` 和 `rt_lock_stress_run()`；1000 轮 `A -> B` / `B -> A`，首轮验证第 3 把锁与乱序解锁都返回 `-1`；`RT_BOOT` 改为 `P13.8`。
+- 压力构建：`BUILD=build-p138-lock`，`DEFS="-DAEVUM_RT_BENCH -DRT_LOCK_STRESS=1 -DRT_PI_TEST=0 -DRT_PI_CHAIN=0 -DRT_BG_TASKS=0"`；`kernel.bin=45,604B`。
+- 3 次 `LOCK_STRESS loops=1000 err=0 third=-1 lifo=-1 depth=0 a_locks=1000 b_locks=1000 a_waits=0 b_waits=0 a_boost=0 b_boost=0 a_restore=0 b_restore=0`；`lat_max_us=181/94/75`、`exec_max_us=1889/1907/1925`、`exec_wall_over=0`。
+- 普通回归：P5.3 两轮 `100/100 STRESS OK`；P13.3 bg=2/4/8 均 `cut_n=1000 cut_us=2000 after_avg=999`；P13.4 1.5ms `miss=0 hard=0`，2.1ms `hard=1000 cut_us=2000 after_avg=99`；P13.6 三模式各 3 次均 `rc=0`，mode2 `lock_p=0 med_ticks=0`。
+- **P11.7 失败**：image3 连续 6 次 `exit 6 st 25`，`thread_join` 期望 `-3` 实得 `0`。临时插桩显示 worker 先进入 ZOMBIE、父线程 join 时目标已退出；加长循环、`yield` 等 DONE、worker `sleep`、父线程延迟 clone 都未修复；插桩已回滚，未入库。P11.8/P12.1 未执行。
+- 普通 clean 体积与 P13.7 一致：`kernel.bin=99,208B`、`text=98,930`、`data=232`、`bss=18,300`、`__bss_end=0x9CB1C`，BSS 余 1,252B。
+- 边界：压力只覆盖无竞争两层加解锁；P13.8 不能标记全绿，下一步先修 join-EINTR/调度竞态再补跑 P11.8/P12.1。
+- 证据：`tests/kernel/results/2026-11-28/p138-regression.md`、`p138-lock-r1..r3.log`、`p138-p53-r1/r2.txt`、`p138-v-address.txt`、`p138-v-slotpage.txt`、`p138-c-page.txt`、`p138-exit-r1..r5.txt`、`p138-p133-bg2/4/8.log`、`p138-p134-1500-bg2/4/8.log`、`p138-p134-2100-bg2/4/8.log`、`p138-m0/1/2-r1..r3.log`。

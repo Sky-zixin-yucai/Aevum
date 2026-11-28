@@ -64,6 +64,10 @@ extern u8 user_program_end[];
 #define RT_PI_CHAIN_ENABLE 1
 #endif
 
+#ifndef RT_LOCK_STRESS
+#define RT_LOCK_STRESS 0
+#endif
+
 #if RT_BG_TASKS > 12
 #error "RT_BG_TASKS must be 0..12 (PROC_MAX=12)"
 #endif
@@ -136,6 +140,16 @@ static void out_u32(u32 v)
     char buf[12];
     int n = fmt_dec(buf, v);
     uart_write((const u8 *)buf, (u32)n);
+}
+
+static void out_i32(int v)
+{
+    if (v < 0) {
+        out("-");
+        out_u32((u32)(-v));
+    } else {
+        out_u32((u32)v);
+    }
 }
 
 static void rt_idle(void)
@@ -364,6 +378,76 @@ static void rt_pi_run(void)
     out_u32(pi_boosts);
     out(" restore=");
     out_u32(pi_restores);
+    out("\n");
+}
+#endif
+
+#if RT_LOCK_STRESS
+/*
+ * P13.8：无竞争的两层锁压力。每轮 A->B，B->A LIFO 解锁；
+ * 第一轮在持 A/B 时验证第三把锁 -1、乱序解锁 -1。
+ */
+static struct rt_mutex lock_stress_a;
+static struct rt_mutex lock_stress_b;
+static struct rt_mutex lock_stress_c;
+
+static void rt_lock_stress_run(void)
+{
+    u32 i;
+    u32 err = 0;
+    u32 a_locks, a_waits, a_boosts, a_restores;
+    u32 b_locks, b_waits, b_boosts, b_restores;
+    int third = 0;
+    int lifo = 0;
+
+    rt_mutex_init(&lock_stress_a, 0, RT_MUTEX_NO_CEILING);
+    rt_mutex_init(&lock_stress_b, 0, RT_MUTEX_NO_CEILING);
+    rt_mutex_init(&lock_stress_c, 0, RT_MUTEX_NO_CEILING);
+
+    for (i = 0; i < 1000u; i++) {
+        if (rt_mutex_lock(&lock_stress_a) != 0) {
+            err = 1;
+            break;
+        }
+        if (rt_mutex_lock(&lock_stress_b) != 0) {
+            (void)rt_mutex_unlock(&lock_stress_a);
+            err = 2;
+            break;
+        }
+        if (i == 0) {
+            third = rt_mutex_lock(&lock_stress_c);
+            lifo = rt_mutex_unlock(&lock_stress_a);
+        }
+        if (rt_mutex_unlock(&lock_stress_b) != 0) err = 3;
+        if (rt_mutex_unlock(&lock_stress_a) != 0) err = 4;
+    }
+
+    rt_mutex_stats(&lock_stress_a, &a_locks, &a_waits, &a_boosts, &a_restores);
+    rt_mutex_stats(&lock_stress_b, &b_locks, &b_waits, &b_boosts, &b_restores);
+    out("LOCK_STRESS loops=1000 err=");
+    out_u32(err);
+    out(" third=");
+    out_i32(third);
+    out(" lifo=");
+    out_i32(lifo);
+    out(" depth=");
+    out_u32((u32)task_rt_mutex_held_depth(0));
+    out(" a_locks=");
+    out_u32(a_locks);
+    out(" b_locks=");
+    out_u32(b_locks);
+    out(" a_waits=");
+    out_u32(a_waits);
+    out(" b_waits=");
+    out_u32(b_waits);
+    out(" a_boost=");
+    out_u32(a_boosts);
+    out(" b_boost=");
+    out_u32(b_boosts);
+    out(" a_restore=");
+    out_u32(a_restores);
+    out(" b_restore=");
+    out_u32(b_restores);
     out("\n");
 }
 #endif
@@ -780,6 +864,9 @@ static void rt_control(void)
 #if RT_PI_CHAIN
     rt_pi_chain_run();
 #endif
+#if RT_LOCK_STRESS
+    rt_lock_stress_run();
+#endif
     period_cycles = cycles_per_us * RT_PERIOD_US;
     budget_cycles = cycles_per_us * RT_BUDGET_US;
     work_cycles = cycles_per_us * RT_WORK_US;
@@ -915,7 +1002,7 @@ void rtbench_start(void)
 {
     const char *rc;
 
-    out("RT_BOOT P13.7\n");
+    out("RT_BOOT P13.8\n");
     rc = task_create(3, "rtidle", rt_idle, AEVUM_STACK_IDLE, &rt_idle_task);
     if (rc) {
         out("RT_STAT task_create idle failed: ");

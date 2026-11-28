@@ -415,3 +415,36 @@ RT 夹具 `kernel.bin=47,204B`，c0/c1 相同；`disk.img=1,474,560B`。普通�
 - P13.6 回归：mode0 `wait_us=32,132 lock_p=3 med_ticks=3 boost/restore=0/0`；mode1 `9,767 lock_p=3 med_ticks=0 1/1`；mode2 `7,677 lock_p=0 med_ticks=0 1/1`，与 P13.6 区间一致。
 
 边界：固定 2 层、只提升 RT owner、只沿 `pi_blocked_on` 走一层；没有任意深度、环/死锁检测、用户态 futex、SMP per-CPU 锁、IOAPIC 或真实硬件。证据 `tests/kernel/results/2026-11-28/p137-matrix.md`、`p137-c0-r1..r3.log`、`p137-c1-r1..r3.log`、`p137-normal-smoke.log`、`p136-reg-m0/1/2.log`。
+
+## 29. P13.8 全量回归与两层锁压力
+
+P13.8 在普通镜像上重跑 P5.3/P11.x/P12.1 和 RT 矩阵，并用 `RT_LOCK_STRESS` 做 1000 轮两层锁加解锁。压力夹具默认关闭，普通构建体积与 P13.7 完全一致：
+
+| 项目 | P13.7 | P13.8 | 变化 |
+|---|---|---|---|
+| `kernel.bin` | 99,208B | 99,208B | 0 |
+| `text` | 98,930 | 98,930 | 0 |
+| `data` | 232 | 232 | 0 |
+| `bss` | 18,300 | 18,300 | 0 |
+| BSS 余量 | 1,252B | 1,252B | 0 |
+
+RT 锁压力夹具 `kernel.bin=45,604B`、`disk.img=1,474,560B`。3 次逐字一致：`loops=1000 err=0 third=-1 lifo=-1 depth=0 a_locks=1000 b_locks=1000 a_waits=0 b_waits=0 a_boost=0 b_boost=0 a_restore=0 b_restore=0`；`lat_max_us=181/94/75`、`exec_max_us=1889/1907/1925`、`exec_wall_over=0`，每轮 `periods=1000 miss=0 qerr=0`。
+
+P13.3 预算矩阵（`-icount`）：
+
+| bg | cut_n | cut_us | post_avg_us | after_avg_us | lat_max_us | qerr |
+|---|---|---|---|---|---|---|
+| 2 | 1000 | 2000 | 9099 | 999 | 14 | 0 |
+| 4 | 1000 | 2000 | 9181 | 999 | 7 | 0 |
+| 8 | 1000 | 2000 | 9361 | 999 | 8 | 0 |
+
+P13.4 可调度/边界矩阵：
+
+| work_us | bg | lat_max_us | jitter_max_us | exec_max_us | miss | hard | post_avg_us | after_avg_us |
+|---|---|---|---|---|---|---|---|---|
+| 1500 | 2/4/8 | 7/7/8 | 105/184/364 | 1500 | 0 | 0 | 0 | 0 |
+| 2100 | 2/4/8 | 7/15/8 | 10203/10368/10727 | 10201/10284/10463 | 1000 | 1000 | 8199/8281/8461 | 99/99/99 |
+
+P13.6 三模式各 3 次：mode0 `wait_us=49,968/37,196/42,891`、`lock_p=3 med_ticks=3 boost/restore=0/0`；mode1 `8,803/10,364/11,984`、`lock_p=3 med_ticks=0 1/1`；mode2 `7,394/17,338/10,877`、`lock_p=0 med_ticks=0 1/1`。全部 `rc=0 periods=1000 miss=0 qerr=0`。
+
+P5.3 两轮均 `round 100/100 first 5 ->5 live 1 STRESS OK`、`PHYS 6/255`。**P11.7 失败**：image3 连续 6 次 `exit 6 st 25`，`thread_join` 期望 `-3` 实得 `0`；P11.8/P12.1 因此未执行。P13.8 不是全绿，失败项见 `p138-regression.md`。证据 `tests/kernel/results/2026-11-28/p138-regression.md`、`p138-lock-r1..r3.log`、`p138-p133-bg2/4/8.log`、`p138-p134-1500-bg2/4/8.log`、`p138-p134-2100-bg2/4/8.log`、`p138-m0/1/2-r1..r3.log`。

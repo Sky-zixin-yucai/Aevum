@@ -1296,3 +1296,42 @@ P13.5/P13.6 只覆盖单锁：高优先级直接等 owner，owner 没有阻塞�
 
 证据：`tests/kernel/results/2026-11-28/p137-matrix.md`、`p137-c0-r1..r3.log`、`p137-c1-r1..r3.log`、`p137-normal-smoke.log`、`p136-reg-m0/1/2.log`。
 
+## P13.8 全量回归与两层锁压力
+
+P13.5–P13.7 都在各自构建里验证，未合到普通镜像上连续跑。P13.8 不从 `3d35105` 直接加第 3 层锁，而是先做一遍回归：P5.3 的 100 轮 fork/wait、P11.x 阻塞与 EINTR/kill、P12.1 ramfs、P13.3/P13.4 RT 矩阵、P13.6 三模式，再补 1000 轮两层锁加解锁压力。回归结果不是全绿：P11.7 稳定失败，P11.8/P12.1 被阻断。
+
+### 两层锁压力夹具
+
+- `app/rtbench/rtbench.c` 增加 `RT_LOCK_STRESS`（默认 0）；三把 `RT_MUTEX_NO_CEILING`、`pi=0` 的 `rt_mutex` A/B/C，`out_i32()` 带符号输出。
+- `rt_lock_stress_run()` 做 1000 轮 `A -> B` 加锁、`B -> A` LIFO 解锁；第 1 轮在持 A/B 时验证第 3 把锁返回 `-1`、乱序解 A 返回 `-1`；输出 `LOCK_STRESS`。
+- `RT_BOOT` 改为 `P13.8`。构建：`BUILD=build-p138-lock`，`DEFS="-DAEVUM_RT_BENCH -DRT_LOCK_STRESS=1 -DRT_PI_TEST=0 -DRT_PI_CHAIN=0 -DRT_BG_TASKS=0"`；`kernel.bin=45,604B`，QEMU 不带 `-icount`。
+- 3 次输出逐字一致：`loops=1000 err=0 third=-1 lifo=-1 depth=0 a_locks=1000 b_locks=1000 a_waits=0 b_waits=0 a_boost=0 b_boost=0 a_restore=0 b_restore=0`；每轮 `periods=1000 miss=0 qerr=0`。
+
+### 通过的回归
+
+- P5.3：普通镜像按 `S` 两轮，均 `round 100/100  first 5 ->5  live 1  state STRESS OK`、`PHYS 6/255 proc 1/12 AS 1/12 KSTK 1/12`，回到 `PID 4 LIVE stressA`。
+- P13.3：bg=2/4/8 均 `servo=2000 hard=1000 cut_n=1000 cut_us=2000`，`post_avg_us=9099/9181/9361`、`after_avg_us=999`、`lat_max_us=14/7/8`、`qerr=0`。
+- P13.4：1.5ms 组 `miss=0 hard=0 cut_n=0`、`exec_max_us=1500`、`lat_max_us=7/7/8`；2.1ms 组 `hard=1000 cut_n=1000 cut_us=2000`、`after_avg_us=99`、`post_avg_us=8199/8281/8461`。
+- P13.6 三模式各 3 次，全部 `rc=0`：mode0 `wait_us=49,968/37,196/42,891 lock_p=3 med_ticks=3 boost/restore=0/0`；mode1 `8,803/10,364/11,984 lock_p=3 med_ticks=0 1/1`；mode2 `7,394/17,338/10,877 lock_p=0 med_ticks=0 1/1`。
+
+### 失败：P11.7 join EINTR
+
+- image3 连续 6 次独立启动都以 `exit 6 st 25` 退出；`25` 是 `.bad25`：`thread_join(worker)` 期望被 SIGCHLD 打断返回 `-3`，实际返回 `0`。
+- userD（PID 7，slot 3）ADDRESS 页长期 `TASK READY P1`、`EXEC image 0`、`REAP1 6 img 3 a 0 e 0`、`io ..`。C 页仍有 `SLEEP b 18 w 14 tmo 16`、`IO b 11 w 8 tmo 1`、`WQ blk 11 one 8 all 0 dep 3`、`EINTR 7`，说明 P11.3/P11.6 路径基本工作，失败只在 P11.7 分支。
+- 临时插桩（已回滚、未入库）显示 worker 已启动并先进入 ZOMBIE，父线程调用 join 时目标已退出；`sleep(20)` 子进程在 worker 结束前未得到调度。加长 worker 循环、`sched_yield` 等 DONE、worker `sleep(200)`、父进程先 `sleep(1)` 再 clone 都未通过；`yield` 版本还让 userD/spawn 同时 BLOCK。
+- 倾向是 clone 后父线程未及时回用户态 join，或新 worker 在父线程 join 前被连续调度到退出；根因在调度/唤醒路径，不在 P13.7 锁代码。尚未定位到具体函数。
+- image3 在 P11.7 处退出，P11.8 kill 与 P12.1 ramfs 未执行，本轮没有这两项的通过证据。
+
+### 构建与体积
+
+- 普通 clean：`kernel.bin=99,208B`、`text=98,930`、`data=232`、`bss=18,300`、`__bss_end=0x9CB1C`，BSS 余 1,252B，与 P13.7 完全一致；压力夹具默认关闭，不进入普通镜像。
+- 普通 `disk.img` 8 秒启动 smoke 无 panic。
+
+### 边界与风险
+
+- P13.8 不能标记全绿；P11.7 是阻塞项，P11.8/P12.1 未验证。
+- RT 压力只覆盖无竞争的两层加解锁；有竞争、跨优先级和 3 层以上仍未覆盖。
+- 下一步应先修 join-EINTR/调度竞态，再补跑 P11.8 与 P12.1，最后重跑 P13.8 的失败段。
+
+证据：`tests/kernel/results/2026-11-28/p138-regression.md`、`p138-lock-r1..r3.log`、`p138-p53-r1/r2.txt`、`p138-v-address.txt`、`p138-v-slotpage.txt`、`p138-c-page.txt`、`p138-exit-r1..r5.txt`、`p138-p133-bg2/4/8.log`、`p138-p134-1500-bg2/4/8.log`、`p138-p134-2100-bg2/4/8.log`、`p138-m0/1/2-r1..r3.log`。
+
