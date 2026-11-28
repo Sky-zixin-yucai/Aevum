@@ -44,6 +44,10 @@ struct task_struct {
     u32  rt_throttle_until; /* throttle 到该 tick 后解除 */
     u16  rt_period_ticks;   /* 预算补满周期，100Hz 下 10ms=1 tick */
     u8   rt_throttled;      /* 1：预算耗尽，调度器在本周期内跳过 */
+    u8   rt_prev;           /* P13.1：RT 双向队列前驱槽；0xFF 表示无 */
+    u8   rt_next;           /* P13.1：RT 双向队列后继槽；0xFF 表示无 */
+    u8   rt_prio;           /* P13.1：入队时的 RT 优先级，出队用 */
+    u8   rt_queued;         /* P13.1：1 表示已在 RT 就绪队列中 */
     int  kthread_wait_tid; /* >0：当前任务正阻塞等待该 TID 的 kthread */
     u32  wake_tick;         /* P11.1：定时阻塞的到期 PIT tick；0 表示无限等待 */
     struct wait_queue *waitq; /* P11.3：当前阻塞所属对象等待队列；0 表示普通等待 */
@@ -73,6 +77,13 @@ static struct task_struct boot_task;
 static struct task_struct *current_task;
 static struct task_struct *start_target;
 static u32 tick_total;
+
+/* P13.1：RT 类独立就绪队列。优先级直接复用 priority 0..3，0 最高。 */
+#define TASK_RT_PRIO_COUNT (TASK_PRIORITY_MAX + 1)
+#define TASK_RT_NONE 0xFFu
+static u8 rt_head[TASK_RT_PRIO_COUNT];
+static u8 rt_tail[TASK_RT_PRIO_COUNT];
+static u8 rt_mask;
 
 static volatile u32 sched_reason;
 static volatile int sched_failed;
@@ -194,9 +205,134 @@ static void pid_free(int pid)
     if (pid >= 1 && pid <= PID_MAX) pid_map &= ~(1u << (pid - 1));
 }
 
+/*
+ * P13.1：RT 就绪队列 helper。
+ * 队列只收 rt && READY && !rt_throttled 的任务；RUNNING/BLOCKED/ZOMBIE
+ * 都不在队列里。双向链用槽号 0..TASK_MAX-1，TASK_RT_NONE 表示空。
+ */
+static int task_slot_index(const struct task_struct *task)
+{
+    u32 base = (u32)(unsigned long)tasks;
+    u32 addr = (u32)(unsigned long)task;
+    u32 span = (u32)sizeof(tasks);
+
+    if (addr < base || addr >= base + span) return -1;
+    return (int)((addr - base) / (u32)sizeof(tasks[0]));
+}
+
+static void rt_dequeue(struct task_struct *task)
+{
+    int idx;
+    u8 prev, next, prio;
+
+    if (!task || !task->rt_queued) return;
+    idx = task_slot_index(task);
+    if (idx < 0) {
+        task->rt_queued = 0;
+        task->rt_prev = TASK_RT_NONE;
+        task->rt_next = TASK_RT_NONE;
+        return;
+    }
+    prev = task->rt_prev;
+    next = task->rt_next;
+    prio = task->rt_prio;
+    if (prio >= TASK_RT_PRIO_COUNT) prio = 0;
+
+    if (prev != TASK_RT_NONE) {
+        tasks[prev].rt_next = next;
+    } else {
+        rt_head[prio] = next;
+    }
+    if (next != TASK_RT_NONE) {
+        tasks[next].rt_prev = prev;
+    } else {
+        rt_tail[prio] = prev;
+    }
+    if (rt_head[prio] == TASK_RT_NONE) rt_mask &= (u8)~(1u << prio);
+
+    task->rt_prev = TASK_RT_NONE;
+    task->rt_next = TASK_RT_NONE;
+    task->rt_queued = 0;
+}
+
+static void rt_enqueue(struct task_struct *task)
+{
+    int idx;
+    u8 prio;
+
+    if (!task || !task->rt || task->rt_queued) return;
+    if (task->state != TASK_READY || task->rt_throttled) return;
+    idx = task_slot_index(task);
+    if (idx < 0) return;
+    prio = (task->priority >= 0 && task->priority <= TASK_PRIORITY_MAX)
+               ? (u8)task->priority : 0;
+
+    task->rt_prio = prio;
+    task->rt_prev = rt_tail[prio];
+    task->rt_next = TASK_RT_NONE;
+    if (rt_tail[prio] != TASK_RT_NONE) {
+        tasks[rt_tail[prio]].rt_next = (u8)idx;
+    } else {
+        rt_head[prio] = (u8)idx;
+    }
+    rt_tail[prio] = (u8)idx;
+    rt_mask |= (u8)(1u << prio);
+    task->rt_queued = 1;
+}
+
+static struct task_struct *rt_pop_head(int prio)
+{
+    struct task_struct *task;
+    u8 idx;
+
+    if (prio < 0 || prio >= TASK_RT_PRIO_COUNT) return 0;
+    idx = rt_head[prio];
+    if (idx == TASK_RT_NONE) return 0;
+    task = &tasks[idx];
+    rt_dequeue(task);
+    return task;
+}
+
+static int rt_lowest_priority(void)
+{
+    int prio;
+
+    for (prio = 0; prio < TASK_RT_PRIO_COUNT; prio++) {
+        if (rt_mask & (u8)(1u << prio)) return prio;
+    }
+    return -1;
+}
+
+/* 所有 READY 写入口都走这里：先改状态，再按 RT 规则决定是否入队。 */
+static void task_make_ready(struct task_struct *task)
+{
+    if (!task) return;
+    task->state = TASK_READY;
+    rt_enqueue(task);
+}
+
+static void task_make_running(struct task_struct *task)
+{
+    if (!task) return;
+    rt_dequeue(task);
+    task->state = TASK_RUNNING;
+}
+
+static void rt_queue_reset(void)
+{
+    int i;
+
+    for (i = 0; i < TASK_RT_PRIO_COUNT; i++) {
+        rt_head[i] = TASK_RT_NONE;
+        rt_tail[i] = TASK_RT_NONE;
+    }
+    rt_mask = 0;
+}
+
 static void task_zero(struct task_struct *task)
 {
     int i;
+    rt_dequeue(task);
     task->pid = 0;
     task->tgid = 0;
     task->state = TASK_UNUSED;
@@ -216,6 +352,10 @@ static void task_zero(struct task_struct *task)
     task->rt_period_ticks = 0;
     task->rt_throttle_until = 0;
     task->rt_throttled = 0;
+    task->rt_prev = TASK_RT_NONE;
+    task->rt_next = TASK_RT_NONE;
+    task->rt_prio = 0;
+    task->rt_queued = 0;
     task->kthread_wait_tid = 0;
     task->wake_tick = 0;
     task->waitq = 0;
@@ -235,6 +375,7 @@ static void task_zero(struct task_struct *task)
 void task_boot(void)
 {
     task_zero(&boot_task);
+    rt_queue_reset();
     boot_task.state = TASK_RUNNING;
     boot_task.slice_left = TASK_SLICE_TICKS;
     boot_task.comm[0] = 'i';
@@ -371,7 +512,7 @@ static const char *task_create_common(int priority, const char *name, u32 entry,
     {
         u32 flags;
         __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
-        task->state = TASK_READY;
+        task_make_ready(task);
         *out = task;
         __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
     }
@@ -574,8 +715,12 @@ int task_priority_set(int tid, int priority)
         /*
          * 只改后续 PIT 记账权重，不重算历史 vruntime。这样反复
          * setpriority 不能把累计虚拟时间清零来刷调度优势。
+         * P13.1：RT 任务若已在就绪队列，先摘链再改优先级，避免槽号
+         * 还挂在旧优先级队列上。
          */
+        rt_dequeue(task);
         task->priority = priority;
+        if (task->state == TASK_READY) rt_enqueue(task);
         rc = 0;
     }
     __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
@@ -658,14 +803,31 @@ static void task_note_switch(struct task_struct *next)
 static struct task_struct *task_pick_next(struct task_struct *prev)
 {
     struct task_struct *best = 0;
-    struct task_struct *rt_best = 0;
     struct task_struct *idle_best = 0;
+    struct task_struct *rt_task;
     u64 best_v = 0;
-    u64 rt_best_v = 0;
     int start = 0;
     int i;
 
     task_vruntime_refresh_min();
+
+    /*
+     * P13.1：RT 类走独立就绪队列，选队头是 O(1)（4 位 mask 只做常数扫描）。
+     * RT 队列非空时不再进入 fair 扫描：RT 优先于 fair，fair 只在没有
+     * 可运行 RT 时拿剩余 CPU。
+     */
+    if (rt_mask) {
+        int prio = rt_lowest_priority();
+        if (prio >= 0) {
+            rt_task = rt_pop_head(prio);
+            if (rt_task) {
+                rt_task->slice_left = TASK_SLICE_TICKS;
+                if (rt_task->rt_budget_cycles && !rt_task->rt_budget_last_tsc)
+                    rt_task->rt_budget_last_tsc = tsc_read32();
+                return rt_task;
+            }
+        }
+    }
 
     for (i = 0; i < TASK_MAX; i++) {
         if (&tasks[i] == prev) {
@@ -682,14 +844,8 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
             if (!idle_best) idle_best = t;
             continue;
         }
-        if (t->rt) {
-            if (t->rt_throttled) continue;
-            if (!rt_best || t->vruntime < rt_best_v) {
-                rt_best = t;
-                rt_best_v = t->vruntime;
-            }
-            continue;
-        }
+        /* RT 只从 rt_mask 队列选；这里跳过，避免两套选择规则打架。 */
+        if (t->rt) continue;
         if (!best || t->vruntime < best_v) {
             best = t;
             best_v = t->vruntime;
@@ -704,12 +860,6 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
         idle_demo_pick = 0;
         idle_best->slice_left = TASK_SLICE_TICKS;
         return idle_best;
-    }
-    if (rt_best) {
-        rt_best->slice_left = TASK_SLICE_TICKS;
-        if (rt_best->rt_budget_cycles && !rt_best->rt_budget_last_tsc)
-            rt_best->rt_budget_last_tsc = tsc_read32();
-        return rt_best;
     }
     if (best) {
         best->slice_left = TASK_SLICE_TICKS;
@@ -753,6 +903,8 @@ static int task_rt_budget_charge(struct task_struct *t, u32 now)
             t->rt_throttled = 1;
             t->rt_throttle_until = tick_total +
                                    (t->rt_period_ticks ? t->rt_period_ticks : 1u);
+            /* 预算耗尽的 RT 不再留在就绪队列，否则会被反复选中。 */
+            rt_dequeue(t);
             rt_budget_overrun_total++;
             rt_budget_throttle_total++;
         }
@@ -775,7 +927,19 @@ static void task_note_wake(struct task_struct *t)
     if (t == cur || t == idle_task) return;
     /* RT-2：一次唤醒就是新周期，补满预算并解除 throttle。 */
     if (t->rt) task_rt_budget_reset(t);
-    if (cur == idle_task || t->rt || t->priority < cur->priority) {
+    /*
+     * P13.1：RT 唤醒优先于 fair；高优先级 RT 抢占低优先级 RT；
+     * 同优先级 RT 不互相抢占，按 FIFO 排到队尾。
+     */
+    if (cur == idle_task) {
+        need_resched = 1;
+        wake_resched_total++;
+    } else if (t->rt) {
+        if (!cur->rt || t->priority < cur->priority) {
+            need_resched = 1;
+            wake_resched_total++;
+        }
+    } else if (!cur->rt && t->priority < cur->priority) {
         need_resched = 1;
         wake_resched_total++;
     }
@@ -794,9 +958,9 @@ static void task_wake_expired(u32 now)
         t->waitq = 0;
         t->wait_ticket = 0;
         task_vruntime_wake(t);
-        t->state = TASK_READY;
-        if (t == rt_probe_task) rt_probe_wake_tsc = tsc_read32();
         task_note_wake(t);
+        task_make_ready(t);
+        if (t == rt_probe_task) rt_probe_wake_tsc = tsc_read32();
         timeout_wake_total++;
     }
 }
@@ -839,8 +1003,8 @@ void task_wake_kthread_waiters(int tid)
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
-            tasks[i].state = TASK_READY;
             task_note_wake(&tasks[i]);
+            task_make_ready(&tasks[i]);
         }
     }
 }
@@ -1076,6 +1240,7 @@ void task_terminate_threads(struct process *proc, int except_tid)
         tasks[i].wake_tick = 0;
         tasks[i].waitq = 0;
         tasks[i].wait_ticket = 0;
+        rt_dequeue(&tasks[i]);
         tasks[i].state = TASK_ZOMBIE;
     }
 }
@@ -1118,8 +1283,14 @@ u32 task_schedule_irq(struct irq_frame *frame)
                     need_resched = 1;
                 prev->cpu_ticks++;
                 prev->vruntime += WEIGHT_QUANTUM / task_weight(prev);
-                if (prev->slice_left > 0) prev->slice_left--;
-                if (prev->slice_left > 0) {
+                /*
+                 * P13.1：RT 不再消费 4 tick 固定片。它一直跑到 block/yield、
+                 * 预算耗尽或被更高优先级 RT 抢占；fair 仍按原 slice_left。
+                 */
+                if (!prev->rt && prev->slice_left > 0) prev->slice_left--;
+                if (prev->rt) {
+                    tick_defer = need_resched ? 0 : 1;
+                } else if (prev->slice_left > 0) {
                     if (need_resched) {
                         /* RT-1/RT-2：有唤醒或超预算抢占请求，片未尽也重选。 */
                         tick_defer = 0;
@@ -1150,7 +1321,7 @@ u32 task_schedule_irq(struct irq_frame *frame)
             sched_failed = 1;
             for (;;) __asm__ __volatile__("cli; hlt");
         }
-        next->state = TASK_RUNNING;
+        task_make_running(next);
         current_task = next;
         task_note_switch(next);
         address_space_switch(next->space);
@@ -1163,12 +1334,15 @@ u32 task_schedule_irq(struct irq_frame *frame)
 
     if (prev->state == TASK_RUNNING) {
         if (reason == SCHED_EXIT) {
+            rt_dequeue(prev);
             prev->state = TASK_ZOMBIE;
             prev->zombie_ticks = tick_total;
-        } else if (reason == SCHED_BLOCK)
+        } else if (reason == SCHED_BLOCK) {
+            rt_dequeue(prev);
             prev->state = TASK_BLOCKED;
-        else
-            prev->state = TASK_READY;       /* yield 或 PIT 时间片到期 */
+        } else {
+            task_make_ready(prev);       /* yield 或 PIT 时间片到期 */
+        }
     }
 
     /* 内核任务死亡时仍走 family 树；用户进程的父子关系归 process 表。 */
@@ -1203,17 +1377,17 @@ u32 task_schedule_irq(struct irq_frame *frame)
         if (reason == SCHED_EXIT)
             for (;;) __asm__ __volatile__("cli; hlt");
         if (reason == SCHED_BLOCK) {
-            prev->state = TASK_RUNNING;
+            task_make_running(prev);
             sched_failed = 1;
         } else {
-            prev->state = TASK_RUNNING;
+            task_make_running(prev);
         }
         next = prev;
     }
 
     if (next != prev) {
         if (!prev_reaped) prev->switches++;
-        next->state = TASK_RUNNING;
+        task_make_running(next);
         if (reason == SCHED_TICK) preempt_total++;
         task_note_switch(next);
     } else {
@@ -1221,7 +1395,7 @@ u32 task_schedule_irq(struct irq_frame *frame)
          * 选中自己时也必须恢复 RUNNING：否则一次 yield 会把当前任务
          * 永久留在 READY，PIT 不再给它计费，vruntime 也不再增长。
          */
-        next->state = TASK_RUNNING;
+        task_make_running(next);
     }
     if (next != prev) {
         if (!prev_reaped) fpu_save((void *)prev->fpu_state);
@@ -1287,8 +1461,8 @@ const char *task_wake(int pid)
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
-            tasks[i].state = TASK_READY;
             task_note_wake(&tasks[i]);
+            task_make_ready(&tasks[i]);
             return 0;
         }
     }
@@ -1457,8 +1631,8 @@ void wait_queue_wake_one(struct wait_queue *q)
         best->wake_tick = 0;
         best->waitq = 0;
         task_vruntime_wake(best);
-        best->state = TASK_READY;
         task_note_wake(best);
+        task_make_ready(best);
         q->wakes++;
         wq_wake_one_total++;
     }
@@ -1482,8 +1656,8 @@ void wait_queue_wake_all(struct wait_queue *q)
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
-            tasks[i].state = TASK_READY;
             task_note_wake(&tasks[i]);
+            task_make_ready(&tasks[i]);
             woke = 1;
         }
     }
@@ -1628,8 +1802,8 @@ void task_wake_process(struct process *proc)
             tasks[i].waitq = 0;
             tasks[i].wait_ticket = 0;
             task_vruntime_wake(&tasks[i]);
-            tasks[i].state = TASK_READY;
             task_note_wake(&tasks[i]);
+            task_make_ready(&tasks[i]);
         }
     }
 }
@@ -1774,9 +1948,69 @@ u32 task_rt_probe_wake_tsc(void)
     return rt_probe_wake_tsc;
 }
 
+#ifdef AEVUM_RT_BENCH
+/*
+ * P13.1 验收探针：扫一遍 RT 队列，检查头尾/双向链/mask/state 是否自洽。
+ * 只读，不参与调度。返回位图，0 表示一致。
+ */
+u32 task_rt_queue_audit(void)
+{
+    u8 seen[TASK_MAX];
+    u32 err = 0;
+    u16 queue_mask = 0;
+    int i, prio;
+
+    for (i = 0; i < TASK_MAX; i++) seen[i] = 0;
+
+    for (prio = 0; prio < TASK_RT_PRIO_COUNT; prio++) {
+        u8 cur = rt_head[prio];
+        u8 prev = TASK_RT_NONE;
+        int n = 0;
+
+        if (cur != TASK_RT_NONE) queue_mask |= (u16)(1u << prio);
+        while (cur != TASK_RT_NONE) {
+            struct task_struct *t;
+
+            if (cur >= TASK_MAX || n++ > TASK_MAX) {
+                err |= 1u;
+                break;
+            }
+            t = &tasks[cur];
+            if (!t->rt || !t->rt_queued || t->state != TASK_READY ||
+                t->rt_throttled) err |= 2u;
+            if (t->rt_prio != (u8)prio) err |= 4u;
+            if (t->rt_prev != prev) err |= 8u;
+            if (seen[cur]) err |= 16u;
+            seen[cur] = 1;
+            if (t->rt_next == TASK_RT_NONE) {
+                if (rt_tail[prio] != cur) err |= 32u;
+            } else if (t->rt_next >= TASK_MAX) {
+                err |= 1u;
+                break;
+            }
+            prev = cur;
+            cur = t->rt_next;
+        }
+        if (rt_head[prio] == TASK_RT_NONE &&
+            rt_tail[prio] != TASK_RT_NONE) err |= 64u;
+    }
+
+    for (i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].rt_queued && !seen[i]) err |= 128u;
+        if (tasks[i].rt && tasks[i].state == TASK_READY &&
+            !tasks[i].rt_queued && !tasks[i].rt_throttled) err |= 256u;
+    }
+    if ((u8)queue_mask != rt_mask) err |= 512u;
+    return err;
+}
+#endif
+
 void task_set_rt(struct task_struct *task)
 {
-    if (task) task->rt = 1;
+    if (!task) return;
+    task->rt = 1;
+    /* 已在 READY 的任务要立刻进入 RT 队列，不能等下一次调度才生效。 */
+    if (task->state == TASK_READY) rt_enqueue(task);
 }
 
 void task_set_rt_budget(struct task_struct *task, u32 budget_cycles,
@@ -1786,6 +2020,7 @@ void task_set_rt_budget(struct task_struct *task, u32 budget_cycles,
     task->rt_budget_cycles = budget_cycles;
     task->rt_period_ticks = period_ticks ? period_ticks : 1u;
     task_rt_budget_reset(task);
+    if (task->state == TASK_READY) rt_enqueue(task);
 }
 
 void task_rt_budget_begin(void)
@@ -1830,7 +2065,8 @@ void task_rt_budget_tick(u32 now_tick)
             t->rt_budget_last_tsc = 0;
             t->rt_throttled = 0;
             t->rt_throttle_until = 0;
-            /* 补满后必须重选，否则 RT 要等到 fair 片耗尽才回来。 */
+            /* 补满后如果任务已 READY，重新进入 RT 队列并触发重选。 */
+            if (t->state == TASK_READY) rt_enqueue(t);
             need_resched = 1;
         }
     }

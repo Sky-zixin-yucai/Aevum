@@ -244,6 +244,8 @@ u32 task_rt_probe_wake_tsc(void);
 /* RT-1：最小 RT 类标记；RT 任务优先于 fair 任务，不参与权重竞争。 */
 void task_set_rt(struct task_struct *task);
 u32 task_wake_resched_total(void);
+/* P13.1：只在 RT bench 构建里做队列不变量审计；返回 0 表示结构一致。 */
+u32 task_rt_queue_audit(void);
 
 /*
  * RT-2：CBS 预算。budget_cycles 是每周期可消费的 TSC 周期，period_ticks

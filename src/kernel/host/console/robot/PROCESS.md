@@ -917,3 +917,49 @@ P12.1 只做内核内嵌只读 ramdisk 和单层文件名读取，不接 ATA，�
 - 没有 page cache、lseek、fstat、mmap、poll/select；`read` 只按 fd 当前 offset 顺序复制。`offset` 宽度 24 位，单文件上限受镜像和该字段约束。
 - fork 只复制 file 指针与当前 offset，父子之后各自推进，不共享 offset；这不是完整 POSIX 文件描述符语义。exec 保留 fd 表，exit/信号终止/reap 关闭。
 - 不跨 P12.2：不接 VFS、目录树、块设备、写路径、权限或 cwd；不引入 SMP、per-thread fd 表或网络文件系统。
+
+## P13.1 RT O(1) 就绪队列
+
+P13.1 只改 RT 类任务的就绪队列，fair 类继续走 CFS-lite 的 `vruntime` 扫描；不改用户 ABI，不改 idle 规则，也不把 O(1) 扩成 VFS/文件系统线。
+
+### 队列结构
+
+- `struct task_struct` 新增 `u8 rt_prev/rt_next/rt_prio/rt_queued`；`0xFF` 表示空槽。槽号直接复用 `tasks[]` 下标，不引入指针。
+- `TASK_RT_PRIO_COUNT = TASK_PRIORITY_MAX + 1 = 4`，`TASK_RT_NONE = 0xFF`；静态 `rt_head[4]`、`rt_tail[4]`、`rt_mask` 各一份。
+- `rt_enqueue()` 按优先级尾插，`rt_dequeue()` 摘链并清 `rt_queued/rt_prio`，`rt_pop_head()` 取队头，`rt_lowest_priority()` 用位图找最高优先级。
+- `task_pick_next()` 先查 `rt_mask`：有 RT READY 就取最高优先级队头；RT 队列为空才进入 fair 扫描。fair 扫描显式 `if (t->rt) continue;`，RT 不再参与 `vruntime` 比较。
+- RT 同优先级 FIFO；高优先级 RT 抢占低优先级 RT；同优先级 RT 唤醒只置 `need_resched`，不互相抢占。
+
+### 状态转换与预算
+
+- 所有 READY 写入口集中到 `task_make_ready()`：创建、定时唤醒、kthread 等待者、wait_queue 唤醒、`task_wake`、`task_wake_process` 都走这一入口，保证入队只发生一次。
+- `task_schedule_irq()`：EXIT/BLOCK 先 `rt_dequeue(prev)`；yield/tick 走 `task_make_ready(prev)`；fallback 和 next 变 RUNNING 走 `task_make_running()`。
+- RT 不再消费 4 tick 固定片：只有 `!prev->rt` 才递减 `slice_left`；RT 的 `tick_defer = need_resched ? 0 : 1`，一直跑到 block/yield、预算耗尽或被更高 RT 抢占。
+- `task_set_rt()` 对 READY 任务立刻入队；`task_set_rt_budget()` 重置预算后入队；`task_priority_set()` 对已入队 RT 先摘链、改优先级、再入队。
+- throttle 路径：`task_rt_budget_charge()` 预算耗尽时摘链；`task_rt_budget_tick()` 补满后，若任务 READY 则重新入队并置 `need_resched=1`。throttle 期间任务不在任何 RT 队列里。
+- `task_terminate_threads()` 置 ZOMBIE 前摘链；`task_zero()` 开头也摘链，防止槽被复用后残留旧链。
+
+### RT bench 验收
+
+- `task_rt_queue_audit()` 只在 `#ifdef AEVUM_RT_BENCH` 下编译，检查 4 级头尾、双向链、`rt_mask`、`rt_queued`、`rt_prio` 和 READY 状态；返回 0 表示一致。
+- `RT_QUEUE_TEST=1` 时额外创建 priority 1 的 `rtlow`，与 priority 0 的 `rtctl` 同跑；`rt_report()` 输出 `qerr` 与 `low_ticks`。
+- 队列测试：`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=105 lat_p99_us=50 jitter_max_us=2188 exec_max_us=1883 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3022 qerr=0 low_ticks=1010 cyc_us=3398 calib=1`。priority 0 控制任务在 priority 1 RT 存在时仍零 deadline miss，低优先级 RT 实际运行 1,010 tick，队列审计无结构错误。
+- 预算越界测试：`RT_BUDGET=1 RT_WORK_US=3000`，`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=160 lat_p99_us=60 jitter_max_us=1830 exec_max_us=3087 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3022 qerr=0 low_ticks=1010 cyc_us=3428 calib=1`。每个周期预算耗尽都被摘链并 throttle，下一周期补满后重新入队；`qerr=0`、`miss=0`，说明摘链/补队没有破坏头尾或位图。
+- 首轮 RT（`RT_BG_TASKS=4`，无队列测试）`miss=0 overrun=1`；该次 `overrun` 是单个工作周期超出 2ms 预算，不是 deadline miss，`budget_overrun=0`。
+
+### 构建与体积
+
+- RT 队列测试 `kernel.bin=41,796B`；预算越界测试 `kernel.bin=41,988B`；首轮 RT `kernel.bin=41,220B`。RT 构建不含完整机械臂页面，仍远低于镜像上限。
+- 普通构建 `kernel.bin=93,288B`、`text=93,012`、`data=232`、`bss=17,628`；`__bss_start=0x96C80`、`__bss_end=0x9B15C`。P13.1 新增 4 个 `u8`，`sizeof(struct task_struct)=148B`，16 槽约 +64B；另加 `rt_head/tail/mask` 约 10B。
+- 现有普通构建的 BSS 已越过旧 `AEVUM_KERNEL_END=0x9A000` 4,444B；这不是 P13.1 单独造成，P13.1 只多约 544B，越界主要来自此前未完成的内核通用动作控制改动。P13.1 同时把 boot 第二段从 80 扇区扩到 96、总扇区 208→224，`AEVUM_KERNEL_END` 改为 `0x9C000`，`kernel.bin` 上限改为 114,688B；BSS 余 `0xEA4`（3,748B），镜像余 21,400B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处口径一致。
+- clean 普通构建 SHA-256：kernel `56036a0d537b8474a0922fe336a1adaf293a788aa68981059f0e9c9871ce14ca`、boot `6ee8f9577f92d088bcb2b3ed31c8b6b5f64a3e9861ef73bdd7b83854e6c67808`、disk `61c80e19868e1e7e0db516a33b03352ff708dd9c0e777f96f753b8caf3fbd96a`。
+- 普通 QEMU 启动到原机械臂页面：`N-DOF Planar Arm`、`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。普通构建没有 RT 任务，`rt_mask` 恒为 0，P13.1 代码存在但不进入 RT 路径。
+
+### 边界
+
+- 只做 RT 就绪队列，没有改 fair 的入队/出队、权重、`min_vruntime` 或 4 tick 片；fair 仍是 16 槽线性扫描。
+- 没有 APIC/HPET one-shot、硬 CBS 截断、多核 per-CPU 队列、RT 组调度、deadline 继承或优先级天花板。
+- 同优先级 RT FIFO 由链尾插入保证，但本轮没有单独构造两个同优先级 RT 的任务级测试；队列审计只证明结构一致，不证明 FIFO 顺序。
+- `pick_cycles` 的 TSC 最大/平均统计尚未实现；当前“O(1)”指选队头路径与位图查找，不是实测周期数。
+- 全量回归未在本轮重跑：P5.3 100 轮 fork/wait、P11.5 duel、P11.10/11 RT 统计、P12.1 ramfs 都未重新执行；本轮只覆盖 RT bench 和普通主页面启动。
+- 未提交 git。

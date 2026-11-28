@@ -246,3 +246,18 @@ RT-2 clean 构建 `kernel.bin=88,712B`，`__bss_start=0x95AA0`、`__bss_end=0x99
 - 宿主墙钟 4 后台三次：`lat_max=187/216/285us`、`jitter=594/515/1101us`、`exec=1833/1895/1883us`、`miss=0`、`overrun=0`、`budget_overrun=6/7/7`、`throttle=7/8/7`。宿主 8 后台只有三次重跑各一个有效样本：`lat_max=348/547/228us`、`jitter=8463/3818/1508us`、`budget_overrun=7/9/10`、`miss=0`。宿主停顿把 TSC 墙钟时间计入预算，`budget_overrun` 是误报，不是控制任务真的跑了 2ms。
 - 恶意 3ms 控制、tick 级账本：`exec=3000us`、`budget_overrun=1000`、`throttle=1000`、`miss=0`；账本只能在 tick/工作结束发现超预算，**没有 2ms 硬切**。PIT one-shot 确定性 4 后台正常 1.8ms 一次零 miss/零预算超限，`switches=2470`；宿主 one-shot rep1 有效、rep2 `miss=2/late=1` 被 `HOST_INVALID` 拒绝。one-shot 默认关闭。
 - 边界：RT-2 当前是“预算记账 + 下一周期 throttle”的第一版，不是硬 CBS；`task_note_wake()` 把一次唤醒当新周期，频繁自唤醒可以重置预算，不能抵御恶意唤醒。2ms 硬截断需要 APIC/HPET one-shot 或独立高精度定时器。宿主 `budget_overrun` 和毫秒级抖动是 TCG 停顿，不应写进实时性承诺。
+
+## 22. P13.1 RT O(1) 就绪队列的体积与路径开销
+
+P13.1 clean 普通构建 `kernel.bin=93,288B`，`__bss_start=0x96C80`、`__bss_end=0x9B15C`，`AEVUM_KERNEL_END=0x9C000`：
+
+- 普通构建 text 93,012B、data 232B、bss 17,628B。P13.1 在 `task_struct` 增加 4 个 `u8`，`sizeof(struct task_struct)=148B`；16 槽约 +64B，`rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 +10B。相对 P13.1 前保存的 92,744B 基线，镜像只 +544B。
+- 旧 `AEVUM_KERNEL_END=0x9A000` 已不够用：当前 BSS 越过 4,444B。这不是 P13.1 单独造成，基线镜像本身已 92,744B；主要增长来自此前未完成的内核通用动作控制改动。P13.1 把 boot 第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`，`kernel.bin` 上限 114,688B；BSS 余 `0xEA4`（3,748B），镜像余 21,400B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处一致。
+- 选任务路径：RT READY 存在时，`task_pick_next()` 只做一次 `rt_mask` 判空 + 位图找最高优先级 + 取该优先级队头，成本与 RT 任务数无关；RT 队列为空才进入原来的 16 槽 fair 扫描。fair 扫描多一次 `t->rt` 跳过判断，RT 不再参与 `vruntime` 比较。
+- 入队/出队：`rt_enqueue()` 是尾插，`rt_dequeue()` 是按 `rt_prev/rt_next` 摘链，均为固定几步；`task_make_ready()` 把创建、定时唤醒、kthread 唤醒、wait_queue 唤醒、`task_wake` 和 `task_wake_process` 的 READY 写入集中到一处，避免重复入队。`task_priority_set()` 对已入队 RT 先摘链再按新优先级入队。
+- IRQ0：RT 不再递减 `slice_left`，`tick_defer` 在无抢占请求时为 1，不再每 4 tick 强制重选；有更高优先级 RT 唤醒时 `need_resched=1`，下一次 IRQ0 立即重选。fair 任务仍按原 4 tick 片和 `vruntime` 记账。
+- 队列测试（`RT_BG_TASKS=4 RT_QUEUE_TEST=1`）：`periods=1000 lat_max_us=105 lat_p99_us=50 jitter_max_us=2188 exec_max_us=1883 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3022 qerr=0 low_ticks=1010 cyc_us=3398 calib=1`。priority 0 控制任务与 priority 1 RT 同跑，控制任务仍零 deadline miss；`qerr=0` 是 4 级头尾、双向链、位图、`rt_queued/rt_prio` 与 READY 状态的结构审计。
+- 预算越界测试（`RT_BUDGET=1 RT_WORK_US=3000`）：`periods=1000 lat_max_us=160 lat_p99_us=60 jitter_max_us=1830 exec_max_us=3087 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3022 qerr=0 low_ticks=1010 cyc_us=3428 calib=1`。每个周期 2ms 预算耗尽即摘链，下一周期补满后重新入队；`qerr=0`、`miss=0` 说明 throttle 的摘链/补队没有破坏队列结构。
+- 首轮 RT（`RT_BG_TASKS=4`，无队列测试）`miss=0 overrun=1`；该 `overrun` 是单周期工作超 2ms 预算，不是 deadline miss，`budget_overrun=0`。
+- 普通构建没有 RT 任务，`rt_mask` 恒为 0；主页面正常启动，`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。P13.1 的 O(1) 路径在普通页面路径不启用。
+- 边界：这是 QEMU TCG 的功能与结构口径，不是周期级基准；没有实现 `pick_cycles` 的 TSC 最大/平均统计，因此“O(1)”目前指代码路径和队列结构，不是实测 CPU 周期。没有测同优先级 RT FIFO 的任务级顺序，也没有重跑 P5.3、P11.5、P11.10/11、P12.1 全量回归。

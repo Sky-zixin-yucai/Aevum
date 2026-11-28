@@ -29,6 +29,10 @@ extern u8 user_program_end[];
 #define RT_BUDGET_ONESHOT 0
 #endif
 
+#ifndef RT_QUEUE_TEST
+#define RT_QUEUE_TEST 0
+#endif
+
 #if RT_BG_TASKS > 12
 #error "RT_BG_TASKS must be 0..12 (PROC_MAX=12)"
 #endif
@@ -41,6 +45,10 @@ extern u8 user_program_end[];
 
 static struct task_struct *rt_control_task;
 static struct task_struct *rt_idle_task;
+#if RT_QUEUE_TEST
+static struct task_struct *rt_low_task;
+static u32 rt_low_ticks;
+#endif
 #if RT_BG_TASKS > 0
 static struct process *rt_bg[RT_MAX_BG];
 #endif
@@ -79,6 +87,20 @@ static void rt_idle(void)
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
+
+#if RT_QUEUE_TEST
+/*
+ * P13.1：优先级 1 的 RT 探针。它只在 priority 0 的控制任务睡眠时运行；
+ * 如果高优先级 RT 没有抢占它，控制周期的 miss 会立刻暴露。
+ */
+static void rt_low(void)
+{
+    for (;;) {
+        rt_low_ticks++;
+        (void)task_sleep_ticks(1);
+    }
+}
+#endif
 
 static u32 rt_period_ticks(void)
 {
@@ -204,6 +226,12 @@ static void rt_report(void)
     out_u32(task_wake_resched_total());
     out(" switches=");
     out_u32(switches);
+    out(" qerr=");
+    out_u32(task_rt_queue_audit());
+#if RT_QUEUE_TEST
+    out(" low_ticks=");
+    out_u32(rt_low_ticks);
+#endif
     out(" cyc_us=");
     out_u32(cycles_per_us);
     out(" calib=");
@@ -392,6 +420,18 @@ void rtbench_start(void)
         out("\n");
         for (;;) __asm__ __volatile__("cli; hlt");
     }
+
+#if RT_QUEUE_TEST
+    rc = task_create(1, "rtlow", rt_low, AEVUM_STACK_DUEL_B,
+                     &rt_low_task);
+    if (rc) {
+        out("RT_STAT task_create low failed: ");
+        out(rc);
+        out("\n");
+        for (;;) __asm__ __volatile__("cli; hlt");
+    }
+    task_set_rt(rt_low_task);
+#endif
 
     task_rt_probe_set(rt_control_task);
     task_set_rt(rt_control_task);
