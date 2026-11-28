@@ -1,4 +1,5 @@
 #include "kernel/task.h"
+#include "kernel/rt_mutex.h"
 #include "kernel/task/family.h"
 #include "kernel/task/stack.h"
 #include "kernel/kthread.h"
@@ -33,6 +34,10 @@ struct task_struct {
     int  base_priority;  /* P13.5：用户可见的基准优先级 */
     int  pi_priority;    /* P13.5：继承来的最高等待者优先级；无继承时等于 base */
     u8   pi_boosted;     /* P13.5：1 表示当前 priority 来自 PI 提升 */
+    /* P13.7：多锁嵌套。pi_blocked_on 指向当前等待的锁；held 是 LIFO 持锁栈。 */
+    struct rt_mutex *pi_blocked_on;
+    struct rt_mutex *held_mutex[TASK_RT_MUTEX_HOLD_MAX];
+    u8   held_mutex_depth;
     char comm[TASK_NAME_MAX + 1];
     u32  stack_base;
     u32  stack_top;
@@ -788,13 +793,13 @@ int task_rt_mutex_boost(struct task_struct *task, int priority)
     return 1;
 }
 
-/* 解锁后把 owner 的有效优先级恢复到基准值；嵌套锁不在 P13.5 范围内。 */
+/* 解锁后把 owner 的有效优先级恢复到基准值；只有最外层解锁才恢复。 */
 int task_rt_mutex_restore(struct task_struct *task)
 {
     u32 flags;
     int old_priority;
 
-    if (!task || !task->pi_boosted) return 0;
+    if (!task || !task->pi_boosted || task->held_mutex_depth > 0) return 0;
 
     __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
     old_priority = task->priority;
@@ -808,6 +813,77 @@ int task_rt_mutex_restore(struct task_struct *task)
         need_resched = 1;
     __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
     return 1;
+}
+
+int task_rt_mutex_hold(struct task_struct *task, struct rt_mutex *m)
+{
+    u32 flags;
+
+    if (!task || !m) return -1;
+
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    if (task->held_mutex_depth >= TASK_RT_MUTEX_HOLD_MAX) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+        return -1;
+    }
+    task->held_mutex[task->held_mutex_depth++] = m;
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+    return 0;
+}
+
+int task_rt_mutex_unhold(struct task_struct *task, struct rt_mutex *m)
+{
+    u32 flags;
+
+    if (!task || !m) return -1;
+
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    if (!task->held_mutex_depth ||
+        task->held_mutex[task->held_mutex_depth - 1] != m) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+        return -1;
+    }
+    task->held_mutex_depth--;
+    task->held_mutex[task->held_mutex_depth] = 0;
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+    return 0;
+}
+
+int task_rt_mutex_held_depth(struct task_struct *task)
+{
+    return task ? (int)task->held_mutex_depth : 0;
+}
+
+void task_rt_mutex_set_blocked_on(struct task_struct *task, struct rt_mutex *m)
+{
+    u32 flags;
+
+    if (!task) return;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    task->pi_blocked_on = m;
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
+/*
+ * P13.7：提升 owner 本身，再沿 owner->pi_blocked_on 追一层。max 2 层，
+ * 到第 2 个 owner 后停止，避免环或无限链。
+ */
+int task_rt_mutex_boost_chain(struct task_struct *task, int priority, int depth)
+{
+    int count = 0;
+    struct rt_mutex *inner;
+    struct task_struct *next;
+
+    if (!task || depth >= 2) return 0;
+
+    count = task_rt_mutex_boost(task, priority);
+    if (!count || depth + 1 >= 2) return count;
+
+    inner = task->pi_blocked_on;
+    if (!inner || !inner->owner || inner->owner == task) return count;
+    next = inner->owner;
+    count += task_rt_mutex_boost_chain(next, priority, depth + 1);
+    return count;
 }
 
 

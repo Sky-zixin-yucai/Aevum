@@ -385,3 +385,33 @@ P13.6 在 P13.5 的等待者 PI 之外增加立即优先级天花板：owner 拿
 - 9 次主循环均 1000 周期、`miss=0 qerr=0`；mode1 r1 的 `exec_max_us=2595 exec_wall_over=1` 出现在 `enforce=0` 构建，是宿主墙钟抖动，不是 budget miss。
 
 边界：单锁、静态 ceiling、仅 RT owner；没有多锁嵌套、ceiling 自动推导、PI 链、死锁检测、用户态 mutex ABI、SMP 或真实硬件。证据 `tests/kernel/results/2026-11-28/p136-matrix.md`、`p136-mode0-r1..r3.log`、`p136-mode1-r1..r3.log`、`p136-mode2-r1..r3.log`。
+
+## 28. P13.7 RT 互斥锁的多锁嵌套 PI 链
+
+P13.7 把单锁 PI 扩到固定 2 层持锁：high 等外层 A，A 的 owner 阻塞在内层 B，提升沿 `owner -> pi_blocked_on -> 内层 owner` 传播。普通构建保留 `task_struct` 的持锁栈字段和新后端函数，因此体积相对 P13.6 有固定增长。
+
+| 项目 | P13.6 | P13.7 | 变化 |
+|---|---|---|---|
+| `kernel.bin` | 99,048B | 99,208B | +160B |
+| `text` | 98,795 | 98,930 | +135 |
+| `data` | 232 | 232 | 0 |
+| `bss` | 18,044 | 18,300 | +256 |
+| `__bss_end` | `0x9C97C` | `0x9CB1C` | +0x1A0 |
+| BSS 余量 | 1,668B | 1,252B | -416B |
+
+RT 夹具 `kernel.bin=47,204B`，c0/c1 相同；`disk.img=1,474,560B`。普通镜像 8 秒启动 smoke 无 panic。
+
+链式夹具各 3 次：
+
+| chain | wait_us（r1/r2/r3） | burn_ticks | med_p | low_p | a_boost / b_boost | a_restore / b_restore |
+|---|---|---|---|---|---|---|
+| 0 | 23,656 / 24,259 / 24,099 | 3 | 2 | 0 | 1 / 1 | 1 / 1 |
+| 1 | 3,606 / 3,402 / 3,444 | 0 | 0 | 0 | 2 / 1 | 1 / 1 |
+
+- `chain=0`：high 只提升外层 `pilow`，内层 `pimed` 仍是 RT 2；`pburn`（RT 1）跑满 3 tick，`med_p=2`，high 约 23.7~24.3ms 返回。
+- `chain=1`：high 等 A 时链式提升 `pilow` 和 `pimed`，`pimed` 以 RT 0 先跑；`med_p=0 burn_ticks=0`，high 约 3.4~3.6ms 返回。
+- `a_boost=2` 是 high 在 A 上做的两次提升（`pilow` + 内层 `pimed`）；`b_boost=1` 是 `pilow` 第一次等 B 时对 `pimed` 的单层提升。两次最外层解锁各 restore 一次，high 没被提升。
+- 6 次主循环均 1000 周期、`miss=0 qerr=0`；c0 r3 / c1 r3 的 `exec_wall_over=1` 出现在 `enforce=0` 构建，是宿主墙钟抖动，不是 budget miss。
+- P13.6 回归：mode0 `wait_us=32,132 lock_p=3 med_ticks=3 boost/restore=0/0`；mode1 `9,767 lock_p=3 med_ticks=0 1/1`；mode2 `7,677 lock_p=0 med_ticks=0 1/1`，与 P13.6 区间一致。
+
+边界：固定 2 层、只提升 RT owner、只沿 `pi_blocked_on` 走一层；没有任意深度、环/死锁检测、用户态 futex、SMP per-CPU 锁、IOAPIC 或真实硬件。证据 `tests/kernel/results/2026-11-28/p137-matrix.md`、`p137-c0-r1..r3.log`、`p137-c1-r1..r3.log`、`p137-normal-smoke.log`、`p136-reg-m0/1/2.log`。

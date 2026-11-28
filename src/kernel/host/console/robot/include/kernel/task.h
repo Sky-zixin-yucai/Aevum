@@ -6,6 +6,8 @@
 #define TASK_NAME_MAX 15
 #define TASK_MAX 16
 #define TASK_PRIORITY_MAX 3
+/* P13.7：每个任务最多同时持有 2 层 RT 互斥锁。 */
+#define TASK_RT_MUTEX_HOLD_MAX 2
 /* P11.5：显式 PIT 时间片；100Hz 下 4 tick = 40ms。 */
 #define TASK_SLICE_TICKS 4u
 
@@ -21,6 +23,7 @@ struct task_struct;
 struct address_space;
 struct process;
 struct irq_frame;
+struct rt_mutex;
 
 /* 进程描述符的只读快照；渲染/监视器只能读，不能改任务字段。 */
 struct task_info {
@@ -216,12 +219,25 @@ void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts);
 int task_priority_get(int tid);
 int task_priority_set(int tid, int priority);
 /*
- * P13.5/P13.6：RT 优先级继承/天花板后端。boost 只对 RT owner 生效，可重复
- * 调用取最高等待者或天花板；restore 在 owner 解锁后恢复 base_priority。
- * 仅支持单层持锁。返回 1 表示状态发生变化，0 表示不需要/不可提升。
+ * P13.5/P13.6：RT 优先级继承/天花板后端。boost 只对单个 RT owner 生效，可
+ * 重复调用取最高等待者或天花板；restore 在 owner 最外层解锁后恢复
+ * base_priority。多锁链式提升由下面的 boost_chain 负责。
+ * 返回 1 表示状态发生变化，0 表示不需要/不可提升。
  */
 int task_rt_mutex_boost(struct task_struct *task, int priority);
 int task_rt_mutex_restore(struct task_struct *task);
+
+/*
+ * P13.7：多锁持锁栈与 PI 链。
+ * hold/unhold 必须按 LIFO 成对调用；unhold 只在栈顶匹配时成功。
+ * boost_chain 先提升 task 本身，再沿 task->pi_blocked_on 提升至多 2 层。
+ * 返回本次链上调用提升的次数（0..2），不区分优先级是否真的变化。
+ */
+int task_rt_mutex_hold(struct task_struct *task, struct rt_mutex *m);
+int task_rt_mutex_unhold(struct task_struct *task, struct rt_mutex *m);
+int task_rt_mutex_held_depth(struct task_struct *task);
+void task_rt_mutex_set_blocked_on(struct task_struct *task, struct rt_mutex *m);
+int task_rt_mutex_boost_chain(struct task_struct *task, int priority, int depth);
 /* 唤醒同组所有 BLOCKED 任务；用于 wait/join 的退出通知。 */
 void task_wake_process(struct process *proc);
 

@@ -1245,3 +1245,54 @@ P13.5 的 PI 只在“高优先级已经来等锁”时才提升 owner；如果�
 
 证据：`tests/kernel/results/2026-11-28/p136-matrix.md`、`p136-mode0-r1..r3.log`、`p136-mode1-r1..r3.log`、`p136-mode2-r1..r3.log`。
 
+## P13.7 RT 互斥锁的多锁嵌套 PI 链
+
+P13.5/P13.6 只覆盖单锁：高优先级直接等 owner，owner 没有阻塞在内层锁。真实控制路径常见“外层状态锁 + 内层驱动锁”；如果 high 等外层锁，而外层 owner 正阻塞在内层锁，单层 PI 只提升外层 owner，内层 owner 仍可能被中优先级任务压住。P13.7 增加固定 2 层持锁栈和 `owner -> blocked_on -> 内层 owner` 的链式提升。
+
+### 实现
+
+- `task_struct` 增加 `pi_blocked_on`、`held_mutex[2]`、`held_mutex_depth`；`TASK_RT_MUTEX_HOLD_MAX=2`。按 16 个任务槽计算，新增 BSS 256B。
+- 新增 `task_rt_mutex_hold/unhold/held_depth/set_blocked_on`：hold/unhold 必须 LIFO 成对；unhold 只在栈顶匹配时成功。`task_rt_mutex_restore()` 只在 `held_mutex_depth==0` 时恢复，避免内层解锁提前丢掉外层继承。
+- 新增 `task_rt_mutex_boost_chain(task, priority, depth)`：先提升 task 本身，再沿 `task->pi_blocked_on` 提升内层 owner，最多 2 层；到第 2 个 owner 停止，不建图、不检测环。
+- `rt_mutex_lock()`：无 owner 时先检查持锁深度 `<2`，再 push 到持锁栈；有 owner 时先 `self->pi_blocked_on=m`，再按 `m->chain` 走单层 boost 或链式 boost，然后 `task_block_on`，返回后清 `blocked_on`。递归锁仍返回 -2；第 3 把锁返回 -1。
+- `rt_mutex_unlock()`：先按 LIFO `unhold`；只有 `held_mutex_depth==0` 才 restore，再 `wait_queue_wake_one()`。恢复不再依赖当前这把锁是否 pi/ceiling，避免“内层 PI 锁 + 外层普通锁”漏恢复。
+- `struct rt_mutex` 增加 `chain`；`rt_mutex_init()` 默认 `chain=pi`，新增 `rt_mutex_set_chain()` 供夹具显式开关。P13.6 的单锁调用保持 3 参数不变。
+
+### 验收夹具
+
+- 两把锁 A（外层）和 B（内层），都是 `pi=1`、`chain` 可开关；`pimed`（RT 2）先拿 B，然后阻塞在 `chain_go`。
+- `pilow`（RT 3）拿 A，再尝试 B；B 被 `pimed` 持有，`pilow` 阻塞，`pi_blocked_on=B`。
+- `pburn`（RT 1）CPU-bound，最多 3 个 PIT tick；`pchainhi`（RT 0）等 A。
+- `rtctl` 先让 `pburn` 占 1 tick，再同时放行 `pimed` 和 `pchainhi`。开启 chain 时 high 先拿 A 失败，提升 `pilow`，再沿 `pilow->pi_blocked_on` 提升 `pimed`，`pimed` 以 RT 0 先跑；关闭 chain 时只提升 `pilow`，`pburn` 继续压住 `pimed`。
+- 构建：`BUILD=build-p137-c0|c1`，`DEFS="-DAEVUM_RT_BENCH -DRT_PI_CHAIN=1 -DRT_PI_CHAIN_ENABLE=0|1 -DRT_PI_TEST=0 -DRT_BG_TASKS=0"`；QEMU 不带 `-icount`。注意切换 `BUILD/DEFS` 前必须 `make BUILD=... clean`，否则 Makefile 不跟踪 DEFS，会复用旧对象。
+- 输出：`PI_CHAIN_STAT chain=... rc=... high_rc=... done=... wait_us=... burn_ticks=... med_p=... low_p=... med_after=... low_after=... a_locks=... b_locks=... a_waits=... b_waits=... a_boost=... b_boost=... a_restore=... b_restore=...`。
+
+### 三次结果
+
+| chain | wait_us（r1/r2/r3） | burn_ticks | med_p | low_p | med_after | low_after | a_boost / b_boost | a_restore / b_restore |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 23,656 / 24,259 / 24,099 | 3 | 2 | 0 | 2 | 3 | 1 / 1 | 1 / 1 |
+| 1 | 3,606 / 3,402 / 3,444 | 0 | 0 | 0 | 2 | 3 | 2 / 1 | 1 / 1 |
+
+- `chain=0`：high 只把 `pilow` 提到 RT 0；`pilow` 阻塞在 B，`pimed` 仍是 RT 2，`pburn`（RT 1）先跑满 3 tick。`med_p=2` 是“内层 owner 没被提升”的直接证据；high 约 23.7~24.3ms 才拿到 A。
+- `chain=1`：high 等 A 时做了 2 次提升（`a_boost=2`：`pilow` 和 `pimed`），`pimed` 以 RT 0 先跑；`med_p=0`、`burn_ticks=0`；high 约 3.4~3.6ms 返回。
+- `b_boost=1` 是 `pilow` 第一次等 B 时对 `pimed` 的等待者提升；`a_boost=2` 才是 high 等 A 时链式提升两个 owner。`a_restore/b_restore=1/1` 是两次最外层解锁（`pimed` 解锁 B、`pilow` 解锁 A）各恢复一次；high 没被提升，不产生 restore。
+- 6 次主循环都完成 1000 周期，`miss=0 qerr=0`；c0 r3、c1 r3 出现 `exec_wall_over=1`，本构建 `enforce=0`，是宿主墙钟抖动，不是 budget miss。
+
+### 构建与体积
+
+- 普通 clean：`kernel.bin=99,208B`、`text=98,930`、`data=232`、`bss=18,300`、`__bss_start=0x983A0`、`__bss_end=0x9CB1C`，BSS 余 1,252B。相对 P13.6：`kernel.bin +160B`、`text +135`、`bss +256`；`task_struct` 字段和新后端函数在普通构建里也保留，不再被完全裁掉。
+- RT 夹具：`kernel.bin=47,204B`、`disk.img=1,474,560B`，c0/c1 相同。
+- 普通 `disk.img` 做 8 秒启动 smoke，无 panic；串口仍输出 VGA 帧。
+- P13.6 回归（改核心后各重跑 1 次）：mode0 `wait_us=32,132 lock_p=3 med_ticks=3 boost/restore=0/0`；mode1 `9,767 lock_p=3 med_ticks=0 1/1`；mode2 `7,677 lock_p=0 med_ticks=0 1/1`，与 P13.6 区间一致。
+
+### 边界与风险
+
+- 固定 2 层，不是任意深度；第 3 把锁直接返回 -1，不阻塞、不排队。
+- 链式提升只沿 `pi_blocked_on` 走一层，到第 2 个 owner 截断；不做环检测、死锁检测、锁图或等待图。
+- 只覆盖 RT owner；fair owner 不参与 RT 队列。没有用户态 mutex/futex ABI、SMP per-CPU 锁、IOAPIC 或真实硬件。
+- 持锁栈是每任务固定数组；任务异常退出/泄漏锁时没有自动清理，仍依赖调用方 LIFO 解锁。
+- 全量回归未重跑：P5.3、P11.x、P12.1 未在本轮重新执行。
+
+证据：`tests/kernel/results/2026-11-28/p137-matrix.md`、`p137-c0-r1..r3.log`、`p137-c1-r1..r3.log`、`p137-normal-smoke.log`、`p136-reg-m0/1/2.log`。
+

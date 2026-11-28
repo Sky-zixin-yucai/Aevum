@@ -622,3 +622,17 @@ P13.6 在 P13.5 的等待者 PI 上补静态立即天花板，验证“中优先
 - 构建体积：普通 clean `kernel.bin=99,048B`、`text=98,795`、`data=232`、`bss=18,044`、`__bss_end=0x9C97C`、BSS 余 1,668B，与 P13.5 相同；RT 夹具 `kernel.bin=45,700B`；普通 `disk.img` 8 秒启动 smoke 无 panic。
 - 边界：单锁、静态 ceiling、仅 RT owner；没有多锁嵌套、ceiling 自动推导、PI 链、死锁检测、用户态 mutex ABI、SMP 或真实硬件。全量回归未重跑。
 - 证据：`tests/kernel/results/2026-11-28/p136-matrix.md`、`p136-mode0-r1..r3.log`、`p136-mode1-r1..r3.log`、`p136-mode2-r1..r3.log`。
+
+## P13.7 RT 互斥锁的多锁嵌套 PI 链
+
+P13.7 在单锁 PI 上增加固定 2 层持锁栈，验证 high 等外层锁、owner 阻塞在内层锁时的链式提升。
+
+- `include/kernel/task.h` / `kernel/task/task.c`：`TASK_RT_MUTEX_HOLD_MAX=2`；`task_struct` 增加 `pi_blocked_on`、`held_mutex[2]`、`held_mutex_depth`；新增 `task_rt_mutex_hold/unhold/held_depth/set_blocked_on` 和 `task_rt_mutex_boost_chain(task, priority, depth)`。boost_chain 先提升 owner，再沿 `owner->pi_blocked_on` 提升内层 owner，最多 2 层。
+- `include/kernel/rt_mutex.h` / `kernel/sync/rt_mutex.c`：`struct rt_mutex` 增加 `chain`；`rt_mutex_init()` 默认 `chain=pi`，新增 `rt_mutex_set_chain()`；`rt_mutex_lock()` 无 owner 时检查持锁深度 `<2` 并 push，有 owner 时先写 `pi_blocked_on` 再链式 boost；`rt_mutex_unlock()` 按 LIFO unhold，只有最外层解锁才 restore。递归锁 -2，第 3 把锁 -1。
+- `app/rtbench/rtbench.c`：新增 `RT_PI_CHAIN=1`、`RT_PI_CHAIN_ENABLE=0|1`；A/B 两把锁，`pimed`(RT2) 拿 B 后阻塞，`pilow`(RT3) 拿 A 后阻塞 B，`pburn`(RT1) 干扰，`pchainhi`(RT0) 等 A；输出 `PI_CHAIN_STAT`。
+- 构建：`BUILD=build-p137-c0|c1`，`DEFS="-DAEVUM_RT_BENCH -DRT_PI_CHAIN=1 -DRT_PI_CHAIN_ENABLE=0|1 -DRT_PI_TEST=0 -DRT_BG_TASKS=0"`；切换 DEFS 前必须 clean，否则 Makefile 会复用旧对象。
+- 各 3 次：chain=0 `wait_us=23,656/24,259/24,099`、`burn_ticks=3 med_p=2`；chain=1 `3,606/3,402/3,444`、`burn_ticks=0 med_p=0`。`a_boost=2 b_boost=1`，两次最外层 restore 各 1 次；6 次主循环 `miss=0 qerr=0`。
+- 构建体积：普通 clean `kernel.bin=99,208B`、`text=98,930`、`data=232`、`bss=18,300`、`__bss_end=0x9CB1C`，BSS 余 1,252B；相对 P13.6 `kernel.bin +160B`、`bss +256`。RT 夹具 `kernel.bin=47,204B`；普通 `disk.img` 8 秒启动 smoke 无 panic。
+- P13.6 回归各 1 次：mode0 `32,132 / lock_p=3 / med_ticks=3 / boost=restore=0`，mode1 `9,767 / 3 / 0 / 1/1`，mode2 `7,677 / 0 / 0 / 1/1`。
+- 边界：固定 2 层，不提供任意深度、环/死锁检测、用户态 futex、SMP per-CPU 锁、IOAPIC 或真实硬件；任务异常退出不自动清锁。
+- 证据：`tests/kernel/results/2026-11-28/p137-matrix.md`、`p137-c0-r1..r3.log`、`p137-c1-r1..r3.log`、`p137-normal-smoke.log`、`p136-reg-m0/1/2.log`。

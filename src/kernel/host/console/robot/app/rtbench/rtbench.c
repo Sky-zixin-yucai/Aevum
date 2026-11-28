@@ -8,6 +8,7 @@
 #include "drivers/serial/uart.h"
 #include "kernel/proc.h"
 #include "kernel/task.h"
+#include "kernel/task/stack.h"
 #include "kernel/rt_mutex.h"
 #include "kernel/mm/address_space.h"
 #include "lib/format.h"
@@ -53,6 +54,14 @@ extern u8 user_program_end[];
 
 #ifndef RT_PI_CEILING
 #define RT_PI_CEILING 0
+#endif
+
+#ifndef RT_PI_CHAIN
+#define RT_PI_CHAIN 0
+#endif
+
+#ifndef RT_PI_CHAIN_ENABLE
+#define RT_PI_CHAIN_ENABLE 1
 #endif
 
 #if RT_BG_TASKS > 12
@@ -359,6 +368,256 @@ static void rt_pi_run(void)
 }
 #endif
 
+#if RT_PI_CHAIN
+/*
+ * P13.7 链式夹具：
+ *   pimed(RT2) 拿 B 后阻塞在 chain_go；
+ *   pilow(RT3) 拿 A 后阻塞在 B；
+ *   pburn(RT1) CPU-bound，干扰 pimed；
+ *   pchainhi(RT0) 等 A。
+ * 开启 chain 时，pchainhi -> pilow(A) -> pimed(B) 传播，pimed 先跑；
+ * 关闭 chain 时只提升 pilow，pburn 先跑满 3 tick。
+ */
+static struct rt_mutex chain_a_mutex;
+static struct rt_mutex chain_b_mutex;
+static struct task_struct *chain_low_task;
+static struct task_struct *chain_med_task;
+static struct task_struct *chain_burn_task;
+static struct task_struct *chain_high_task;
+
+static volatile u32 chain_go;
+static volatile u32 chain_high_go;
+static volatile u32 chain_burn_stop;
+static volatile u32 chain_a_locked;
+static volatile u32 chain_b_locked;
+static volatile u32 chain_low_attempt;
+static volatile u32 chain_burn_ticks;
+static volatile u32 chain_med_run_p;
+static volatile u32 chain_low_run_p;
+static volatile u32 chain_med_p_after;
+static volatile u32 chain_low_p_after;
+static volatile u32 chain_high_done;
+static u32 chain_wait_cycles;
+static int chain_rc;
+static int chain_high_rc;
+
+static void rt_chain_med(void)
+{
+    u32 start;
+
+    if (rt_mutex_lock(&chain_b_mutex) != 0) {
+        chain_b_locked = 2;
+        for (;;) task_block();
+    }
+    chain_b_locked = 1;
+    while (!chain_go) task_block();
+
+    chain_med_run_p = (u32)task_priority_get(0);
+    start = tsc_read32();
+    rt_work(start, cycles_per_us * 1500u);
+    (void)rt_mutex_unlock(&chain_b_mutex);
+    chain_med_p_after = (u32)task_priority_get(0);
+    for (;;) task_block();
+}
+
+static void rt_chain_low(void)
+{
+    u32 start;
+
+    if (rt_mutex_lock(&chain_a_mutex) != 0) {
+        chain_a_locked = 2;
+        for (;;) task_block();
+    }
+    chain_a_locked = 1;
+    chain_low_attempt = 1;
+
+    if (rt_mutex_lock(&chain_b_mutex) != 0) {
+        chain_b_locked = 3;
+        for (;;) task_block();
+    }
+    chain_low_run_p = (u32)task_priority_get(0);
+    start = tsc_read32();
+    rt_work(start, cycles_per_us * 1500u);
+    (void)rt_mutex_unlock(&chain_b_mutex);
+    (void)rt_mutex_unlock(&chain_a_mutex);
+    chain_low_p_after = (u32)task_priority_get(0);
+    for (;;) task_block();
+}
+
+static void rt_chain_burn(void)
+{
+    u32 start = task_tick_total();
+
+    while (!chain_burn_stop && task_tick_total() - start < 3u)
+        __asm__ __volatile__("pause");
+    chain_burn_ticks = task_tick_total() - start;
+    for (;;) task_block();
+}
+
+static void rt_chain_high(void)
+{
+    u32 start;
+
+    while (!chain_high_go) task_block();
+    start = tsc_read32();
+    chain_rc = rt_mutex_lock(&chain_a_mutex);
+    chain_wait_cycles = tsc_read32() - start;
+    if (chain_rc == 0)
+        chain_high_rc = rt_mutex_unlock(&chain_a_mutex);
+    chain_high_done = 1;
+    for (;;) task_block();
+}
+
+static void rt_pi_chain_run(void)
+{
+    u32 i;
+    u32 a_locks, a_waits, a_boosts, a_restores;
+    u32 b_locks, b_waits, b_boosts, b_restores;
+    const char *cr;
+    u32 med_pid;
+    u32 med_stack, low_stack, high_stack, burn_stack;
+
+    med_stack = kernel_stack_alloc();
+    low_stack = kernel_stack_alloc();
+    high_stack = kernel_stack_alloc();
+    burn_stack = kernel_stack_alloc();
+    if (!med_stack || !low_stack || !high_stack || !burn_stack) {
+        out("PI_CHAIN_STAT stack=0\n");
+        return;
+    }
+
+    rt_mutex_init(&chain_a_mutex, 1, RT_MUTEX_NO_CEILING);
+    rt_mutex_init(&chain_b_mutex, 1, RT_MUTEX_NO_CEILING);
+    rt_mutex_set_chain(&chain_a_mutex, RT_PI_CHAIN_ENABLE);
+    rt_mutex_set_chain(&chain_b_mutex, RT_PI_CHAIN_ENABLE);
+
+    chain_go = 0;
+    chain_high_go = 0;
+    chain_burn_stop = 0;
+    chain_a_locked = 0;
+    chain_b_locked = 0;
+    chain_low_attempt = 0;
+    chain_burn_ticks = 0;
+    chain_med_run_p = 9;
+    chain_low_run_p = 9;
+    chain_med_p_after = 9;
+    chain_low_p_after = 9;
+    chain_high_done = 0;
+    chain_rc = 0;
+    chain_high_rc = 0;
+
+    cr = task_create(2, "pimed", rt_chain_med, med_stack,
+                     &chain_med_task);
+    if (cr) {
+        out("PI_CHAIN_STAT create_med=");
+        out(cr);
+        out("\n");
+        return;
+    }
+    task_set_rt(chain_med_task);
+    med_pid = task_pid_of(chain_med_task);
+    (void)task_sleep_ticks(2);
+    out("PI_CHAIN_STEP b_locked=");
+    out_u32(chain_b_locked);
+    out("\n");
+    if (chain_b_locked != 1) {
+        out("PI_CHAIN_STAT b_lock=0\n");
+        return;
+    }
+
+    cr = task_create(3, "pilow", rt_chain_low, low_stack,
+                     &chain_low_task);
+    if (cr) {
+        out("PI_CHAIN_STAT create_low=");
+        out(cr);
+        out("\n");
+        return;
+    }
+    task_set_rt(chain_low_task);
+    (void)task_sleep_ticks(2);
+    out("PI_CHAIN_STEP a_locked=");
+    out_u32(chain_a_locked);
+    out(" low_attempt=");
+    out_u32(chain_low_attempt);
+    out("\n");
+    if (chain_a_locked != 1 || chain_low_attempt != 1) {
+        out("PI_CHAIN_STAT a_lock=0\n");
+        return;
+    }
+
+    cr = task_create(0, "pchainhi", rt_chain_high, high_stack,
+                     &chain_high_task);
+    if (cr) {
+        out("PI_CHAIN_STAT create_high=");
+        out(cr);
+        out("\n");
+        return;
+    }
+    task_set_rt(chain_high_task);
+    (void)task_sleep_ticks(1);
+
+    cr = task_create(1, "pburn", rt_chain_burn, burn_stack,
+                     &chain_burn_task);
+    if (cr) {
+        out("PI_CHAIN_STAT create_burn=");
+        out(cr);
+        out("\n");
+        return;
+    }
+    task_set_rt(chain_burn_task);
+    (void)task_sleep_ticks(1);
+
+    /* pchainhi 已就绪但尚未放行；先让 pburn 占住 1 tick。 */
+    chain_go = 1;
+    (void)task_wake(med_pid);
+    chain_high_go = 1;
+    (void)task_wake(task_pid_of(chain_high_task));
+    for (i = 0; i < 40u && !chain_high_done; i++)
+        (void)task_sleep_ticks(1);
+    chain_burn_stop = 1;
+
+    rt_mutex_stats(&chain_a_mutex, &a_locks, &a_waits, &a_boosts, &a_restores);
+    rt_mutex_stats(&chain_b_mutex, &b_locks, &b_waits, &b_boosts, &b_restores);
+    out("PI_CHAIN_STAT chain=");
+    out_u32(RT_PI_CHAIN_ENABLE);
+    out(" rc=");
+    out_u32(chain_rc < 0 ? (u32)(-chain_rc) : 0u);
+    out(" high_rc=");
+    out_u32(chain_high_rc < 0 ? (u32)(-chain_high_rc) : 0u);
+    out(" done=");
+    out_u32(chain_high_done);
+    out(" wait_us=");
+    out_u32(rt_cycles_to_us(chain_wait_cycles));
+    out(" burn_ticks=");
+    out_u32(chain_burn_ticks);
+    out(" med_p=");
+    out_u32(chain_med_run_p);
+    out(" low_p=");
+    out_u32(chain_low_run_p);
+    out(" med_after=");
+    out_u32(chain_med_p_after);
+    out(" low_after=");
+    out_u32(chain_low_p_after);
+    out(" a_locks=");
+    out_u32(a_locks);
+    out(" b_locks=");
+    out_u32(b_locks);
+    out(" a_waits=");
+    out_u32(a_waits);
+    out(" b_waits=");
+    out_u32(b_waits);
+    out(" a_boost=");
+    out_u32(a_boosts);
+    out(" b_boost=");
+    out_u32(b_boosts);
+    out(" a_restore=");
+    out_u32(a_restores);
+    out(" b_restore=");
+    out_u32(b_restores);
+    out("\n");
+}
+#endif
+
 static void rt_report(void)
 {
     u32 i, j, v, n, p99;
@@ -518,6 +777,9 @@ static void rt_control(void)
 #if RT_PI_TEST
     rt_pi_run();
 #endif
+#if RT_PI_CHAIN
+    rt_pi_chain_run();
+#endif
     period_cycles = cycles_per_us * RT_PERIOD_US;
     budget_cycles = cycles_per_us * RT_BUDGET_US;
     work_cycles = cycles_per_us * RT_WORK_US;
@@ -653,7 +915,7 @@ void rtbench_start(void)
 {
     const char *rc;
 
-    out("RT_BOOT P13.6\n");
+    out("RT_BOOT P13.7\n");
     rc = task_create(3, "rtidle", rt_idle, AEVUM_STACK_IDLE, &rt_idle_task);
     if (rc) {
         out("RT_STAT task_create idle failed: ");
