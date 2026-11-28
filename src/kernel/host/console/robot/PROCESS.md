@@ -943,14 +943,16 @@ P13.1 只改 RT 类任务的就绪队列，fair 类继续走 CFS-lite 的 `vrunt
 
 - `task_rt_queue_audit()` 只在 `#ifdef AEVUM_RT_BENCH` 下编译，检查 4 级头尾、双向链、`rt_mask`、`rt_queued`、`rt_prio` 和 READY 状态；返回 0 表示一致。
 - `RT_QUEUE_TEST=1` 时额外创建 priority 1 的 `rtlow`，与 priority 0 的 `rtctl` 同跑；`rt_report()` 输出 `qerr` 与 `low_ticks`。
-- 队列测试：`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=105 lat_p99_us=50 jitter_max_us=2188 exec_max_us=1883 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3022 qerr=0 low_ticks=1010 cyc_us=3398 calib=1`。priority 0 控制任务在 priority 1 RT 存在时仍零 deadline miss，低优先级 RT 实际运行 1,010 tick，队列审计无结构错误。
-- 预算越界测试：`RT_BUDGET=1 RT_WORK_US=3000`，`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=160 lat_p99_us=60 jitter_max_us=1830 exec_max_us=3087 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3022 qerr=0 low_ticks=1010 cyc_us=3428 calib=1`。每个周期预算耗尽都被摘链并 throttle，下一周期补满后重新入队；`qerr=0`、`miss=0`，说明摘链/补队没有破坏头尾或位图。
+- 队列测试：`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=99 lat_p99_us=50 jitter_max_us=2074 exec_max_us=1864 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=52362 pick_avg=5234 pick_n=3000 cyc_us=3413 calib=1`。priority 0 控制任务在 priority 1 RT 存在时仍零 deadline miss，低优先级 RT 实际运行 1,010 tick，队列审计无结构错误；同优先级 `rtfifoA/rtfifoB` 按创建顺序先 A 后 B 运行。
+- 预算越界测试：`RT_BUDGET=1 RT_WORK_US=3000`，`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=254 lat_p99_us=70 jitter_max_us=2293 exec_max_us=3218 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=658753 pick_avg=6035 pick_n=3000 cyc_us=3450 calib=1`。每个周期预算耗尽都被摘链并 throttle，下一周期补满后重新入队；`qerr=0`、`miss=0`，说明摘链/补队没有破坏头尾或位图，FIFO 探针也没有被预算路径打乱。
+- 选任务 TSC 统计在正式周期前重置，排除启动页和校准；队列测试 `pick_avg=5,234` 周期（约 1.5 µs），`pick_max=52,362` 周期（约 15 µs）。QEMU TCG 下 max 受宿主调度抖动影响，只作路径量级证据。
+- `RT_QUEUE_TEST=1` 构建新增 VGA 演示页 `AEVUM / RT QUEUE`，显示 `QUEUE ERR`、`FIFO OK`、`FIFO A/B ORDER`、`LOW TICKS`、`PICK MAX/AVG/CALLS`、`STATE`；最终页 `p13-rtq-final.png` 显示 `QUEUE ERR 0 / FIFO OK 1 / A 1 / B 2 / PICK MAX 52362 / AVG 5234 / CALLS 3000 / DONE`。普通构建主页面不改。
 - 首轮 RT（`RT_BG_TASKS=4`，无队列测试）`miss=0 overrun=1`；该次 `overrun` 是单个工作周期超出 2ms 预算，不是 deadline miss，`budget_overrun=0`。
 
 ### 构建与体积
 
-- RT 队列测试 `kernel.bin=41,796B`；预算越界测试 `kernel.bin=41,988B`；首轮 RT `kernel.bin=41,220B`。RT 构建不含完整机械臂页面，仍远低于镜像上限。
-- 普通构建 `kernel.bin=93,288B`、`text=93,012`、`data=232`、`bss=17,628`；`__bss_start=0x96C80`、`__bss_end=0x9B15C`。P13.1 新增 4 个 `u8`，`sizeof(struct task_struct)=148B`，16 槽约 +64B；另加 `rt_head/tail/mask` 约 10B。
+- RT 队列测试 `kernel.bin=43,076B`；预算越界测试 `kernel.bin=43,300B`；首轮 RT `kernel.bin=41,220B`。RT 构建不含完整机械臂页面，仍远低于镜像上限。
+- 普通构建 `kernel.bin=93,288B`、`text=93,012`、`data=232`、`bss=17,628`；`__bss_start=0x96C80`、`__bss_end=0x9B15C`。收尾代码在普通构建被 `#ifdef AEVUM_RT_BENCH` 和 `--gc-sections` 消掉，clean 构建 SHA 与 P13.1 提交前一致。
 - 现有普通构建的 BSS 已越过旧 `AEVUM_KERNEL_END=0x9A000` 4,444B；这不是 P13.1 单独造成，P13.1 只多约 544B，越界主要来自此前未完成的内核通用动作控制改动。P13.1 同时把 boot 第二段从 80 扇区扩到 96、总扇区 208→224，`AEVUM_KERNEL_END` 改为 `0x9C000`，`kernel.bin` 上限改为 114,688B；BSS 余 `0xEA4`（3,748B），镜像余 21,400B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处口径一致。
 - clean 普通构建 SHA-256：kernel `56036a0d537b8474a0922fe336a1adaf293a788aa68981059f0e9c9871ce14ca`、boot `6ee8f9577f92d088bcb2b3ed31c8b6b5f64a3e9861ef73bdd7b83854e6c67808`、disk `61c80e19868e1e7e0db516a33b03352ff708dd9c0e777f96f753b8caf3fbd96a`。
 - 普通 QEMU 启动到原机械臂页面：`N-DOF Planar Arm`、`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。普通构建没有 RT 任务，`rt_mask` 恒为 0，P13.1 代码存在但不进入 RT 路径。
@@ -959,7 +961,7 @@ P13.1 只改 RT 类任务的就绪队列，fair 类继续走 CFS-lite 的 `vrunt
 
 - 只做 RT 就绪队列，没有改 fair 的入队/出队、权重、`min_vruntime` 或 4 tick 片；fair 仍是 16 槽线性扫描。
 - 没有 APIC/HPET one-shot、硬 CBS 截断、多核 per-CPU 队列、RT 组调度、deadline 继承或优先级天花板。
-- 同优先级 RT FIFO 由链尾插入保证，但本轮没有单独构造两个同优先级 RT 的任务级测试；队列审计只证明结构一致，不证明 FIFO 顺序。
-- `pick_cycles` 的 TSC 最大/平均统计尚未实现；当前“O(1)”指选队头路径与位图查找，不是实测周期数。
-- 全量回归未在本轮重跑：P5.3 100 轮 fork/wait、P11.5 duel、P11.10/11 RT 统计、P12.1 ramfs 都未重新执行；本轮只覆盖 RT bench 和普通主页面启动。
-- 未提交 git。
+- 同优先级 RT FIFO 已用 `rtfifoA/rtfifoB` 两个 priority 1 任务做任务级顺序验收，结果为 A=1、B=2；更高优先级的抢占和 throttle 路径仍由 `qerr`、`miss` 与预算测试覆盖。
+- `pick_cycles` 的 TSC 最大/平均已在 RT bench 实现；普通构建不采样、统计恒为 0。QEMU 下的 max 只作量级参考，不是硬实时上界。
+- 全量回归未在本轮重跑：P5.3 100 轮 fork/wait、P11.5 duel、P11.10/11 RT 统计、P12.1 ramfs 都未重新执行；本轮只覆盖 RT bench、演示页和普通主页面启动。
+- 本轮收尾改动已在本地提交；构建产物按 `docs/contributing/guidelines.md` 不提交。

@@ -5,6 +5,7 @@
 #include "arch/x86/tsc.h"
 #include "config/memory.h"
 #include "drivers/serial/uart.h"
+#include "drivers/video/vga.h"
 #include "kernel/proc.h"
 #include "kernel/task.h"
 #include "kernel/mm/address_space.h"
@@ -47,7 +48,13 @@ static struct task_struct *rt_control_task;
 static struct task_struct *rt_idle_task;
 #if RT_QUEUE_TEST
 static struct task_struct *rt_low_task;
+static struct task_struct *rt_fifo_a_task;
+static struct task_struct *rt_fifo_b_task;
 static u32 rt_low_ticks;
+static u32 rt_fifo_seq;
+static u32 rt_fifo_a_ord;
+static u32 rt_fifo_b_ord;
+static u32 rt_fifo_ok;
 #endif
 #if RT_BG_TASKS > 0
 static struct process *rt_bg[RT_MAX_BG];
@@ -100,7 +107,60 @@ static void rt_low(void)
         (void)task_sleep_ticks(1);
     }
 }
+
+/*
+ * P13.1 FIFO 探针：两个同优先级 RT 任务按创建顺序入队。A 先记录序号并
+ * 永久阻塞，B 再运行；如果链尾插入正确，A=1、B=2。两个任务只跑一次，
+ * 不抢 rtlow 的 tick 计数。
+ */
+static void rt_fifo_a(void)
+{
+    rt_fifo_seq++;
+    rt_fifo_a_ord = rt_fifo_seq;
+    (void)task_block();
+    for (;;) (void)task_sleep_ticks(1000);
+}
+
+static void rt_fifo_b(void)
+{
+    rt_fifo_seq++;
+    rt_fifo_b_ord = rt_fifo_seq;
+    (void)task_block();
+    for (;;) (void)task_sleep_ticks(1000);
+}
 #endif
+
+static void rt_page_num(int row, const char *label, u32 value, u8 attr)
+{
+    char buf[12];
+    int n = fmt_dec(buf, value);
+    buf[n] = 0;
+    vga_text(2, row, label, attr);
+    vga_text(24, row, buf, attr);
+}
+
+static void rt_page_show(const char *state)
+{
+    u32 qerr = task_rt_queue_audit();
+
+    vga_clear(0x07);
+    vga_text(2, 1, "AEVUM / RT QUEUE", 0x0F);
+    vga_text(2, 3, "P13.1  BITMAP + DOUBLE LINK", 0x0B);
+    rt_page_num(6, "QUEUE ERR", qerr, qerr ? 0x0C : 0x0A);
+#if RT_QUEUE_TEST
+    rt_page_num(7, "FIFO OK", rt_fifo_ok, rt_fifo_ok ? 0x0A : 0x0C);
+    rt_page_num(8, "FIFO A ORDER", rt_fifo_a_ord, 0x0E);
+    rt_page_num(9, "FIFO B ORDER", rt_fifo_b_ord, 0x0E);
+    rt_page_num(10, "LOW TICKS", rt_low_ticks, 0x0E);
+#endif
+    rt_page_num(12, "PICK MAX CYC", task_pick_cycles_max(), 0x0E);
+    rt_page_num(13, "PICK AVG CYC", task_pick_cycles_avg(), 0x0E);
+    rt_page_num(14, "PICK CALLS", task_pick_cycles_count(), 0x0E);
+    vga_text(2, 17, "STATE", 0x07);
+    vga_text(24, 17, state, 0x0A);
+    vga_text(2, 20, "GREEN = OK   RED = STRUCT ERROR", 0x07);
+    vga_flush();
+}
 
 static u32 rt_period_ticks(void)
 {
@@ -175,6 +235,10 @@ static void rt_report(void)
     u32 i, j, v, n, p99;
     u32 switches = task_switch_total();
 
+#if RT_QUEUE_TEST
+    rt_fifo_ok = (rt_fifo_a_ord == 1u && rt_fifo_b_ord == 2u) ? 1u : 0u;
+#endif
+
     for (i = 1; i < lat_count; i++) {
         v = rt_lat_us[i];
         j = i;
@@ -231,7 +295,19 @@ static void rt_report(void)
 #if RT_QUEUE_TEST
     out(" low_ticks=");
     out_u32(rt_low_ticks);
+    out(" fifo=");
+    out_u32(rt_fifo_ok);
+    out(" fifo_a=");
+    out_u32(rt_fifo_a_ord);
+    out(" fifo_b=");
+    out_u32(rt_fifo_b_ord);
 #endif
+    out(" pick_max=");
+    out_u32(task_pick_cycles_max());
+    out(" pick_avg=");
+    out_u32(task_pick_cycles_avg());
+    out(" pick_n=");
+    out_u32(task_pick_cycles_count());
     out(" cyc_us=");
     out_u32(cycles_per_us);
     out(" calib=");
@@ -277,6 +353,7 @@ static void rt_control(void)
     }
 #endif
 
+    rt_page_show("RUN");
     rt_calibrate();
     period_cycles = cycles_per_us * RT_PERIOD_US;
     budget_cycles = cycles_per_us * RT_BUDGET_US;
@@ -288,6 +365,8 @@ static void rt_control(void)
 #if RT_BUDGET
     task_set_rt_budget(rt_control_task, budget_cycles, period_ticks);
 #endif
+    /* 选任务周期统计只覆盖正式周期，排除启动页和校准。 */
+    task_pick_cycles_reset();
 
     out("RT_STAT start bg=");
     out_u32(RT_BG_TASKS);
@@ -395,6 +474,7 @@ static void rt_control(void)
     }
 
     rt_report();
+    rt_page_show("DONE");
     process_stop_all();
     for (;;) (void)task_sleep_ticks(1000);
 }
@@ -431,6 +511,26 @@ void rtbench_start(void)
         for (;;) __asm__ __volatile__("cli; hlt");
     }
     task_set_rt(rt_low_task);
+
+    rc = task_create(1, "rtfifoA", rt_fifo_a, AEVUM_STACK_PROBE,
+                     &rt_fifo_a_task);
+    if (rc) {
+        out("RT_STAT task_create fifoA failed: ");
+        out(rc);
+        out("\n");
+        for (;;) __asm__ __volatile__("cli; hlt");
+    }
+    task_set_rt(rt_fifo_a_task);
+
+    rc = task_create(1, "rtfifoB", rt_fifo_b, AEVUM_STACK_P1,
+                     &rt_fifo_b_task);
+    if (rc) {
+        out("RT_STAT task_create fifoB failed: ");
+        out(rc);
+        out("\n");
+        for (;;) __asm__ __volatile__("cli; hlt");
+    }
+    task_set_rt(rt_fifo_b_task);
 #endif
 
     task_rt_probe_set(rt_control_task);

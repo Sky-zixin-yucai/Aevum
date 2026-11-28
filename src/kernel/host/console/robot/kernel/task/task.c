@@ -124,6 +124,10 @@ static u32 wake_resched_total;
 /* RT-2：CBS 超预算与 throttle 次数；按任务字段记账，这里只汇总。 */
 static u32 rt_budget_overrun_total;
 static u32 rt_budget_throttle_total;
+/* P13.1：RT bench 的选任务周期统计；普通构建仍为 0，不增加 IRQ0 开销。 */
+static u32 pick_cycles_max;
+static u32 pick_cycles_total;
+static u32 pick_calls;
 /* P11.7：被 pending signal 打断的阻塞次数。 */
 static u32 eintr_total;
 /*
@@ -800,7 +804,7 @@ static void task_note_switch(struct task_struct *next)
  * P11.4：只要存在非 idle READY，idle 就不参与本轮选择；只有全系统都
  * 没有可运行任务时才选 idle，让它在 sti; hlt 上真正停机。
  */
-static struct task_struct *task_pick_next(struct task_struct *prev)
+static struct task_struct *task_pick_next_impl(struct task_struct *prev)
 {
     struct task_struct *best = 0;
     struct task_struct *idle_best = 0;
@@ -870,6 +874,26 @@ static struct task_struct *task_pick_next(struct task_struct *prev)
         return idle_best;
     }
     return 0;
+}
+
+/*
+ * P13.1：只在 RT bench 构建里给选任务路径加 TSC 探头。普通构建没有
+ * 这层包装开销，pick_* 统计恒为 0。
+ */
+static struct task_struct *task_pick_next(struct task_struct *prev)
+{
+#ifdef AEVUM_RT_BENCH
+    u32 t0 = tsc_read32();
+#endif
+    struct task_struct *next = task_pick_next_impl(prev);
+#ifdef AEVUM_RT_BENCH
+    u32 t1 = tsc_read32();
+    u32 dt = t1 - t0;
+    pick_calls++;
+    pick_cycles_total += dt;
+    if (dt > pick_cycles_max) pick_cycles_max = dt;
+#endif
+    return next;
 }
 
 /*
@@ -2004,6 +2028,28 @@ u32 task_rt_queue_audit(void)
     return err;
 }
 #endif
+
+u32 task_pick_cycles_max(void)
+{
+    return pick_cycles_max;
+}
+
+u32 task_pick_cycles_avg(void)
+{
+    return pick_calls ? (pick_cycles_total / pick_calls) : 0u;
+}
+
+u32 task_pick_cycles_count(void)
+{
+    return pick_calls;
+}
+
+void task_pick_cycles_reset(void)
+{
+    pick_cycles_max = 0;
+    pick_cycles_total = 0;
+    pick_calls = 0;
+}
 
 void task_set_rt(struct task_struct *task)
 {
