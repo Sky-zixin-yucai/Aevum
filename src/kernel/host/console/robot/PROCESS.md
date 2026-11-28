@@ -1042,3 +1042,61 @@ qemu-system-i386.exe -m 32 -drive format=raw,file=disk.img \
 - `miss/overrun/exec_max` 是墙钟口径，会包含 throttle 到下一 tick 的时间；不能单独作为 2ms 截断证据。
 - 全量回归未重跑：P5.3 100 轮 fork/wait、P11.5 duel、P11.10/11 RT、P12.1 ramfs 都未在本轮重新执行；本轮覆盖 RT bench、Q 页和普通主页面启动。
 - P13.2 已提交；`p132-*.png/.ppm` 截图仍未跟踪，构建产物按仓库惯例随提交更新。
+
+## P13.3 RT 预算契约与背景负载矩阵
+
+P13.3 不改调度算法，目标是把 P13.2 的 2ms 硬截断从“`-icount` 下单次通过”变成可重复的统计契约：截断前后分段计时，作业在 throttle 后补跑剩余工作，再用 bg=2/4/8 矩阵检查队列和预算路径没有被背景负载打乱。
+
+### 统计口径
+
+- `preempt`：`task_rt_budget_force_expire()` 调用次数，与 `hard` 同源；本矩阵三级均为 1000。
+- `cut_n`：`rtbench` 实际观察到“截断后返回”的作业数；本矩阵三级均为 1000。
+- `cut_us`：`interrupt_rt_cut_us()` 给出的 arm 到硬截断的 TSC 时长；本矩阵三级均为 2000。
+- `post_max_us` / `post_avg_us`：从硬截断 TSC 到作业函数返回的墙钟，包含 throttle 到下一个 10ms tick 的等待；因此是 9ms 级，不是“截断后 CPU 执行时间”。
+- `after_max_us` / `after_avg_us`：作业恢复后、本次返回前实际执行的 TSC 时间；`task_rt_budget_charge()` 只在 `rt_preempted=1` 时累计，`task_rt_budget_begin()` 每周期清零。本矩阵三级均为约 999µs，证明 3ms 作业在 2ms 被截断后确实补跑了剩余 1ms。
+- `exec_wall_over`：旧的 `overrun` 改名，仍表示墙钟口径下作业执行超过 2ms 预算；`miss` / `exec_max_us` 仍是 3ms 工作对 10ms deadline 的墙钟结果，本矩阵为 1000 / 11ms 级，属于预期，不是截断失败。
+
+### 代码改动
+
+- `arch/x86/cpu/lapic/lapic.c` / `include/arch/x86/lapic.h`：保存校准得到的 `cycles_per_us`，新增 `lapic_timer_cycles_per_us()`。
+- `arch/x86/cpu/interrupt/interrupt.c` / `include/arch/x86/interrupt.h`：硬截断事件记录绝对 TSC，新增 `interrupt_rt_cut_tsc()`、`interrupt_rt_cut_us()`。
+- `kernel/task/task.c` / `include/kernel/task.h`：`task_struct` 增加 `rt_after_cut_cycles`、`rt_preempted`；新增 `rt_preempt_total`；`task_rt_budget_charge()` 在 `rt_preempted` 时累计实际执行周期，`task_rt_budget_begin()` 清零，`task_rt_budget_force_expire()` 置位并计数；新增 `task_rt_budget_preempt_total()`、`task_rt_budget_after_cut_cycles()`。
+- `app/rtbench/rtbench.c`：新增 `cut_jobs`、`post_cut_sum_us/max`、`after_cut_sum_us/max`；输出 `preempt`、`cut_n`、`post_max_us`、`post_avg_us`、`after_max_us`、`after_avg_us`。`rt_work()` 改为只累计不超过 1ms 的循环间隔，超过 1ms 视为 throttle 挂起，不计入 CPU 工作量；这样不依赖绝对起点，也不会把 8ms 级等待算成工作。
+- `app/arm/render/render.c`：Q 页 row19 改为 `TIMER LAPIC 1MS  CUT <us>  SERVO <n>  HARD <n>`，`CUT` 用 `interrupt_rt_cut_us()`。
+
+### 背景负载矩阵
+
+构建命令统一为：
+
+```sh
+make all BUILD=build-rt-bgN DEFS="-DAEVUM_RT_BENCH -DRT_BG_TASKS=N -DRT_PERIODS=1000 -DRT_BUDGET=1 -DRT_WORK_US=3000 -DRT_BUDGET_ONESHOT=1"
+```
+
+QEMU 统一带 `-icount shift=auto,align=off,sleep=off`，串口日志保存在 `tests/kernel/results/2026-11-28/`。
+
+| bg | hard | cut_n | cut_us | post_avg_us | post_max_us | after_avg_us | after_max_us | lat_max_us | qerr | pick_avg |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 1000 | 1000 | 2000 | 9099 | 9100 | 999 | 999 | 7 | 0 | 635 |
+| 4 | 1000 | 1000 | 2000 | 9180 | 9181 | 999 | 999 | 7 | 0 | 919 |
+| 8 | 1000 | 1000 | 2000 | 9360 | 9362 | 998 | 999 | 32 | 0 | 1193 |
+
+三级都保持 `servo=2000 armn=1000 gap_us≈1000 fgap_us=1000 cut_us=2000 early=0 ifoff=0 wake_miss=0 sleep_fail=0`。bg=8 的 `lat_max_us` 从 7µs 升到 32µs、`pick_avg` 从 641 周期升到 1193 周期，是 8 个背景任务把 RT 作业挤出 CPU 后的路径量级上升；`after_avg` 仍为 998µs，说明补跑剩余 1ms 没有被背景负载破坏。
+
+### 构建与体积
+
+- 普通 clean 构建：`kernel.bin=98,952B`、`text=98,677`、`data=232`、`bss=17,820`；`__bss_start=0x982A0`、`__bss_end=0x9C83C`，`AEVUM_KERNEL_END=0x9D000`，BSS 余 `0x7C4`（1,988B）。
+- RT bench bg=2：`text=44,280`、`data=228`、`bss=17,624`；bg=4 `text=44,264`；bg=8 `text=44,269`。相对 P13.2 的 43,771 增加约 0.5KB 统计代码。
+- `kernel.bin` 和 `disk.img` 按仓库惯例随提交更新；`kernel.bin` 当前是 normal 构建。
+
+### Q 页
+
+- 仍由 `app/arm/render/render.c` 绘制，row19 现在显示 `TIMER LAPIC 1MS / CUT <us> / SERVO / HARD`；普通构建没有 RT 预算活动，`CUT` 为 0。
+- 截图：`p133-normal.png`、`p133-q.png`，同步归档到 `tests/kernel/results/2026-11-28/`。
+
+### 边界与风险
+
+- `post_*` 是墙钟，包含 throttle 等待；`after_*` 是恢复后的实际执行时间。两者不能混用，也不能用 `post_avg≈9ms` 否定 2ms 截断。
+- `miss=1000`、`exec_wall_over=1000`、`exec_max_us≈11ms` 是“3ms 工作 + 2ms 预算 + 10ms deadline”的预期墙钟结果；截断证据仍是 `cut_us=2000`、`hard=1000`、`cut_n=1000`。
+- 矩阵只覆盖单核、`-icount`、bg=2/4/8；没有 IOAPIC、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。
+- 默认 QEMU 无 `-icount` 时 LAPIC IRQ 投递仍受 TCG 主循环边界影响，`gap_us≈3ms`、`hard` 很低，不作为本矩阵验收。
+- 全量回归未重跑：P5.3、P11.x、P12.1 未在本轮重新执行；本轮覆盖 RT 矩阵、Q 页、普通主页面启动。

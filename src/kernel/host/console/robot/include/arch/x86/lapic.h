@@ -11,6 +11,7 @@
 int lapic_timer_init(void);
 int lapic_timer_recalibrate(u32 cycles_per_us);
 u32 lapic_timer_test_1ms_cycles(void);
+u32 lapic_timer_cycles_per_us(void);
 int lapic_timer_available(void);
 u32 lapic_ticks_per_ms(void);
 

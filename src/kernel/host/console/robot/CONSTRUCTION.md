@@ -572,3 +572,16 @@ P13.2 在 P13.1 的 RT 队列上把预算执行器从“PIT tick 记账 + 事后
 - 构建口径：普通 clean `kernel.bin=98,760B`、`text=98,494`、`data=232`、`bss=17,724`、`__bss_end=0x9C71C`、BSS 余 `0x8E4`；RT bench `kernel.bin=44,036B`、`text=43,771`、`data=228`、`bss=17,528`。
 - QEMU 验收：必须带 `-icount shift=auto,align=off,sleep=off`；1000 周期得到 `servo=2000 hard=1000 armn=1000 gap_us=1000 fgap_us=1000 cut_us=2000 early=0 ifoff=0 qerr=0`，`tmr_ticks_ms=61,375`、`one_ms_us=1000`。默认 QEMU 无 `-icount` 时 IRQ 投递延迟，`gap_us≈3ms`、`hard=0~192`，不作为 P13.2 验收。
 - 边界：单核；没有 IOAPIC 路由、HPET comparator 硬定时、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板；PIT one-shot fallback 未在禁用 LAPIC 的构建里回归；`miss/overrun/exec_max` 是墙钟口径，不能单独证明 2ms 截断。全量回归未重跑。
+
+## P13.3 RT 预算契约、分段统计与背景负载矩阵
+
+P13.3 不换调度算法，把 P13.2 的硬截断路径补成可回归契约：截断多久、截断后等了多久、恢复后实际跑了多久，分别记账；再用 bg=2/4/8 检查背景负载下的补跑和队列结构。
+
+- `arch/x86/cpu/lapic/lapic.c` / `include/arch/x86/lapic.h`：新增 `lapic_cycles_us`，`lapic_timer_recalibrate()` 保存 `cycles_per_us`，新增 `lapic_timer_cycles_per_us()`。
+- `arch/x86/cpu/interrupt/interrupt.c` / `include/arch/x86/interrupt.h`：新增 `lapic_cut_tsc`；硬截断事件记录绝对 TSC；新增 `interrupt_rt_cut_tsc()`、`interrupt_rt_cut_us()`。
+- `kernel/task/task.c` / `include/kernel/task.h`：`task_struct` 增加 `rt_after_cut_cycles`、`rt_preempted`；新增全局 `rt_preempt_total`；`task_rt_budget_charge()` 在 `rt_preempted` 时累计实际执行周期；`task_rt_budget_begin()` 清零；`task_rt_budget_force_expire()` 置位、清 `rt_after_cut_cycles`、计数；新增 `task_rt_budget_preempt_total()`、`task_rt_budget_after_cut_cycles()`。
+- `app/rtbench/rtbench.c`：新增 `cut_jobs`、`post_cut_sum_us/max`、`after_cut_sum_us/max`；输出 `preempt`、`cut_n`、`post_max_us`、`post_avg_us`、`after_max_us`、`after_avg_us`；旧 `overrun` 改名 `exec_wall_over`。`rt_work()` 只累计 ≤1ms 的循环间隔，超过 1ms 视为 throttle 挂起；这样 2ms 截断后恢复仍补跑剩余 1ms，不依赖绝对 TSC 起点。累计器用 u32 微秒，避免 u64 除法触发 `__udivdi3` 链接错误。
+- `app/arm/render/render.c`：Q 页 row19 改为 `TIMER LAPIC 1MS  CUT <us>  SERVO <n>  HARD <n>`，`CUT` 用 `interrupt_rt_cut_us()`。
+- 构建口径：普通 clean `kernel.bin=98,952B`、`text=98,677`、`data=232`、`bss=17,820`、`__bss_start=0x982A0`、`__bss_end=0x9C83C`、BSS 余 `0x7C4`（1,988B）。RT bg=2 `text=44,280`、`data=228`、`bss=17,624`；bg=4 `text=44,264`；bg=8 `text=44,269`。
+- QEMU 验收：`-icount shift=auto,align=off,sleep=off`，bg=2/4/8 各 1000 周期。三级都得到 `hard=1000 cut_n=1000 cut_us=2000 servo=2000 armn=1000 gap_us≈1000 fgap_us=1000 early=0 ifoff=0 qerr=0`；`after_avg_us` 为 999/999/998，`post_avg_us` 为 9099/9180/9360。日志在 `tests/kernel/results/2026-11-28/`。
+- 边界：`post_*` 是含 throttle 的墙钟，`after_*` 是恢复后实际执行时间；`miss/exec_wall_over/exec_max_us≈11ms` 是 3ms 工作对 10ms deadline 的预期结果，不能拿来否定 2ms 截断。矩阵只覆盖单核、`-icount`、bg=2/4/8；没有 IOAPIC、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。全量回归未重跑。

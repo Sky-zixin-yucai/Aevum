@@ -800,7 +800,10 @@ void arm_render_rtq_frame(u32 fifo_a, u32 fifo_b, u32 fifo_ok)
     vga_text(41, 18, "A BEFORE B", fifo_ok ? C_GREEN : C_YELLOW);
 
     vga_text(2, 19, "TIMER", C_GRAY);
-    vga_text(9, 19, interrupt_rt_timer_is_lapic() ? "LAPIC 1MS / HPET REF" : "PIT 100HZ / NO LAPIC", interrupt_rt_timer_is_lapic() ? C_GREEN : C_YELLOW);
+    vga_text(9, 19, interrupt_rt_timer_is_lapic() ? "LAPIC 1MS" : "PIT 100HZ", interrupt_rt_timer_is_lapic() ? C_GREEN : C_YELLOW);
+    vga_text(20, 19, "CUT", C_GRAY);
+    rtq_num(24, 19, interrupt_rt_cut_us(), interrupt_rt_cut_us() ? C_GREEN : C_DGRAY);
+    vga_text(29, 19, "us", C_DGRAY);
     vga_text(33, 19, "SERVO", C_GRAY);
     rtq_num(39, 19, interrupt_rt_servo_total(), C_CYAN);
     vga_text(47, 19, "HARD", C_GRAY);

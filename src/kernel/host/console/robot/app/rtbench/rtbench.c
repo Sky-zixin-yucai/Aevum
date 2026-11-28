@@ -68,7 +68,12 @@ static u32 lat_max_cycles;
 static u32 jitter_max_cycles;
 static u32 exec_max_cycles;
 static u32 deadline_miss;
-static u32 overrun;
+static u32 exec_wall_over;
+static u32 cut_jobs;
+static u32 post_cut_sum_us;
+static u32 post_cut_max_cycles;
+static u32 after_cut_sum_us;
+static u32 after_cut_max_cycles;
 static u32 wake_miss;
 static u32 sleep_fail;
 static u32 late_count;
@@ -174,11 +179,22 @@ static void rt_calibrate(void)
 
 static void rt_work(u32 start, u32 work_cycles)
 {
-    u32 now;
+    u32 last = start;
+    u32 ran = 0;
+    u32 gap_limit = cycles_per_us ? cycles_per_us * 1000u : 0x100000u;
 
     do {
-        now = tsc_read32();
-    } while ((u32)(now - start) < work_cycles);
+        u32 now = tsc_read32();
+        u32 delta = now - last;
+
+        /*
+         * 硬截断会留下 8ms 级 throttle 空档；只累计正常的微秒级循环间隔，
+         * 超过 1ms 的间隔当作挂起，不计入 CPU 工作量。这样 3ms 作业被
+         * 2ms 截断后，恢复时还会补跑剩余 1ms，而不是被墙钟直接判完成。
+         */
+        if (delta <= gap_limit) ran += delta;
+        last = now;
+    } while (ran < work_cycles);
 }
 
 static u32 rt_cycles_to_us(u32 cycles)
@@ -230,8 +246,8 @@ static void rt_report(void)
     out_u32(rt_cycles_to_us(exec_max_cycles));
     out(" miss=");
     out_u32(deadline_miss);
-    out(" overrun=");
-    out_u32(overrun);
+    out(" exec_wall_over=");
+    out_u32(exec_wall_over);
     out(" budget_overrun=");
     out_u32(task_rt_budget_overrun_total());
     out(" throttle=");
@@ -240,6 +256,8 @@ static void rt_report(void)
     out_u32(interrupt_rt_servo_total());
     out(" hard=");
     out_u32(interrupt_rt_hard_total());
+    out(" preempt=");
+    out_u32(task_rt_budget_preempt_total());
     out(" armn=");
     out_u32(interrupt_rt_arm_total());
     out(" gap_us=");
@@ -248,6 +266,16 @@ static void rt_report(void)
     out_u32(interrupt_rt_first_gap_cycles() / (cycles_per_us ? cycles_per_us : 1u));
     out(" cut_us=");
     out_u32(interrupt_rt_cut_cycles() / (cycles_per_us ? cycles_per_us : 1u));
+    out(" cut_n=");
+    out_u32(cut_jobs);
+    out(" post_max_us=");
+    out_u32(rt_cycles_to_us(post_cut_max_cycles));
+    out(" post_avg_us=");
+    out_u32(cut_jobs ? post_cut_sum_us / cut_jobs : 0u);
+    out(" after_max_us=");
+    out_u32(rt_cycles_to_us(after_cut_max_cycles));
+    out(" after_avg_us=");
+    out_u32(cut_jobs ? after_cut_sum_us / cut_jobs : 0u);
     out(" early=");
     out_u32(interrupt_rt_early_total());
     out(" ifoff=");
@@ -373,6 +401,7 @@ static void rt_control(void)
 
     for (i = 0; i < RT_PERIODS; i++) {
         u32 wake, start, end, latency, exec;
+        u32 cut_before = interrupt_rt_hard_total();
 
         task_rt_probe_clear();
         if (task_sleep_ticks(period_ticks)) sleep_fail++;
@@ -432,13 +461,25 @@ static void rt_control(void)
 #endif
         exec = end - start;
         if (exec > exec_max_cycles) exec_max_cycles = exec;
+        if (interrupt_rt_hard_total() != cut_before) {
+            u32 post = end - interrupt_rt_cut_tsc();
+            u32 after = task_rt_budget_after_cut_cycles();
+            u32 post_us = rt_cycles_to_us(post);
+            u32 after_us = rt_cycles_to_us(after);
+
+            cut_jobs++;
+            post_cut_sum_us += post_us;
+            if (post > post_cut_max_cycles) post_cut_max_cycles = post;
+            after_cut_sum_us += after_us;
+            if (after > after_cut_max_cycles) after_cut_max_cycles = after;
+        }
 
         if (!wake) {
             deadline_miss++;
         } else if ((u32)(end - wake) > deadline_cycles) {
             deadline_miss++;
         }
-        if (exec > budget_cycles) overrun++;
+        if (exec > budget_cycles) exec_wall_over++;
     }
 
     rt_report();

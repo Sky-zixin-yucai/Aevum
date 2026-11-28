@@ -278,5 +278,8 @@ int task_rt_budget_force_expire(void);
 void task_rt_budget_tick(u32 now_tick);
 u32 task_rt_budget_overrun_total(void);
 u32 task_rt_budget_throttle_total(void);
+/* P13.3：硬截断次数，以及本次作业截断后实际执行的 TSC 周期。 */
+u32 task_rt_budget_preempt_total(void);
+u32 task_rt_budget_after_cut_cycles(void);
 
 #endif

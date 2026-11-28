@@ -42,6 +42,8 @@ u32 interrupt_rt_arm_total(void);
 u32 interrupt_rt_gap_max_cycles(void);
 u32 interrupt_rt_first_gap_cycles(void);
 u32 interrupt_rt_cut_cycles(void);
+u32 interrupt_rt_cut_tsc(void);
+u32 interrupt_rt_cut_us(void);
 u32 interrupt_rt_early_total(void);
 u32 interrupt_rt_if_off_total(void);
 

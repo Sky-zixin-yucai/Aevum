@@ -42,9 +42,11 @@ struct task_struct {
     u32  rt_budget_cycles;  /* RT-2：每周期 CBS 预算，TSC 周期；0 表示不限制 */
     u32  rt_budget_left;    /* 本周期剩余预算 */
     u32  rt_budget_last_tsc;/* 上次开始/记账的 TSC；0 表示尚未开始 */
+    u32  rt_after_cut_cycles;/* 硬截断后、本次作业返回前实际执行的 TSC 周期 */
     u32  rt_throttle_until; /* throttle 到该 tick 后解除 */
     u16  rt_period_ticks;   /* 预算补满周期，100Hz 下 10ms=1 tick */
     u8   rt_throttled;      /* 1：预算耗尽，调度器在本周期内跳过 */
+    u8   rt_preempted;      /* 1：本次作业已被 LAPIC 硬截断 */
     u8   rt_prev;           /* P13.1：RT 双向队列前驱槽；0xFF 表示无 */
     u8   rt_next;           /* P13.1：RT 双向队列后继槽；0xFF 表示无 */
     u8   rt_prio;           /* P13.1：入队时的 RT 优先级，出队用 */
@@ -125,6 +127,7 @@ static u32 wake_resched_total;
 /* RT-2：CBS 超预算与 throttle 次数；按任务字段记账，这里只汇总。 */
 static u32 rt_budget_overrun_total;
 static u32 rt_budget_throttle_total;
+static u32 rt_preempt_total;
 /* P13.1：RT bench 的选任务周期统计；普通构建仍为 0，不增加 IRQ0 开销。 */
 static u32 pick_cycles_max;
 static u32 pick_cycles_total;
@@ -354,9 +357,11 @@ static void task_zero(struct task_struct *task)
     task->rt_budget_cycles = 0;
     task->rt_budget_left = 0;
     task->rt_budget_last_tsc = 0;
+    task->rt_after_cut_cycles = 0;
     task->rt_period_ticks = 0;
     task->rt_throttle_until = 0;
     task->rt_throttled = 0;
+    task->rt_preempted = 0;
     task->rt_prev = TASK_RT_NONE;
     task->rt_next = TASK_RT_NONE;
     task->rt_prio = 0;
@@ -922,6 +927,7 @@ static int task_rt_budget_charge(struct task_struct *t, u32 now)
     }
     elapsed = now - t->rt_budget_last_tsc;
     t->rt_budget_last_tsc = now;
+    if (t->rt_preempted) t->rt_after_cut_cycles += elapsed;
     if (elapsed >= t->rt_budget_left) {
         t->rt_budget_left = 0;
         if (!t->rt_throttled) {
@@ -2149,6 +2155,8 @@ void task_rt_budget_begin(void)
         return;
     current_task->rt_budget_left = current_task->rt_budget_cycles;
     current_task->rt_budget_last_tsc = tsc_read32();
+    current_task->rt_after_cut_cycles = 0;
+    current_task->rt_preempted = 0;
     current_task->rt_throttled = 0;
     current_task->rt_throttle_until = 0;
 }
@@ -2179,6 +2187,11 @@ int task_rt_budget_force_expire(void)
         !current_task->rt || !current_task->rt_budget_cycles)
         return 0;
     (void)task_rt_budget_charge(current_task, tsc_read32());
+    if (!current_task->rt_preempted) {
+        current_task->rt_preempted = 1;
+        current_task->rt_after_cut_cycles = 0;
+        rt_preempt_total++;
+    }
     if (!current_task->rt_throttled) {
         current_task->rt_budget_left = 0;
         current_task->rt_throttled = 1;
@@ -2219,6 +2232,16 @@ u32 task_rt_budget_overrun_total(void)
 u32 task_rt_budget_throttle_total(void)
 {
     return rt_budget_throttle_total;
+}
+
+u32 task_rt_budget_preempt_total(void)
+{
+    return rt_preempt_total;
+}
+
+u32 task_rt_budget_after_cut_cycles(void)
+{
+    return current_task ? current_task->rt_after_cut_cycles : 0u;
 }
 
 u32 task_wake_resched_total(void)

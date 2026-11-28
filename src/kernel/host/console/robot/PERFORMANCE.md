@@ -278,3 +278,21 @@ P13.2 clean 普通构建 `kernel.bin=98,760B`，`text=98,494`、`data=232`、`bs
 - `miss=1000`、`overrun=1000`、`exec_max_us=10,183` 是墙钟口径：2ms 截断后任务被 throttle 到下一个 10ms tick，函数返回时 TSC 已越过 3ms 工作；它们不能当作截断时延。`pick_avg=725` 周期（约 0.74µs）、`pick_max=3,912` 周期（约 4µs）只作路径量级。
 - 默认 QEMU（无 `-icount`）：LAPIC timer 计数正确（`one_ms_us≈1000`），但 IRQ 投递被拖到 TB/主循环边界，`gap_us≈3ms`、`hard=0~192`；这不是 LAPIC 硬件精度，验收命令必须带 `-icount`。
 - 边界：单核；没有 IOAPIC 路由、HPET comparator 硬定时、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。PIT one-shot fallback 未做禁用 LAPIC 的回归。全量回归未重跑。
+
+## 24. P13.3 截断预算契约与背景负载矩阵
+
+P13.3 把 P13.2 的“截断一次、看 `cut_us=2000`”扩展为分段统计：`preempt/cut_n/cut_us` 证明截断发生，`post_*` 记录截断到作业返回的墙钟，`after_*` 只记录恢复后实际执行的 TSC。构建统一带 `-DRT_WORK_US=3000 -DRT_BUDGET_ONESHOT=1`，QEMU 统一带 `-icount shift=auto,align=off,sleep=off`。
+
+| bg | hard | cut_n | cut_us | post_avg_us | post_max_us | after_avg_us | after_max_us | lat_max_us | qerr | pick_avg |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 1000 | 1000 | 2000 | 9099 | 9100 | 999 | 999 | 7 | 0 | 635 |
+| 4 | 1000 | 1000 | 2000 | 9180 | 9181 | 999 | 999 | 7 | 0 | 919 |
+| 8 | 1000 | 1000 | 2000 | 9360 | 9362 | 998 | 999 | 32 | 0 | 1193 |
+
+- 三级都保持 `servo=2000 armn=1000 gap_us≈1000 fgap_us=1000 early=0 ifoff=0 wake_miss=0 sleep_fail=0 qerr=0`，`switches=4005`。`cut_us=2000` 是 arm 到强制 `rt_dequeue()` 的实测值，不是按 10ms tick 反推。
+- `post_avg_us≈9.1~9.4ms` 是**墙钟**：2ms 截断后任务被 throttle 到下一个 10ms tick，恢复并补跑剩余 1ms，函数在约 11ms 返回，因此截断到返回约 9ms。它包含 8ms 级等待，不是 CPU 执行时间。
+- `after_avg_us≈999` 证明补跑确实发生：2ms 截断后恢复再执行约 1ms，3ms 工作跑满；`after_max_us=999` 与 `after_avg` 一致。P13.3 调试中曾出现 `after_max=999 / after_avg=5`，原因是 `rt_work()` 用绝对 TSC 起点，恢复时 `now-start` 已越过 3ms，工作被误判完成；改为只累计 ≤1ms 的循环间隔后消失。
+- `miss=1000`、`exec_wall_over=1000`、`exec_max_us≈11ms` 是“3ms 工作 + 2ms 预算 + 10ms deadline”的预期墙钟结果，不是截断失败；截断证据是 `hard=1000 cut_n=1000 cut_us=2000`。
+- bg=8 的 `lat_max_us` 从 7µs 升到 32µs、`pick_avg` 从 635 周期升到 1193 周期，是 8 个背景任务把 RT 作业挤出 CPU 后的路径量级上升；`after_avg` 仍为 998µs，补跑没有被背景负载破坏。
+- 普通 clean 构建 `kernel.bin=98,952B`、`text=98,677`、`data=232`、`bss=17,820`；`__bss_end=0x9C83C`，BSS 余 1,988B。RT bg=2 `text=44,280`、`data=228`、`bss=17,624`；bg=4/8 text 44,264/44,269。相对 P13.2 的 43,771 增加约 0.5KB。
+- 边界：只覆盖单核、`-icount`、bg=2/4/8；不覆盖 IOAPIC、多核 per-CPU LAPIC、RT 组调度、deadline 继承、优先级天花板；默认 QEMU 无 `-icount` 的 `gap_us≈3ms` 不作为验收。全量回归未重跑。

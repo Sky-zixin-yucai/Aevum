@@ -28,6 +28,7 @@ static u32 lapic_base;
 static u32 lapic_ready;
 static u32 lapic_ticks_ms;
 static u32 lapic_test_1ms_cycles;
+static u32 lapic_cycles_us;
 
 static inline u32 mmio_read32(u32 addr)
 {
@@ -265,6 +266,7 @@ int lapic_timer_recalibrate(u32 cycles_per_us)
     u32 start, now, current, used;
 
     if (!lapic_ready || !cycles_per_us) return -1;
+    lapic_cycles_us = cycles_per_us;
 
     lapic_write(LAPIC_TDC, 0x7u);
     lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (1u << 16));
@@ -298,6 +300,11 @@ int lapic_timer_recalibrate(u32 cycles_per_us)
 u32 lapic_timer_test_1ms_cycles(void)
 {
     return lapic_test_1ms_cycles;
+}
+
+u32 lapic_timer_cycles_per_us(void)
+{
+    return lapic_cycles_us;
 }
 
 void lapic_timer_arm_us(u32 us){

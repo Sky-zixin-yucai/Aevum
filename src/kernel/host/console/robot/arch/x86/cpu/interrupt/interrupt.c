@@ -33,6 +33,7 @@ static u32 lapic_first_gap;
 static u32 lapic_first_pending;
 static u32 lapic_last_tsc_arm;
 static u32 lapic_cut_cycles;
+static u32 lapic_cut_tsc;
 static u32 lapic_early_count;
 static u32 lapic_arm_if_off;
 
@@ -243,6 +244,7 @@ int interrupt_lapic_event(void)
         lapic_remaining_us = 0;
         lapic_active = 0;
         lapic_cut_cycles = now - lapic_last_tsc_arm;
+        lapic_cut_tsc = now;
         lapic_hard_count++;
         lapic_timer_stop();
         return 1;
@@ -277,6 +279,18 @@ u32 interrupt_rt_first_gap_cycles(void)
 u32 interrupt_rt_cut_cycles(void)
 {
     return lapic_cut_cycles;
+}
+
+u32 interrupt_rt_cut_tsc(void)
+{
+    return lapic_cut_tsc;
+}
+
+u32 interrupt_rt_cut_us(void)
+{
+    u32 cycles_us = lapic_timer_cycles_per_us();
+
+    return cycles_us ? lapic_cut_cycles / cycles_us : 0u;
 }
 
 u32 interrupt_rt_early_total(void)
