@@ -1195,3 +1195,53 @@ P13.4 只覆盖无锁周期任务。P13.5 补一个最小的 RT 互斥锁，验�
 
 证据：`tests/kernel/results/2026-11-28/p135-matrix.md`、`p135-pi-r1..r3.log`、`p135-nopi-r1..r3.log`。
 
+## P13.6 RT 互斥锁的立即优先级天花板
+
+P13.5 的 PI 只在“高优先级已经来等锁”时才提升 owner；如果中优先级任务在 high 到达前就抢占持锁者，临界区仍会被拖长。P13.6 增加立即优先级天花板：owner 在拿锁当下就提升到调用方给出的静态 ceiling，不需要等待者先出现。
+
+### 实现
+
+- `struct rt_mutex` 增加 `ceiling`：`-1` 关闭，`0..3` 为立即天花板；`rt_mutex_init(m, pi, ceiling)` 同时支持等待者 PI 和天花板两种模式。
+- `rt_mutex_lock()` 在无 owner、刚成为 owner 后检查 `ceiling >= 0 && ceiling < task_priority_get(0)`；满足时调用 `task_rt_mutex_boost(owner, ceiling)` 并记一次 `boost_count`。如果 owner 的基准优先级已经高于 ceiling，不重复提升。
+- `rt_mutex_unlock()` 先恢复 owner 的 `base_priority`，再 `wait_queue_wake_one()`。P13.5 原顺序是先 wake 再 restore；PIT 可能在两者之间切到等待者，导致 `boost=1 restore=0`，P13.6 的三次矩阵暴露过这个窗口，现已修正。
+- 两种模式都只支持单层持锁；递归锁仍返回 -2。
+- 夹具新增 `RT_PI_MODE=0/1/2`：0 无继承，1 等待者 PI，2 立即天花板；`RT_PI_ENABLE` 保留为旧命令行兼容。`RT_PI_CEILING` 默认 0。`pilow` 拿锁后额外记录 `lock_p`，即拿锁瞬间的有效优先级。
+
+### 验收夹具
+
+- `pilow`（RT 3）拿锁，记录 `lock_p`，然后阻塞等 `pi_go`。
+- `pimed`（RT 1）在 `pi_go` 后 CPU-bound 至多 3 个 PIT tick。
+- `rtctl`（RT 0）唤醒 `pilow`、创建 `pimed`，自己调用 `rt_mutex_lock()`；记录等待 TSC。
+- 构建：`BUILD=build-p136-m0|m1|m2`，`DEFS="-DAEVUM_RT_BENCH -DRT_PI_TEST=1 -DRT_PI_MODE=0|1|2 -DRT_PI_CEILING=0 -DRT_BG_TASKS=0"`；QEMU 不带 `-icount`。
+- 输出：`PI_STAT mode=... pi=... rc=... wait_us=... low_lock=... lock_p=... low_p=... med_ticks=... locks=... waits=... boost=... restore=...`。
+
+### 三次结果
+
+| mode | 策略 | wait_us（r1/r2/r3） | lock_p | med_ticks | boost/restore | low_p |
+|---|---|---|---|---|---|---|
+| 0 | 无继承 | 39,061 / 33,239 / 40,162 | 3 | 3 | 0 / 0 | 3 |
+| 1 | 等待者 PI | 7,661 / 9,856 / 11,519 | 3 | 0 | 1 / 1 | 3 |
+| 2 | 立即天花板 | 7,078 / 9,083 / 8,374 | 0 | 0 | 1 / 1 | 3 |
+
+- 无继承：`pimed` 在 `rtctl` 阻塞后连续跑满 3 tick，`rtctl` 约 33~40ms 才拿到锁。
+- 等待者 PI：`pilow` 在 high 等锁时继承 RT 0，`pimed` 一次都没运行；`rtctl` 约 7.7~11.5ms 返回。
+- 立即天花板：`pilow` 在拿锁当下就是 RT 0（`lock_p=0`），不必等 `rtctl` 来等锁；`pimed` 同样没有运行，`rtctl` 约 7.1~9.1ms 返回。
+- `wait_us` 含 QEMU 调度、TSC 读数和唤醒路径开销，不是纯临界区 1.5ms；`lock_p=3/0`、`med_ticks=0/3` 和 `boost/restore` 才是协议生效的直接证据。
+- 9 次主循环 `RT_STAT` 都完成 1000 周期，`miss=0 qerr=0`；mode1 r1 有 `exec_max_us=2595 exec_wall_over=1`，本构建 `enforce=0`，这是宿主调度墙钟抖动，不是 budget miss。
+
+### 构建与体积
+
+- 普通 clean 与 P13.5 相同：`kernel.bin=99,048B`、`text=98,795`、`data=232`、`bss=18,044`、`__bss_start=0x98300`、`__bss_end=0x9C97C`，BSS 余 1,668B。`rt_mutex`/RT 夹具只在 `AEVUM_RT_BENCH` 构建中可达，普通镜像文本和 BSS 没有增长。
+- RT 夹具：`kernel.bin=45,700B`、`disk.img=1,474,560B`，三种 mode 相同。
+- 普通 `disk.img` 做 8 秒启动 smoke，无 panic；串口仍输出 VGA 帧。
+
+### 边界与风险
+
+- 只做单锁、静态 ceiling；没有多锁嵌套、ceiling 自动推导、PI 链、死锁检测或用户态 mutex ABI。
+- ceiling 是调用方给的常量，不校验“所有可能持锁者都低于 ceiling”；设错会人为压低 owner 之外的优先级关系，属于调用约定。
+- 只对 RT owner 生效；fair owner 不参与 RT 队列，天花板不会改变 fair 调度。
+- 夹具是内核任务，不是 ring3；仍为单核 QEMU/TCG，没有 SMP per-CPU 锁、IOAPIC 或真实硬件。
+- 全量回归未重跑：P5.3、P11.x、P12.1 未在本轮重新执行。
+
+证据：`tests/kernel/results/2026-11-28/p136-matrix.md`、`p136-mode0-r1..r3.log`、`p136-mode1-r1..r3.log`、`p136-mode2-r1..r3.log`。
+

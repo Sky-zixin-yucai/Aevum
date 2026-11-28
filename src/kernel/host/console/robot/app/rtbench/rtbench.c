@@ -39,8 +39,20 @@ extern u8 user_program_end[];
 #define RT_PI_TEST 0
 #endif
 
-#ifndef RT_PI_ENABLE
-#define RT_PI_ENABLE 1
+/*
+ * P13.6：0 无继承，1 等待者优先级继承，2 立即优先级天花板。
+ * 保留 RT_PI_ENABLE 作为旧命令行兼容：0->mode 0，1->mode 1。
+ */
+#ifndef RT_PI_MODE
+#ifdef RT_PI_ENABLE
+#define RT_PI_MODE (RT_PI_ENABLE ? 1 : 0)
+#else
+#define RT_PI_MODE 1
+#endif
+#endif
+
+#ifndef RT_PI_CEILING
+#define RT_PI_CEILING 0
 #endif
 
 #if RT_BG_TASKS > 12
@@ -76,6 +88,7 @@ static volatile u32 pi_go;
 static volatile u32 pi_low_locked;
 static volatile u32 pi_med_stop;
 static volatile u32 pi_med_ticks;
+static volatile u32 pi_lock_p;
 static u32 pi_wait_cycles;
 static int pi_rc;
 static u32 pi_locks;
@@ -228,11 +241,11 @@ static u32 rt_cycles_to_us(u32 cycles)
 
 #if RT_PI_TEST
 /*
- * P13.5 优先级反转夹具：
- * - pilow（RT 3）先拿锁，然后阻塞等 pi_go；
+ * P13.5/P13.6 优先级反转夹具：
+ * - pilow（RT 3）先拿锁，记录拿锁瞬间的有效优先级，然后阻塞等 pi_go；
  * - pimed（RT 1）在 pi_go 后 CPU-bound 3 tick；
- * - rtctl（RT 0）拿锁时若没有 PI，会被 pimed 拖到约 30ms；
- *   有 PI 时 pilow 继承 RT 0，先跑完 1.5ms 临界区再释放。
+ * - rtctl（RT 0）拿锁时若没有继承/天花板，会被 pimed 拖到约 30ms；
+ *   等待者 PI 或立即天花板生效时，pilow 先跑完 1.5ms 临界区再释放。
  */
 static void rt_pi_low(void)
 {
@@ -242,6 +255,7 @@ static void rt_pi_low(void)
         pi_low_locked = 2;
         for (;;) (void)task_block();
     }
+    pi_lock_p = (u32)task_priority_get(0);
     pi_low_locked = 1;
     while (!pi_go) (void)task_block();
 
@@ -267,11 +281,13 @@ static void rt_pi_run(void)
     u32 wait_start;
     int low_pid;
 
-    rt_mutex_init(&pi_mutex, RT_PI_ENABLE);
+    rt_mutex_init(&pi_mutex, RT_PI_MODE == 1,
+                  RT_PI_MODE == 2 ? RT_PI_CEILING : RT_MUTEX_NO_CEILING);
     pi_go = 0;
     pi_low_locked = 0;
     pi_med_stop = 0;
     pi_med_ticks = 0;
+    pi_lock_p = 0;
 
     rc = task_create(3, "pilow", rt_pi_low, AEVUM_STACK_PROBE, &pi_low_task);
     if (rc) {
@@ -289,8 +305,8 @@ static void rt_pi_run(void)
     out_u32(pi_low_locked);
     out("\n");
     if (!pi_low_locked) {
-        out("PI_STAT low_lock=0 pi=");
-        out_u32(RT_PI_ENABLE);
+        out("PI_STAT low_lock=0 mode=");
+        out_u32(RT_PI_MODE);
         out("\n");
         return;
     }
@@ -315,14 +331,18 @@ static void rt_pi_run(void)
     pi_med_stop = 1;
 
     rt_mutex_stats(&pi_mutex, &pi_locks, &pi_waits, &pi_boosts, &pi_restores);
-    out("PI_STAT pi=");
-    out_u32(RT_PI_ENABLE);
+    out("PI_STAT mode=");
+    out_u32(RT_PI_MODE);
+    out(" pi=");
+    out_u32(RT_PI_MODE == 1 ? 1u : 0u);
     out(" rc=");
     out_u32(pi_rc < 0 ? (u32)(-pi_rc) : 0u);
     out(" wait_us=");
     out_u32(rt_cycles_to_us(pi_wait_cycles));
     out(" low_lock=");
     out_u32(pi_low_locked);
+    out(" lock_p=");
+    out_u32(pi_lock_p);
     out(" low_p=");
     out_u32((u32)task_priority_get(low_pid));
     out(" med_ticks=");
@@ -633,7 +653,7 @@ void rtbench_start(void)
 {
     const char *rc;
 
-    out("RT_BOOT P13.5\n");
+    out("RT_BOOT P13.6\n");
     rc = task_create(3, "rtidle", rt_idle, AEVUM_STACK_IDLE, &rt_idle_task);
     if (rc) {
         out("RT_STAT task_create idle failed: ");

@@ -610,3 +610,15 @@ P13.5 在 RT 队列和预算之上补最小互斥锁，验证“低优先级持�
 - 构建体积：普通 clean `kernel.bin=99,048B`、`text=98,795`、`data=232`、`bss=18,044`、`__bss_end=0x9C97C`、BSS 余 1,668B；相对 P13.4 +96B 镜像、+224B BSS。RT 夹具镜像约 45.4KB。
 - 边界：只做单层持锁 PI；没有嵌套锁、优先级天花板、死锁检测、递归锁、用户态 mutex 系统调用、PI 链、SMP；只提升 RT owner；夹具是内核任务，不是 ring3。全量回归未重跑，普通构建只做了启动 smoke。
 - 证据：`tests/kernel/results/2026-11-28/p135-matrix.md`、`p135-pi-r1..r3.log`、`p135-nopi-r1..r3.log`。
+
+## P13.6 RT 互斥锁的立即优先级天花板
+
+P13.6 在 P13.5 的等待者 PI 上补静态立即天花板，验证“中优先级任务在 high 到达前抢占持锁者”的场景。
+
+- `include/kernel/rt_mutex.h` / `kernel/sync/rt_mutex.c`：`struct rt_mutex` 增加 `ceiling`（-1 关闭，0..3 生效）；`rt_mutex_init(m, pi, ceiling)`；拿锁无 owner 时若 `ceiling < 当前有效优先级`，立即 `task_rt_mutex_boost(owner, ceiling)` 并记 `boost_count`。
+- `rt_mutex_unlock()`：先 `task_rt_mutex_restore(owner)`，再 `wait_queue_wake_one()`，避免 wake 和 restore 之间被 PIT 抢占造成 `restore=0`。
+- `app/rtbench/rtbench.c`：新增 `RT_PI_MODE=0/1/2`（无继承 / 等待者 PI / 立即天花板）和 `RT_PI_CEILING`，保留 `RT_PI_ENABLE` 旧别名；`pilow` 拿锁后记录 `lock_p`，`PI_STAT` 增加 `mode/lock_p`。
+- 构建：`BUILD=build-p136-m0|m1|m2`，`DEFS="-DAEVUM_RT_BENCH -DRT_PI_TEST=1 -DRT_PI_MODE=0|1|2 -DRT_PI_CEILING=0 -DRT_BG_TASKS=0"`。三模式各 3 次：无继承 `wait_us=39,061/33,239/40,162`、`lock_p=3 med_ticks=3`；等待者 PI `7,661/9,856/11,519`、`lock_p=3 med_ticks=0 boost=restore=1`；立即天花板 `7,078/9,083/8,374`、`lock_p=0 med_ticks=0 boost=restore=1`。
+- 构建体积：普通 clean `kernel.bin=99,048B`、`text=98,795`、`data=232`、`bss=18,044`、`__bss_end=0x9C97C`、BSS 余 1,668B，与 P13.5 相同；RT 夹具 `kernel.bin=45,700B`；普通 `disk.img` 8 秒启动 smoke 无 panic。
+- 边界：单锁、静态 ceiling、仅 RT owner；没有多锁嵌套、ceiling 自动推导、PI 链、死锁检测、用户态 mutex ABI、SMP 或真实硬件。全量回归未重跑。
+- 证据：`tests/kernel/results/2026-11-28/p136-matrix.md`、`p136-mode0-r1..r3.log`、`p136-mode1-r1..r3.log`、`p136-mode2-r1..r3.log`。

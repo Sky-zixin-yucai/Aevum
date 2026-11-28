@@ -354,3 +354,34 @@ PI 夹具 3 次结果：
 边界：单层持锁、仅 RT owner、无嵌套锁/优先级天花板/死锁检测/用户态 mutex ABI/SMP；QEMU/TCG 单核。证据 `tests/kernel/results/2026-11-28/p135-matrix.md`、`p135-pi-r1..r3.log`、`p135-nopi-r1..r3.log`。
 
 证据：`tests/kernel/results/2026-11-28/p134-matrix.md`、`p134-*.log`、`linux-rtlat-bg*-r*.log`。
+
+## 27. P13.6 RT 互斥锁的立即优先级天花板
+
+P13.6 在 P13.5 的等待者 PI 之外增加立即优先级天花板：owner 拿锁当下就提升到静态 `ceiling`，不依赖高优先级任务先进入等待。普通构建不可达，体积与 P13.5 完全一致。
+
+| 项目 | P13.5 | P13.6 | 变化 |
+|---|---|---|---|
+| `kernel.bin` | 99,048B | 99,048B | 0 |
+| `text` | 98,795 | 98,795 | 0 |
+| `data` | 232 | 232 | 0 |
+| `bss` | 18,044 | 18,044 | 0 |
+| `__bss_end` | `0x9C97C` | `0x9C97C` | 0 |
+| BSS 余量 | 1,668B | 1,668B | 0 |
+
+`rt_mutex`/RT 夹具只在 `AEVUM_RT_BENCH` 构建中可达；普通镜像被 `--gc-sections` 裁掉，`task_struct` 未增加字段。RT 夹具 `kernel.bin=45,700B`，三种 mode 相同；`disk.img=1,474,560B`。
+
+三模式各 3 次：
+
+| mode | 策略 | wait_us（r1/r2/r3） | lock_p | med_ticks | boost/restore | low_p |
+|---|---|---|---|---|---|---|
+| 0 | 无继承 | 39,061 / 33,239 / 40,162 | 3 | 3 | 0 / 0 | 3 |
+| 1 | 等待者 PI | 7,661 / 9,856 / 11,519 | 3 | 0 | 1 / 1 | 3 |
+| 2 | 立即天花板 | 7,078 / 9,083 / 8,374 | 0 | 0 | 1 / 1 | 3 |
+
+- `mode=0`：`pimed` 连续跑满 3 tick，`rtctl` 约 33~40ms 返回。
+- `mode=1`：`pilow` 在 high 等锁时继承 RT 0，`pimed` 没有获得 CPU；`rtctl` 约 7.7~11.5ms 返回。
+- `mode=2`：`pilow` 拿锁当下就是 RT 0（`lock_p=0`），`pimed` 同样没有获得 CPU；`rtctl` 约 7.1~9.1ms 返回。
+- `wait_us` 含 QEMU 调度和 TSC 读数开销，不是纯临界区 1.5ms；`lock_p=3→0` 是天花板与等待者 PI 的直接区别。
+- 9 次主循环均 1000 周期、`miss=0 qerr=0`；mode1 r1 的 `exec_max_us=2595 exec_wall_over=1` 出现在 `enforce=0` 构建，是宿主墙钟抖动，不是 budget miss。
+
+边界：单锁、静态 ceiling、仅 RT owner；没有多锁嵌套、ceiling 自动推导、PI 链、死锁检测、用户态 mutex ABI、SMP 或真实硬件。证据 `tests/kernel/results/2026-11-28/p136-matrix.md`、`p136-mode0-r1..r3.log`、`p136-mode1-r1..r3.log`、`p136-mode2-r1..r3.log`。

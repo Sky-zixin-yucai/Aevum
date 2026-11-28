@@ -752,9 +752,9 @@ int task_priority_set(int tid, int priority)
 }
 
 /*
- * P13.5：RT 互斥锁的优先级继承后端。只有 RT 类 owner 需要提升；
- * fair owner 的 priority 不参与 RT 队列，提升它没有意义。
- * 返回值 1 表示 owner 属于 RT 类并接受了继承，0 表示不需要/不可提升。
+ * P13.5/P13.6：RT 互斥锁的优先级继承/天花板后端。只有 RT 类 owner 需要
+ * 提升；fair owner 的 priority 不参与 RT 队列，提升它没有意义。
+ * 返回值 1 表示 owner 属于 RT 类并接受了提升，0 表示不需要/不可提升。
  */
 int task_rt_mutex_boost(struct task_struct *task, int priority)
 {

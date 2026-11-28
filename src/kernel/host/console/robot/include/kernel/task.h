@@ -216,9 +216,9 @@ void task_timer_stats(u32 *sleep_blocks, u32 *sleep_wakes, u32 *timeouts);
 int task_priority_get(int tid);
 int task_priority_set(int tid, int priority);
 /*
- * P13.5：RT 优先级继承后端。boost 只对 RT owner 生效，可重复调用取最高
- * 等待者；restore 在 owner 解锁后恢复 base_priority。仅支持单层持锁。
- * 返回 1 表示状态发生变化，0 表示不需要/不可提升。
+ * P13.5/P13.6：RT 优先级继承/天花板后端。boost 只对 RT owner 生效，可重复
+ * 调用取最高等待者或天花板；restore 在 owner 解锁后恢复 base_priority。
+ * 仅支持单层持锁。返回 1 表示状态发生变化，0 表示不需要/不可提升。
  */
 int task_rt_mutex_boost(struct task_struct *task, int priority);
 int task_rt_mutex_restore(struct task_struct *task);
