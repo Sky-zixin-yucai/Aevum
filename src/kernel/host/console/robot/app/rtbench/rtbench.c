@@ -8,6 +8,7 @@
 #include "drivers/serial/uart.h"
 #include "kernel/proc.h"
 #include "kernel/task.h"
+#include "kernel/rt_mutex.h"
 #include "kernel/mm/address_space.h"
 #include "lib/format.h"
 
@@ -34,6 +35,14 @@ extern u8 user_program_end[];
 #define RT_QUEUE_TEST 0
 #endif
 
+#ifndef RT_PI_TEST
+#define RT_PI_TEST 0
+#endif
+
+#ifndef RT_PI_ENABLE
+#define RT_PI_ENABLE 1
+#endif
+
 #if RT_BG_TASKS > 12
 #error "RT_BG_TASKS must be 0..12 (PROC_MAX=12)"
 #endif
@@ -58,6 +67,21 @@ static u32 rt_fifo_ok;
 #endif
 #if RT_BG_TASKS > 0
 static struct process *rt_bg[RT_MAX_BG];
+#endif
+#if RT_PI_TEST
+static struct rt_mutex pi_mutex;
+static struct task_struct *pi_low_task;
+static struct task_struct *pi_med_task;
+static volatile u32 pi_go;
+static volatile u32 pi_low_locked;
+static volatile u32 pi_med_stop;
+static volatile u32 pi_med_ticks;
+static u32 pi_wait_cycles;
+static int pi_rc;
+static u32 pi_locks;
+static u32 pi_waits;
+static u32 pi_boosts;
+static u32 pi_restores;
 #endif
 static u16 rt_lat_us[RT_PERIODS];
 
@@ -202,6 +226,119 @@ static u32 rt_cycles_to_us(u32 cycles)
     return cycles / cycles_per_us;
 }
 
+#if RT_PI_TEST
+/*
+ * P13.5 优先级反转夹具：
+ * - pilow（RT 3）先拿锁，然后阻塞等 pi_go；
+ * - pimed（RT 1）在 pi_go 后 CPU-bound 3 tick；
+ * - rtctl（RT 0）拿锁时若没有 PI，会被 pimed 拖到约 30ms；
+ *   有 PI 时 pilow 继承 RT 0，先跑完 1.5ms 临界区再释放。
+ */
+static void rt_pi_low(void)
+{
+    u32 start;
+
+    if (rt_mutex_lock(&pi_mutex) != 0) {
+        pi_low_locked = 2;
+        for (;;) (void)task_block();
+    }
+    pi_low_locked = 1;
+    while (!pi_go) (void)task_block();
+
+    start = tsc_read32();
+    rt_work(start, cycles_per_us * 1500u);
+    (void)rt_mutex_unlock(&pi_mutex);
+    for (;;) (void)task_block();
+}
+
+static void rt_pi_med(void)
+{
+    u32 start = task_tick_total();
+
+    while (!pi_med_stop && (u32)(task_tick_total() - start) < 3u)
+        __asm__ __volatile__("pause" ::: "memory");
+    pi_med_ticks = task_tick_total() - start;
+    for (;;) (void)task_block();
+}
+
+static void rt_pi_run(void)
+{
+    const char *rc;
+    u32 wait_start;
+    int low_pid;
+
+    rt_mutex_init(&pi_mutex, RT_PI_ENABLE);
+    pi_go = 0;
+    pi_low_locked = 0;
+    pi_med_stop = 0;
+    pi_med_ticks = 0;
+
+    rc = task_create(3, "pilow", rt_pi_low, AEVUM_STACK_PROBE, &pi_low_task);
+    if (rc) {
+        out("PI_STAT create_low=");
+        out(rc);
+        out("\n");
+        return;
+    }
+    out("PI_STEP low_created\n");
+    task_set_rt(pi_low_task);
+    low_pid = task_pid_of(pi_low_task);
+
+    (void)task_sleep_ticks(2);
+    out("PI_STEP low_wake locked=");
+    out_u32(pi_low_locked);
+    out("\n");
+    if (!pi_low_locked) {
+        out("PI_STAT low_lock=0 pi=");
+        out_u32(RT_PI_ENABLE);
+        out("\n");
+        return;
+    }
+
+    rc = task_create(1, "pimed", rt_pi_med, AEVUM_STACK_DUEL_B, &pi_med_task);
+    if (rc) {
+        out("PI_STAT create_med=");
+        out(rc);
+        out("\n");
+        return;
+    }
+    out("PI_STEP med_created\n");
+    task_set_rt(pi_med_task);
+
+    pi_go = 1;
+    (void)task_wake(low_pid);
+    out("PI_STEP low_unblocked\n");
+    wait_start = tsc_read32();
+    pi_rc = rt_mutex_lock(&pi_mutex);
+    out("PI_STEP locked\n");
+    pi_wait_cycles = tsc_read32() - wait_start;
+    pi_med_stop = 1;
+
+    rt_mutex_stats(&pi_mutex, &pi_locks, &pi_waits, &pi_boosts, &pi_restores);
+    out("PI_STAT pi=");
+    out_u32(RT_PI_ENABLE);
+    out(" rc=");
+    out_u32(pi_rc < 0 ? (u32)(-pi_rc) : 0u);
+    out(" wait_us=");
+    out_u32(rt_cycles_to_us(pi_wait_cycles));
+    out(" low_lock=");
+    out_u32(pi_low_locked);
+    out(" low_p=");
+    out_u32((u32)task_priority_get(low_pid));
+    out(" med_ticks=");
+    out_u32(pi_med_ticks);
+    out(" locks=");
+    out_u32(pi_locks);
+    out(" waits=");
+    out_u32(pi_waits);
+    out(" boost=");
+    out_u32(pi_boosts);
+    out(" restore=");
+    out_u32(pi_restores);
+    out("\n");
+}
+#endif
+
 static void rt_report(void)
 {
     u32 i, j, v, n, p99;
@@ -337,6 +474,7 @@ static void rt_control(void)
     u32 i;
 
     process_cleanup();
+    out("CTL_STEP cleanup\n");
 
 #if RT_BG_TASKS > 0
     for (i = 0; i < RT_BG_TASKS; i++) {
@@ -355,7 +493,11 @@ static void rt_control(void)
 #endif
 
     rt_calibrate();
+    out("CTL_STEP calibrated\n");
     if (calib_ok) (void)lapic_timer_recalibrate(cycles_per_us);
+#if RT_PI_TEST
+    rt_pi_run();
+#endif
     period_cycles = cycles_per_us * RT_PERIOD_US;
     budget_cycles = cycles_per_us * RT_BUDGET_US;
     work_cycles = cycles_per_us * RT_WORK_US;
@@ -491,6 +633,7 @@ void rtbench_start(void)
 {
     const char *rc;
 
+    out("RT_BOOT P13.5\n");
     rc = task_create(3, "rtidle", rt_idle, AEVUM_STACK_IDLE, &rt_idle_task);
     if (rc) {
         out("RT_STAT task_create idle failed: ");

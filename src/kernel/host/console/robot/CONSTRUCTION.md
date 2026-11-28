@@ -598,3 +598,15 @@ P13.4 不改内核代码，只补测试口径：把 `RT_WORK_US` 从 3000 降到
 - Linux 结果：bg=2 `lat_max=9946 lat_p99=9756 jitter=373 exec=1693 miss=1000`；bg=4 `9777/9396/321/1757/1000`；bg=8 `10686/9837/1205/1569/1000`。
 - 结论：同口径 bg=4，Aevum `p99=0µs / max=7µs / miss=0`，Linux `p99=9396µs / max=9777µs / miss=1000`；Aevum 的优势是单核周期任务的唤醒确定性。Linux 不是 PREEMPT_RT；CPU 份额仍接近 Linux CFS（4 任务最大差约 0.9 个百分点），不能把这组数当 Linux 硬实时上限或通用性能结论。
 - 边界：单核、QEMU/TCG；未覆盖 IOAPIC、多核 per-CPU LAPIC、优先级继承/天花板、PIT fallback、真实硬件；Linux 侧未测 PREEMPT_RT。日志和 `p134-matrix.md` 在 `tests/kernel/results/2026-11-28/`。
+
+## P13.5 RT 互斥锁与优先级继承
+
+P13.5 在 RT 队列和预算之上补最小互斥锁，验证“低优先级持锁、中优先级抢占、高优先级等锁”的经典反转。
+
+- `include/kernel/rt_mutex.h` / `kernel/sync/rt_mutex.c`：新增 `struct rt_mutex`、`rt_mutex_init/ lock/ unlock/stats`；`lock` 在 owner 存在时调用 `task_rt_mutex_boost()`，再 `task_block_on()`；`unlock` 清 owner、`wait_queue_wake_one()`、`task_rt_mutex_restore()`。`Makefile` 的 `SRCS` 加入 `kernel/sync/rt_mutex.c`。
+- `include/kernel/task.h` / `kernel/task/task.c`：`task_struct` 增加 `base_priority`、`pi_priority`、`pi_boosted`；`priority` 变为有效优先级；新增 `task_rt_mutex_boost()`、`task_rt_mutex_restore()`。`task_priority_set()` 改基准值，并保留 PI 提升，READY 任务重新入队。
+- `app/rtbench/rtbench.c`：新增 `RT_PI_TEST`、`RT_PI_ENABLE`；夹具 `pilow`（RT 3）持锁后阻塞，`pimed`（RT 1）CPU-bound 3 tick，`rtctl`（RT 0）拿锁；输出 `PI_STAT` 的 `pi/rc/wait_us/low_lock/low_p/med_ticks/locks/waits/boost/restore`。
+- 构建：`BUILD=build-p135-nopi|pi`，`DEFS="-DAEVUM_RT_BENCH -DRT_PI_TEST=1 -DRT_PI_ENABLE=0|1 -DRT_BG_TASKS=0"`。无 PI 3 次 `wait_us=36,303/38,406/37,993`、`med_ticks=3`；有 PI 3 次 `wait_us=7,552/7,945/7,858`、`med_ticks=0`、`boost=restore=1`，`low_p` 恢复 3。等待降到约 1/4.8。
+- 构建体积：普通 clean `kernel.bin=99,048B`、`text=98,795`、`data=232`、`bss=18,044`、`__bss_end=0x9C97C`、BSS 余 1,668B；相对 P13.4 +96B 镜像、+224B BSS。RT 夹具镜像约 45.4KB。
+- 边界：只做单层持锁 PI；没有嵌套锁、优先级天花板、死锁检测、递归锁、用户态 mutex 系统调用、PI 链、SMP；只提升 RT owner；夹具是内核任务，不是 ring3。全量回归未重跑，普通构建只做了启动 smoke。
+- 证据：`tests/kernel/results/2026-11-28/p135-matrix.md`、`p135-pi-r1..r3.log`、`p135-nopi-r1..r3.log`。

@@ -30,6 +30,9 @@ struct task_struct {
     int  tgid;      /* 线程组 ID：同进程线程共享 */
     int  state;
     int  priority;
+    int  base_priority;  /* P13.5：用户可见的基准优先级 */
+    int  pi_priority;    /* P13.5：继承来的最高等待者优先级；无继承时等于 base */
+    u8   pi_boosted;     /* P13.5：1 表示当前 priority 来自 PI 提升 */
     char comm[TASK_NAME_MAX + 1];
     u32  stack_base;
     u32  stack_top;
@@ -468,6 +471,8 @@ static const char *task_create_common(int priority, const char *name, u32 entry,
     task->pid = pid;
     task->tgid = proc ? process_pid_of(proc) : pid;
     task->priority = priority;
+    task->base_priority = priority;
+    task->pi_priority = priority;
     /* P11.5：新任务从完整时间片开始，避免落在 0 片立即被抢占。 */
     task->slice_left = TASK_SLICE_TICKS;
     /* P11.9：新任务从全局虚拟时间下界起跑，不继承当前任务已经积累的
@@ -715,6 +720,7 @@ int task_priority_set(int tid, int priority)
     u32 flags;
     int rc = -1;
     int caller_user;
+    int old_priority;
 
     if (priority < 0 || priority > TASK_PRIORITY_MAX) return -1;
     caller_user = current_task && current_task->user;
@@ -727,15 +733,83 @@ int task_priority_set(int tid, int priority)
          * setpriority 不能把累计虚拟时间清零来刷调度优势。
          * P13.1：RT 任务若已在就绪队列，先摘链再改优先级，避免槽号
          * 还挂在旧优先级队列上。
+         * P13.5：priority 是有效优先级，base_priority 才是用户设定值；
+         * 若当前正被 PI 提升，改基准后仍取 base 与继承值的较小者。
          */
         rt_dequeue(task);
-        task->priority = priority;
+        old_priority = task->priority;
+        task->base_priority = priority;
+        task->priority = (task->pi_boosted && task->pi_priority < priority)
+                             ? task->pi_priority : priority;
         if (task->state == TASK_READY) rt_enqueue(task);
+        if (task == current_task && task->state == TASK_RUNNING &&
+            task->priority > old_priority)
+            need_resched = 1;
         rc = 0;
     }
     __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
     return rc;
 }
+
+/*
+ * P13.5：RT 互斥锁的优先级继承后端。只有 RT 类 owner 需要提升；
+ * fair owner 的 priority 不参与 RT 队列，提升它没有意义。
+ * 返回值 1 表示 owner 属于 RT 类并接受了继承，0 表示不需要/不可提升。
+ */
+int task_rt_mutex_boost(struct task_struct *task, int priority)
+{
+    u32 flags;
+    int old_priority;
+    int target;
+
+    if (!task || !task->rt || priority < 0 || priority > TASK_PRIORITY_MAX)
+        return 0;
+
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    if (!task->pi_boosted) {
+        task->pi_priority = priority;
+        task->pi_boosted = 1;
+    } else if (priority < task->pi_priority) {
+        task->pi_priority = priority;
+    }
+
+    target = (task->pi_priority < task->base_priority)
+                 ? task->pi_priority : task->base_priority;
+    old_priority = task->priority;
+    if (target != old_priority) {
+        rt_dequeue(task);
+        task->priority = target;
+        if (task->state == TASK_READY) rt_enqueue(task);
+        if (task == current_task && task->state == TASK_RUNNING &&
+            target < old_priority)
+            need_resched = 1;
+    }
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+    return 1;
+}
+
+/* 解锁后把 owner 的有效优先级恢复到基准值；嵌套锁不在 P13.5 范围内。 */
+int task_rt_mutex_restore(struct task_struct *task)
+{
+    u32 flags;
+    int old_priority;
+
+    if (!task || !task->pi_boosted) return 0;
+
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    old_priority = task->priority;
+    rt_dequeue(task);
+    task->pi_boosted = 0;
+    task->pi_priority = task->base_priority;
+    task->priority = task->base_priority;
+    if (task->state == TASK_READY) rt_enqueue(task);
+    if (task == current_task && task->state == TASK_RUNNING &&
+        task->priority > old_priority)
+        need_resched = 1;
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+    return 1;
+}
+
 
 void task_set_space(struct task_struct *task, struct address_space *space)
 {

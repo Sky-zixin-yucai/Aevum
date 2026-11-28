@@ -1142,3 +1142,56 @@ Linux 侧复用 `tests/kernel/linux` 的 i386 v6.18 镜像（`CONFIG_HZ=100`、`
 - 仍未覆盖：IOAPIC 路由、多核 per-CPU LAPIC、优先级继承/天花板、PIT fallback 回归、真实硬件。
 
 证据：`tests/kernel/results/2026-11-28/p134-matrix.md`、`p134-*.log`、`linux-rtlat-bg*-r*.log`；Linux 基准源码 `tests/kernel/linux/bench/bench.c`，矩阵脚本 `tests/kernel/linux/rtlat-matrix.sh`。
+
+## P13.5 RT 互斥锁与优先级继承
+
+P13.4 只覆盖无锁周期任务。P13.5 补一个最小的 RT 互斥锁，验证经典优先级反转：低优先级 RT 持锁，中优先级 RT 抢占 CPU，高优先级 RT 等待锁。没有继承时，高优先级会被中优先级拖住；有继承时，持锁者临时升到等待者的优先级，先释放锁。
+
+### 实现
+
+- 新增 `include/kernel/rt_mutex.h`、`kernel/sync/rt_mutex.c`，`Makefile` 的 `SRCS` 加入 `kernel/sync/rt_mutex.c`。
+- `struct rt_mutex`：`owner`、`wait_queue waiters`、`lock_count/wait_count/boost_count/restore_count`、`pi` 开关。
+- `rt_mutex_lock()`：无 owner 直接取锁；有 owner 且启用 PI 时先 `task_rt_mutex_boost(owner, current_priority)`，再 `task_block_on(&waiters, rt_mutex_free, ...)`；owner 解锁与进入等待之间的丢唤醒由 `ready` 回调兜住。
+- `rt_mutex_unlock()`：清 owner、按 ticket FIFO 唤醒一个等待者、恢复 owner 的基准优先级；递归加锁返回 -2。
+- `struct task_struct` 增加 `base_priority`、`pi_priority`、`pi_boosted`；`priority` 是有效调度优先级。`task_priority_set()` 改基准值，若正被 PI 提升则仍取 `min(base, pi)`；`task_rt_mutex_boost/restore()` 负责摘链、改优先级、READY 重入队。
+- PI 只对 `rt` 类 owner 生效；fair 任务不参与 RT 队列提升。
+
+### 验收夹具
+
+`app/rtbench/rtbench.c` 新增 `RT_PI_TEST` 和 `RT_PI_ENABLE`：
+
+- `pilow`（RT 3）先拿锁，记录 `low_lock=1`，然后阻塞等 `pi_go`。
+- `pimed`（RT 1）在 `pi_go` 后 CPU-bound 至多 3 个 PIT tick。
+- `rtctl`（RT 0）唤醒 `pilow`、创建 `pimed`，然后自己拿锁；记录从调用 `rt_mutex_lock()` 到返回的 TSC。
+- 构建：`BUILD=build-p135-nopi|pi`，`DEFS="-DAEVUM_RT_BENCH -DRT_PI_TEST=1 -DRT_PI_ENABLE=0|1 -DRT_BG_TASKS=0"`；QEMU 不带 `-icount` 也可以，因为夹具只依赖 PIT tick 和 TSC 比值。
+- 输出：`PI_STAT pi=... rc=... wait_us=... low_lock=... low_p=... med_ticks=... locks=... waits=... boost=... restore=...`。
+
+### 三次结果
+
+| pi | wait_us（r1/r2/r3） | med_ticks | boost | restore | low_p |
+|---|---|---|---|---|---|
+| 0 | 36,303 / 38,406 / 37,993 | 3 | 0 | 0 | 3 |
+| 1 | 7,552 / 7,945 / 7,858 | 0 | 1 | 1 | 3 |
+
+- 无 PI：`pimed` 在 `rtctl` 阻塞后连续跑 3 个 tick，`pilow` 被压到中优先级任务之后；`rtctl` 等到约 36~38ms 才拿到锁。
+- 有 PI：`pilow` 被提升到 RT 0，`pimed`（RT 1）一次都没有运行；`pilow` 跑完 1.5ms 临界区、解锁，`rtctl` 约 7.6~7.9ms 返回。等待压到无 PI 的约 1/4.8。
+- `wait_us` 包含 QEMU 调度、TSC 读数和唤醒路径开销，不是纯临界区的 1.5ms；结论以 `med_ticks=0/3` 和 `boost/restore=1/0` 为准。
+- 两种构建的主循环 `RT_STAT` 都完成 1000 周期，`miss=0 qerr=0`；PI 夹具没有破坏 RT 队列不变量。
+
+### 构建与体积
+
+- 普通 clean：`kernel.bin=99,048B`、`text=98,795`、`data=232`、`bss=18,044`；`__bss_start=0x98300`、`__bss_end=0x9C97C`，`AEVUM_KERNEL_END=0x9D000`，BSS 余 `0x684`（1,668B）。
+- 相对 P13.4 的 98,952B，普通镜像 +96B；BSS +224B，来自 16 个任务槽各 +14B（`base_priority/pi_priority/pi_boosted`）和互斥锁相关状态。
+- RT 夹具镜像 `kernel.bin≈45.4KB`（`AEVUM_RT_BENCH` 裁掉机械臂应用），不是普通镜像体积。
+
+### 边界与风险
+
+- 只实现单层持锁的 PI；没有嵌套锁、优先级天花板、死锁检测、递归锁、用户态 mutex 系统调用或 PI 链。
+- 只提升 RT owner；fair owner 不参与 RT 队列，提升它没有调度意义。
+- 夹具用内核任务，不是 ring3；没有验证用户态 futex/mutex ABI。
+- `task_priority_set()` 的 base/effective 语义只在 RT 路径验证；fair 任务仍按原权重规则。
+- 仍为单核、QEMU/TCG；没有 SMP per-CPU 锁、IOAPIC、真实硬件或 PREEMPT_RT 对照。
+- 全量回归未重跑：P5.3、P11.x、P12.1 未在本轮重新执行；本轮覆盖普通启动 smoke、PI 矩阵和 RT 主循环。
+
+证据：`tests/kernel/results/2026-11-28/p135-matrix.md`、`p135-pi-r1..r3.log`、`p135-nopi-r1..r3.log`。
+

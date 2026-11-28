@@ -324,4 +324,33 @@ Linux 侧用 i386 v6.18（HZ=100、无 high-res、无 NO_HZ、`PREEMPT_NONE`、S
 - CPU 份额仍接近：Aevum A1 4 任务 `52.80/26.40/13.60/7.20` vs Linux CFS `53.34/26.64/13.25/6.74`，最大差约 0.9 个百分点。Aevum 胜在单核周期任务的唤醒确定性，不在通用吞吐。
 - 边界：单核、QEMU/TCG、Aevum `-icount`；未覆盖 IOAPIC、多核 per-CPU LAPIC、优先级继承/天花板、PIT fallback、真实硬件；Linux 侧未测 PREEMPT_RT。
 
+## 26. P13.5 RT 互斥锁与优先级继承
+
+P13.5 新增内核内 `rt_mutex`：等待者进 `wait_queue` 前先提升 RT owner，解锁后恢复 `base_priority`。普通构建只多一个锁实现和 3 个任务字段，不改变 fair 调度。
+
+| 项目 | P13.4 | P13.5 | 变化 |
+|---|---|---|---|
+| `kernel.bin` | 98,952B | 99,048B | +96B |
+| `text` | 98,677 | 98,795 | +118B |
+| `data` | 232 | 232 | 0 |
+| `bss` | 17,820 | 18,044 | +224B |
+| `__bss_end` | `0x9C83C` | `0x9C97C` | +320B |
+| BSS 余量 | 1,988B | 1,668B | -320B |
+
+`bss` 的 224B 来自 16 个任务槽各 +14B（`base_priority`、`pi_priority`、`pi_boosted`），不是 3B×16 的简单相加；`__bss_end` 还随对齐和新增静态对象后移。普通构建余量仍大于 1.6KB，未触发 boot 扩扇区。
+
+PI 夹具 3 次结果：
+
+| pi | wait_us（r1/r2/r3） | med_ticks | boost | restore | low_p |
+|---|---|---|---|---|---|
+| 0 | 36,303 / 38,406 / 37,993 | 3 | 0 | 0 | 3 |
+| 1 | 7,552 / 7,945 / 7,858 | 0 | 1 | 1 | 3 |
+
+- 无 PI 时中优先级 `pimed` 连续跑满 3 tick，高优先级 `rtctl` 约 36~38ms 才拿到锁。
+- 有 PI 时持锁的 `pilow` 继承 RT 0，`pimed` 没有获得 CPU；`rtctl` 约 7.6~7.9ms 返回，等待降到约 1/4.8。
+- `wait_us` 含 QEMU 调度和 TSC 读数开销，不是纯临界区 1.5ms；`med_ticks=3→0` 和 `boost/restore=1` 才是 PI 生效的直接证据。
+- 两种构建的主循环 `RT_STAT` 均 1000 周期、`miss=0 qerr=0`；PI 夹具两次额外任务阻塞后仍保持队列审计为 0。
+
+边界：单层持锁、仅 RT owner、无嵌套锁/优先级天花板/死锁检测/用户态 mutex ABI/SMP；QEMU/TCG 单核。证据 `tests/kernel/results/2026-11-28/p135-matrix.md`、`p135-pi-r1..r3.log`、`p135-nopi-r1..r3.log`。
+
 证据：`tests/kernel/results/2026-11-28/p134-matrix.md`、`p134-*.log`、`linux-rtlat-bg*-r*.log`。

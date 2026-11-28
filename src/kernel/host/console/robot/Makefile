@@ -26,6 +26,7 @@ SRCS = \
 	kernel/task/stack/stack.c \
 	kernel/task/kthread/kthread.c \
 	kernel/task/family/family.c \
+	kernel/sync/rt_mutex.c \
 	kernel/proc/process.c \
 	kernel/proc/fd/fd.c \
 	kernel/fs/ramfs/ramfs.c \
