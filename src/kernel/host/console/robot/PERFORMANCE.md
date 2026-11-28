@@ -249,17 +249,17 @@ RT-2 clean 构建 `kernel.bin=88,712B`，`__bss_start=0x95AA0`、`__bss_end=0x99
 
 ## 22. P13.1 RT O(1) 就绪队列的体积与路径开销
 
-P13.1 clean 普通构建 `kernel.bin=93,288B`，`__bss_start=0x96C80`、`__bss_end=0x9B15C`，`AEVUM_KERNEL_END=0x9C000`：
+P13.1 clean 普通构建 `kernel.bin=95,656B`，`__bss_start=0x975C0`、`__bss_end=0x9BABC`，`AEVUM_KERNEL_END=0x9C000`：
 
-- 普通构建 text 93,012B、data 232B、bss 17,628B。P13.1 在 `task_struct` 增加 4 个 `u8`，`sizeof(struct task_struct)=148B`；16 槽约 +64B，`rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 +10B。相对 P13.1 前保存的 92,744B 基线，镜像只 +544B。
-- 旧 `AEVUM_KERNEL_END=0x9A000` 已不够用：当前 BSS 越过 4,444B。这不是 P13.1 单独造成，基线镜像本身已 92,744B；主要增长来自此前未完成的内核通用动作控制改动。P13.1 把 boot 第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`，`kernel.bin` 上限 114,688B；BSS 余 `0xEA4`（3,748B），镜像余 21,400B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处一致。
+- 普通构建 text 95,397B、data 232B、bss 17,660B。P13.1 在 `task_struct` 增加 4 个 `u8`，`sizeof(struct task_struct)=148B`；16 槽约 +64B，`rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 +10B。相对 P13.1 前保存的 92,744B 基线，镜像 +2,912B；其中首轮 RT 队列 +544B，Q 页纠正 +2,368B。
+- 旧 `AEVUM_KERNEL_END=0x9A000` 已不够用：当前 BSS 越过 6,844B。这不是 P13.1 单独造成，基线镜像本身已 92,744B；主要增长来自此前未完成的内核通用动作控制改动。P13.1 把 boot 第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`，`kernel.bin` 上限 114,688B；BSS 余 `0x544`（1,348B），镜像余 19,032B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处一致。
 - 选任务路径：RT READY 存在时，`task_pick_next()` 只做一次 `rt_mask` 判空 + 位图找最高优先级 + 取该优先级队头，成本与 RT 任务数无关；RT 队列为空才进入原来的 16 槽 fair 扫描。fair 扫描多一次 `t->rt` 跳过判断，RT 不再参与 `vruntime` 比较。
 - 入队/出队：`rt_enqueue()` 是尾插，`rt_dequeue()` 是按 `rt_prev/rt_next` 摘链，均为固定几步；`task_make_ready()` 把创建、定时唤醒、kthread 唤醒、wait_queue 唤醒、`task_wake` 和 `task_wake_process` 的 READY 写入集中到一处，避免重复入队。`task_priority_set()` 对已入队 RT 先摘链再按新优先级入队。
 - IRQ0：RT 不再递减 `slice_left`，`tick_defer` 在无抢占请求时为 1，不再每 4 tick 强制重选；有更高优先级 RT 唤醒时 `need_resched=1`，下一次 IRQ0 立即重选。fair 任务仍按原 4 tick 片和 `vruntime` 记账。
-- 队列测试（`RT_BG_TASKS=4 RT_QUEUE_TEST=1`）：`periods=1000 lat_max_us=99 lat_p99_us=50 jitter_max_us=2074 exec_max_us=1864 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=52362 pick_avg=5234 pick_n=3000 cyc_us=3413 calib=1`。priority 0 控制任务与 priority 1 RT 同跑，控制任务仍零 deadline miss；`qerr=0` 是 4 级头尾、双向链、位图、`rt_queued/rt_prio` 与 READY 状态的结构审计；`fifo=1` 表示两个同优先级 RT 探针按创建顺序 A→B 运行。
-- 选任务 TSC 统计在正式周期前重置，排除启动页和校准；本次 `pick_avg=5234` 周期（约 1.5 µs，按 `cyc_us=3413`），`pick_max=52362` 周期（约 15 µs）。QEMU TCG 下单次 max 会受宿主调度抖动影响，因此 max/avg 只作为路径量级证据，不作为硬实时上界。
-- 预算越界测试（`RT_BUDGET=1 RT_WORK_US=3000`）：`periods=1000 lat_max_us=254 lat_p99_us=70 jitter_max_us=2293 exec_max_us=3218 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=658753 pick_avg=6035 pick_n=3000 cyc_us=3450 calib=1`。每个周期 2ms 预算耗尽即摘链，下一周期补满后重新入队；`qerr=0`、`miss=0` 说明 throttle 的摘链/补队没有破坏队列结构，FIFO 探针也没有被预算路径打乱。
+- 队列测试（`RT_BG_TASKS=4 RT_QUEUE_TEST=1`）：`periods=1000 lat_max_us=139 lat_p99_us=70 jitter_max_us=7081 exec_max_us=1866 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=105855 pick_avg=5437 pick_n=3000 cyc_us=3431 calib=1`。priority 0 控制任务与 priority 1 RT 同跑，控制任务仍零 deadline miss；`qerr=0` 是 4 级头尾、双向链、位图、`rt_queued/rt_prio` 与 READY 状态的结构审计；`fifo=1` 表示两个同优先级 RT 探针按创建顺序 A→B 运行。
+- 选任务 TSC 统计在正式周期前重置，排除启动页和校准；本次 `pick_avg=5437` 周期（约 1.5 µs，按 `cyc_us=3431`），`pick_max=105855` 周期（约 31 µs）。QEMU TCG 下单次 max 会受宿主调度抖动影响，因此 max/avg 只作为路径量级证据，不作为硬实时上界。
+- 预算越界测试（`RT_BUDGET=1 RT_WORK_US=3000`）：`periods=1000 lat_max_us=152 lat_p99_us=60 jitter_max_us=3988 exec_max_us=3146 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=158136 pick_avg=5899 pick_n=3000 cyc_us=3430 calib=1`。每个周期 2ms 预算耗尽即摘链，下一周期补满后重新入队；`qerr=0`、`miss=0` 说明 throttle 的摘链/补队没有破坏队列结构，FIFO 探针也没有被预算路径打乱。
 - 首轮 RT（`RT_BG_TASKS=4`，无队列测试）`miss=0 overrun=1`；该 `overrun` 是单周期工作超 2ms 预算，不是 deadline miss，`budget_overrun=0`。
-- 普通构建没有 RT 任务，`rt_mask` 恒为 0；主页面正常启动，`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。P13.1 的 O(1) 路径在普通页面路径不启用。
+- 普通构建没有常驻 RT 任务，`rt_mask` 平时为 0；主页面正常启动，`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。按 `Q` 时两个 priority 1 探针 kthread 短暂入队、记录 A=1/B=2 后退出，页面保留序号；返回主画面后机械臂继续更新。
 - 边界：这是 QEMU TCG 的功能与结构口径，不是周期级基准；`pick_max/pick_avg` 是 TSC 采样，QEMU 下的 max 会受宿主调度抖动影响。普通主页面只做启动 smoke，没有重跑 P5.3、P11.5、P11.10/11、P12.1 全量回归；其它演示页按用户要求留到以后再修。
-- 演示页：`RT_QUEUE_TEST=1` 构建在 VGA 显示 `AEVUM / RT QUEUE`，包含 `QUEUE ERR`、`FIFO OK`、`FIFO A/B ORDER`、`LOW TICKS`、`PICK MAX/AVG/CALLS` 和 `STATE`；最终页见 `p13-rtq-final.png`。普通构建的主页面不改。
+- 演示页：按主画面字母键 `Q`（扫描码 `0x10`）进入 `AEVUM / RT QUEUE`，再按 `Q` 返回。页面包含 `QUEUE ERR`、`MASK/QUEUED`、4 级 `HEAD/TAIL/N/HEAD TASK`、`FIFO A/B`、`PICK MAX/AVG/N`、`SWITCHES`；普通构建截图见 `p13-q.png`，返回主画面见 `p13-q-return.png`。`rtbench.c` 不再自建独立 VGA 页，只保留串口 `RT_STAT`。

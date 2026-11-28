@@ -72,7 +72,7 @@
 - **抢占决斗**：按 `T`（扫描码 `0x14`）创建 `spinA` / `spinB` 两个 CPU 密集型任务，循环里都不调用
   `task_yield()`；全屏显示两条 lane 的实时步数、进度条和 80 格 IRQ0 抢占磁带。只有 PIT 真的抢占 CPU，
   两条 lane 才会同时推进，磁带才会出现青/洋红交替的条纹；再按 `T` 停止并回到机械臂画面。
-- **优先级与 CPU 统计**：`priority 0..3` 映射为权重 `8..1`；每个 PIT tick 给当前任务 `vruntime += 64 / weight`，`task_pick_next()` 选择 READY 任务中 `vruntime` 最小者，同值按 `prev` 之后的槽位轮转。P11.9 用 64 位 `min_vruntime` 钳住睡眠唤醒，防止长睡眠任务靠过期小 `vruntime` 一次抢回整段 CPU；权重全为正，低优先级任务仍会轮到，不会被 FIFO 式饿死。每个任务累计 `cpu_ticks`，面板第二行显示真实 CPU 百分比；按 `C` 打开全屏 `AEVUM / CPU TIME ACCOUNTING`，列出 PID、TASK、PRI、WT、STATE、CPU%、TICKS、SHARE，底部是 PIT TICKS、SWITCHES、PREEMPTIONS，以及 P11.1 `SLEEP` 与 P11.3 `IO` 两组阻塞统计。P11.2 增加 `eax=26/27` 运行时读写优先级，fork/clone 继承，V 页 `TASK` 行显示 `P<n>`；P11.3 增加 `eax=28/29` 带 tick 上限的阻塞 I/O；P11.4 让 idle 只在没有非 idle READY 时运行，C 页新增 `IDLE hlt`，正常负载下 idle 的 CPU% 为 0，I 键探针后才会增加；P11.5 把每 tick 重选改成 4 tick 显式片，C 页新增 `QUANTUM 4t` 与 `EXP`，协作负载 `EXP=0`，CPU-bound duel 每 4 tick 抢占一次；P11.6 把对象等待队列改成 ticket FIFO + 定向唤醒，C 页新增 `WQ blk/one/all/dep`，常规数据到达只叫醒一个等待者；P11.7 把 pending signal 接入阻塞判断，新增 `EINTR -3`；P11.8 新增 `kill`/`sigaction_flags` 与返回用户态前的异步投递，`SA_RESTART` 只覆盖用户 handler + `int 0x80` 返回点。P13.1 把 RT 任务从 CFS-lite 的 `vruntime` 扫描里拆出，改由 4 级位图 + 每优先级双向链表做 O(1) 选队头；RT 同优先级 FIFO、高优先级抢占低优先级，fair 任务仍走原 `vruntime` 规则，idle 规则不变。RT 不再消耗 4 tick 固定片，一直跑到 block/yield、预算耗尽或被更高 RT 抢占；普通构建没有 RT 任务，位图恒为 0。
+- **优先级与 CPU 统计**：`priority 0..3` 映射为权重 `8..1`；每个 PIT tick 给当前任务 `vruntime += 64 / weight`，`task_pick_next()` 选择 READY 任务中 `vruntime` 最小者，同值按 `prev` 之后的槽位轮转。P11.9 用 64 位 `min_vruntime` 钳住睡眠唤醒，防止长睡眠任务靠过期小 `vruntime` 一次抢回整段 CPU；权重全为正，低优先级任务仍会轮到，不会被 FIFO 式饿死。每个任务累计 `cpu_ticks`，面板第二行显示真实 CPU 百分比；按 `C` 打开全屏 `AEVUM / CPU TIME ACCOUNTING`，列出 PID、TASK、PRI、WT、STATE、CPU%、TICKS、SHARE，底部是 PIT TICKS、SWITCHES、PREEMPTIONS，以及 P11.1 `SLEEP` 与 P11.3 `IO` 两组阻塞统计。P11.2 增加 `eax=26/27` 运行时读写优先级，fork/clone 继承，V 页 `TASK` 行显示 `P<n>`；P11.3 增加 `eax=28/29` 带 tick 上限的阻塞 I/O；P11.4 让 idle 只在没有非 idle READY 时运行，C 页新增 `IDLE hlt`，正常负载下 idle 的 CPU% 为 0，I 键探针后才会增加；P11.5 把每 tick 重选改成 4 tick 显式片，C 页新增 `QUANTUM 4t` 与 `EXP`，协作负载 `EXP=0`，CPU-bound duel 每 4 tick 抢占一次；P11.6 把对象等待队列改成 ticket FIFO + 定向唤醒，C 页新增 `WQ blk/one/all/dep`，常规数据到达只叫醒一个等待者；P11.7 把 pending signal 接入阻塞判断，新增 `EINTR -3`；P11.8 新增 `kill`/`sigaction_flags` 与返回用户态前的异步投递，`SA_RESTART` 只覆盖用户 handler + `int 0x80` 返回点。P13.1 把 RT 任务从 CFS-lite 的 `vruntime` 扫描里拆出，改由 4 级位图 + 每优先级双向链表做 O(1) 选队头；RT 同优先级 FIFO、高优先级抢占低优先级，fair 任务仍走原 `vruntime` 规则，idle 规则不变。RT 不再消耗 4 tick 固定片，一直跑到 block/yield、预算耗尽或被更高 RT 抢占；普通构建没有 RT 任务，位图恒为 0。按 `Q`（扫描码 `0x10`）打开 `AEVUM / RT QUEUE`：只读显示 4 级位图、每级 head/tail/队头任务，并由两个 priority 1 动态 kthread 现场做一次同优先级 FIFO 顺序探针；再按 `Q` 返回。
 - **无 libc**：完全 freestanding，字符串输出、整数转十进制和 Q16.16 定点运算都由内核自己实现。
 
 ### 操作按键总表
@@ -87,6 +87,7 @@
 | 机械臂主画面 | `I` | `0x17` | P11.4 idle 探针：control/render 主动 block 40 tick，idle 成为唯一 READY 并 `sti; hlt` | 只在主画面、无 demo、idle 未 block 时生效；探针结束后自动唤醒两者；C 页查看 `IDLE hlt` |
 | 机械臂主画面 | `T` | `0x14` | 进入/停止 `PREEMPTION DUEL`，创建 `spinA` / `spinB` 两个不让出的 CPU 密集型任务 | 只在主画面启动；停止后等两个 lane 任务结束再回主画面 |
 | 机械臂主画面 | `C` | `0x2E` | 进入/退出全屏 `AEVUM / CPU TIME ACCOUNTING` | 只在主画面启动；在统计页再按 `C` 返回；底部有 PIT TICKS / SWITCHES / PREEMPTIONS / QUANTUM / EXP |
+| 机械臂主画面 | `Q` | `0x10` | 进入/退出全屏 `AEVUM / RT QUEUE`，只读显示 4 级 RT 位图、每级 head/tail/队头任务和两个 priority 1 kthread 的 FIFO 顺序 | 只在主画面启动；在队列页再按 `Q` 返回；普通构建的 PICK 采样为 0 |
 | 机械臂主画面 | `F` | `0x21` | 进入/退出全屏 `AEVUM / FPU CONTEXT LAB` | 只在主画面启动；在实验页再按 `F` 返回 |
 | 机械臂主画面 | `G` | `0x22` | 进入/退出全屏 `AEVUM / PROCESS FAMILY TREE` | 只在主画面启动；在树页再按 `G`，等 `famP` / `famA` / `famB` 都结束后回主画面 |
 | 机械臂主画面 | `Y` | `0x15` | 进入/退出 `AEVUM / P5.1 SLOT POOL`，根进程 fork 8 个子进程并全部保持存活 | 只在主画面启动；在池页再按 `Y`，等 9 个进程都结束后回主画面 |
@@ -102,6 +103,7 @@
 | `KERNEL PAGE FAULT` | `H` | `0x23` | 立即停机 | 保留现场，不返回；非探针内核 fault 没有这个选择 |
 | `PREEMPTION DUEL` | `T` | `0x14` | 停止决斗 | 全屏页只响应 `T`；停止不是立即切页，要等两个任务退出 |
 | `CPU TIME ACCOUNTING` | `C` | `0x2E` | 返回机械臂 | 全屏页只响应 `C` |
+| `RT QUEUE` | `Q` | `0x10` | 返回机械臂 | 全屏页只响应 `Q`；探针任务已退出，页面保留 A/B 序号 |
 | `FPU CONTEXT LAB` | `F` | `0x21` | 停止实验并返回机械臂 | 全屏页只响应 `F` |
 | `PROCESS FAMILY TREE` | `G` | `0x22` | 停止演示并返回机械臂 | 全屏页只响应 `G`；有任务未退完时继续显示树页 |
 | `COW FORK + SIGNALS + PHYS` | `V` | `0x2F` | 停止所有用户进程并返回机械臂 | 全屏页只响应 `V`；**UI 立即回主画面**，demo 进程异步收尾 |
@@ -109,7 +111,7 @@
 
 补充：
 
-- 这些全屏演示互斥：`T` / `C` / `F` / `G` / `V` 只能从机械臂主画面进入，进入后其他演示键不响应。`K` 是受控故障注入入口，不参与互斥；页内 `R` 恢复，`H` 停机。
+- 这些全屏演示互斥：`T` / `C` / `Q` / `F` / `G` / `V` 只能从机械臂主画面进入，进入后其他演示键不响应。`K` 是受控故障注入入口，不参与互斥；页内 `R` 恢复，`H` 停机。
 - 机械臂主画面没有方向键、目标点手动输入、`ESC` 退出或 `R` 复位；目标点沿预设轨迹自动移动，`make run` 的退出由 QEMU 窗口或宿主终端负责。
 - `P` / `B` / 空格只在机械臂主画面生效；任何全屏演示期间按它们都不会改变后台任务。
 - **`B` 不是一页**，它只是 idle 任务的 `BLOCKED ↔ READY` 演示键：按一次让 idle 主动 `task_block()`，再按一次 `task_wake()`。P11.4 之后 idle 平时不会被调度，所以 B 键会让调度器强制选中 idle 一次，确保 `task_block()` 真的执行；阻塞后画面出现 `BLOCKED: idle waiting task_wake()`，调度行显示 `3id B 0%`。

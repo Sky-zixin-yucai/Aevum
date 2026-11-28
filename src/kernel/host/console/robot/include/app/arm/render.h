@@ -16,4 +16,8 @@ void arm_render_duel_status(u32 a_steps, u32 b_steps, const u8 *tape, u32 tape_h
 void arm_render_cpu_init(void);
 void arm_render_cpu_frame(void);
 
+/* P13.1 Q 页：RT 队列位图/双向链与 FIFO 探针；进入/退出由主画面 Q 键负责。 */
+void arm_render_rtq_init(void);
+void arm_render_rtq_frame(u32 fifo_a, u32 fifo_b, u32 fifo_ok);
+
 #endif

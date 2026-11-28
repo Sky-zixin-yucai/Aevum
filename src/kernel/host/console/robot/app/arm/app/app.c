@@ -43,6 +43,7 @@ static volatile u32 duel_b;
 static volatile int duel_alive;
 static volatile int duel_live;
 static volatile int cpu_live;
+static volatile int rtq_live;
 static volatile int tree_live;
 static volatile int user_live;
 static volatile int console_live;
@@ -59,6 +60,12 @@ static volatile u32 idle_blocked;
 /* P11.4：I 键短时 idle 探针；phase=1 时 control/render 主动 BLOCKED。 */
 static volatile u32 idle_probe_phase;
 static volatile u32 idle_probe_until;
+
+/* P13.1 Q 页：两个 priority 1 动态 kthread 做一次性 FIFO 顺序探针。 */
+static volatile u32 rtq_test_started;
+static volatile u32 rtq_seq;
+static volatile u32 rtq_a_ord;
+static volatile u32 rtq_b_ord;
 
 /* P8 动态内核线程自测：先 join 一个 kping，再故意不 join 一个 korph。 */
 static int kthread_demo_started;
@@ -203,6 +210,41 @@ static void kthread_demo_run_once(void)
                        kthread_demo_stack_after == kthread_demo_stack_before &&
                        stats.join_blocks > 0 && stats.reaped == 2u &&
                        stats.auto_reaped == 1u && stats.live == 0u) ? 1u : 0u;
+}
+
+static void rtq_a_entry(void *arg)
+{
+    (void)arg;
+    rtq_seq++;
+    rtq_a_ord = rtq_seq;
+    kthread_exit(0);
+}
+
+static void rtq_b_entry(void *arg)
+{
+    (void)arg;
+    rtq_seq++;
+    rtq_b_ord = rtq_seq;
+    kthread_exit(0);
+}
+
+/*
+ * Q 页只做一次探针：A/B 都是 priority 1 RT，按创建顺序入队。
+ * A 先运行并记录序号，退出后 B 才运行；两者退出后队列为空，
+ * 页面保留 A/B 序号作为 FIFO 证据。
+ */
+static void rtq_probe_start(void)
+{
+    int tid;
+
+    if (rtq_test_started) return;
+    rtq_test_started = 1;
+
+    tid = kthread_create("qrtA", rtq_a_entry, 0, 1);
+    if (tid > 0) (void)task_set_rt_tid(tid);
+
+    tid = kthread_create("qrtB", rtq_b_entry, 0, 1);
+    if (tid > 0) (void)task_set_rt_tid(tid);
 }
 
 static void proc_control(void)
@@ -392,17 +434,27 @@ static void proc_render(void)
             continue;
         }
 
-        if (key == 0x2E && !duel_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live) { /* C：CPU 时间统计 */
+        if (key == 0x2E && !duel_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live && !rtq_live) { /* C：CPU 时间统计 */
             cpu_live = !cpu_live;
             if (cpu_live) arm_render_cpu_init();
         }
 
-        if (key == 0x14 && !cpu_live && !fpu_demo_live() && !tree_live && !user_live) {    /* T：开始/停止抢占决斗 */
+        if (key == 0x10 && !duel_live && !probe_live && !cpu_live && !fpu_demo_live() && !tree_live && !user_live) { /* Q：RT 队列页 */
+            if (rtq_live) {
+                rtq_live = 0;
+            } else {
+                arm_render_rtq_init();
+                rtq_probe_start();
+                rtq_live = 1;
+            }
+        }
+
+        if (key == 0x14 && !cpu_live && !rtq_live && !fpu_demo_live() && !tree_live && !user_live) {    /* T：开始/停止抢占决斗 */
             if (duel_live) duel_stop = 1;
             else if (!probe_live) (void)arm_app_start_duel();
         }
 
-        if (key == 0x21 && !duel_live && !cpu_live && !probe_live && !tree_live && !user_live) { /* F：FPU context lab */
+        if (key == 0x21 && !duel_live && !cpu_live && !rtq_live && !probe_live && !tree_live && !user_live) { /* F：FPU context lab */
             if (fpu_demo_live()) {
                 fpu_demo_stop();
             } else {
@@ -416,7 +468,7 @@ static void proc_render(void)
             }
         }
 
-        if (key == 0x22 && !duel_live && !cpu_live && !probe_live && !fpu_demo_live() && !user_live) { /* G：进程家族树 */
+        if (key == 0x22 && !duel_live && !cpu_live && !rtq_live && !probe_live && !fpu_demo_live() && !user_live) { /* G：进程家族树 */
             if (tree_live) {
                 tree_demo_stop();
             } else {
@@ -431,7 +483,7 @@ static void proc_render(void)
             }
         }
 
-        if (key == 0x2F && !duel_live && !cpu_live && !probe_live && !fpu_demo_live() && !tree_live) { /* V：ring3 进程上下文 */
+        if (key == 0x2F && !duel_live && !cpu_live && !rtq_live && !probe_live && !fpu_demo_live() && !tree_live) { /* V：ring3 进程上下文 */
             if (user_live) {
                 /* UI 先退出，不能把返回主画面绑在 demo 进程死亡上；
                  * 停止字和任务唤醒由 user_demo_stop() 异步收尾。 */
@@ -453,11 +505,11 @@ static void proc_render(void)
         /* V 页的 TAB/数字/方向/PgUp/PgDn/Home/End 只改 UI 状态，不动进程。 */
         if (user_live) (void)user_page_key(key);
 
-        if (key == 0x25 && !duel_live && !cpu_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live) { /* K：内核实控 #PF panic 页 */
+        if (key == 0x25 && !duel_live && !cpu_live && !rtq_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live) { /* K：内核实控 #PF panic 页 */
             page_fault_probe();
         }
 
-        if (!duel_live && !cpu_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live) {
+        if (!duel_live && !cpu_live && !rtq_live && !probe_live && !fpu_demo_live() && !tree_live && !user_live) {
             if (key == 0x39) arm_control_toggle_nullspace();
             if (key == 0x19) (void)arm_app_spawn_probe();
             /* P11.4：I 键制造“无其它 READY”的窗口，让 idle 真正 hlt。 */
@@ -547,6 +599,18 @@ static void proc_render(void)
             if (task_yield()) {
                 struct aevum_error e = app_state_template;
                 e.field = "task_yield(render/fpu)";
+                aevum_fail(&e);
+            }
+            continue;
+        }
+
+        /* P13.1 Q 页：和 C/G/V 一样只观察，不重绘机械臂。 */
+        if (rtq_live) {
+            u32 ok = (rtq_a_ord == 1u && rtq_b_ord == 2u) ? 1u : 0u;
+            arm_render_rtq_frame(rtq_a_ord, rtq_b_ord, ok);
+            if (task_yield()) {
+                struct aevum_error e = app_state_template;
+                e.field = "task_yield(render/rtq)";
                 aevum_fail(&e);
             }
             continue;

@@ -316,8 +316,8 @@ P9 的内核自测仍由 control 启动时执行一次：
 | --- | --- |
 | `0x80000` | 内核镜像起点 |
 | `0x80000..0x90000` | boot 第一段 LBA 读取：128 扇区（64KB）窗口 |
-| `0x90000..0x9C000` | boot 第二段 LBA 读取：96 扇区（48KB）窗口；P13.1 当前 `kernel.bin` 93,288 字节，结束于 `0x96C80` |
-| `0x96C80..0x9B15C` | 当前构建的 BSS；`__bss_start=0x96C80`、`__bss_end=0x9B15C`，低于 `AEVUM_KERNEL_END=0x9C000` |
+| `0x90000..0x9C000` | boot 第二段 LBA 读取：96 扇区（48KB）窗口；P13.1 当前 `kernel.bin` 95,656 字节，结束于 `0x975C0` |
+| `0x975C0..0x9BABC` | 当前构建的 BSS；`__bss_start=0x975C0`、`__bss_end=0x9BABC`，低于 `AEVUM_KERNEL_END=0x9C000` |
 | `0x9000..0x9FFF` | `render` 任务栈（栈顶 `0xA000`） |
 | `0xA000..0xAFFF` | `idle` 任务栈（栈顶 `0xB000`） |
 | `0xB000..0xBFFF` | 内核主线程栈（栈顶 `0xC000`） |
@@ -342,7 +342,7 @@ P9 的内核自测仍由 control 启动时执行一次：
 | `0xB8000` | VGA 文本显存 |
 
 `boot.asm` 先读 128 个扇区，再读 96 个扇区到 `0x80000`，合计 224 个扇区，因此 `kernel.bin` 上限为 114,688 字节。
-当前 P13.1 clean 构建 93,288 字节，BSS 从 `0x96C80` 到 `0x9B15C`；镜像余量 21,400 字节，BSS 距 `AEVUM_KERNEL_END=0x9C000` 余 0xEA4（3,748B）。`kernel.bin` 结束于 `0x96C80`，BSS 尾部仍在第二段读取窗口 `0x90000..0x9C000` 内，loader 按 `__bss_end` 清零。BSS 与 `render` 栈 `0x9000`、VGA `0xB8000`、VGA BIOS 影子 ROM `0xC0000` 均不重叠。P13.1 的 `rt_prev/rt_next/rt_prio/rt_queued` 把 `sizeof(struct task_struct)` 从 144B 增至 148B，`tasks[]` 为 16×148B（`0x940`）；另加 `rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 10B。旧 `0x9A000` 预算已被 P13.1 前的 92,744B 基线越过，因此本轮把第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`。
+当前 P13.1 clean 构建 95,656 字节，BSS 从 `0x975C0` 到 `0x9BABC`；镜像余量 19,032 字节，BSS 距 `AEVUM_KERNEL_END=0x9C000` 余 0x544（1,348B）。`kernel.bin` 结束于 `0x975C0`，BSS 尾部仍在第二段读取窗口 `0x90000..0x9C000` 内，loader 按 `__bss_end` 清零。BSS 与 `render` 栈 `0x9000`、VGA `0xB8000`、VGA BIOS 影子 ROM `0xC0000` 均不重叠。P13.1 的 `rt_prev/rt_next/rt_prio/rt_queued` 把 `sizeof(struct task_struct)` 从 144B 增至 148B，`tasks[]` 为 16×148B（`0x940`）；另加 `rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 10B。旧 `0x9A000` 预算已被 P13.1 前的 92,744B 基线越过，因此本轮把第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`。
 `kernel.bin` 由 `kernel.elf` 经 `objcopy -O binary` 生成，保证 loader 与 C 看到的 `__bss_start`/`__bss_end` 一致。
 若继续增长，先加 `boot.asm` 扇区数，同时同步 `kernel.ld` 与 `config/memory.h` 的 `AEVUM_KERNEL_END`，并确认 BSS 不越过内核主线程栈底 `0xC000`。`AEVUM_TASK_STACK_MIN=0x8000`，
 `AEVUM_TASK_STACK_MAX=0x20C000`，`AEVUM_KSTACK_COUNT=12`，`AEVUM_TASK_STACK_SIZE=0x1000`，`AEVUM_AS_MAX=12`，`PROC_MAX=12`，`TASK_MAX=16`，`AEVUM_PHYS_POOL_BASE=0x100000`，`AEVUM_PHYS_POOL_END=0x1FF000`。
@@ -359,7 +359,7 @@ xxd -l 4 /tmp/robot-serial.bin   # 期望 a5 5a 01
 
 通过标准：
 
-- `kernel.bin` 不超过 114,688 字节，链接无 undefined symbol；P13.1 clean 构建 93,288 字节。
+- `kernel.bin` 不超过 114,688 字节，链接无 undefined symbol；P13.1 clean 构建 95,656 字节。
 - QEMU 不 triple fault，串口首帧为 `a5 5a 01 ...`。
 - 屏幕出现机械臂、目标点、轨迹和右侧 `ARM STATUS` 面板；标题显示 `PIT 100Hz | P/B/T/C/F/G/V/K`，面板出现 `px` 抢占计数和每任务 CPU 百分比。
 - 空格扫描码 `0x39` 可切换零空间；每 420 帧自动切换。
@@ -551,6 +551,6 @@ P13.1 把 RT 任务的就绪队列从 fair 的 `vruntime` 扫描中拆出，fair
 - `task_rt_budget_charge()` / `task_rt_budget_tick()`：预算耗尽摘链，补满后若 READY 重新入队并置 `need_resched=1`；throttle 期间不在 RT 队列。
 - READY 写入口集中到 `task_make_ready()`：`task_create_common`、`task_wake_expired`、`task_wake_kthread_waiters`、`wait_queue_wake_one/all`、`task_wake`、`task_wake_process` 都已改；`task_terminate_threads()` 和 `task_zero()` 置 ZOMBIE/清零前摘链。
 - `app/rtbench/rtbench.c`：新增 `RT_QUEUE_TEST`，创建 priority 1 的 `rtlow` 与 priority 0 的 `rtctl` 同跑，输出 `qerr`/`low_ticks`；`task_rt_queue_audit()` 只在 `AEVUM_RT_BENCH` 下编译，检查头尾、双向链、位图、`rt_queued/rt_prio` 和 READY 状态，0 表示一致。
-- 构建口径：RT 队列测试 `kernel.bin=41,796B`；预算越界测试 `kernel.bin=41,988B`；普通构建 `kernel.bin=93,288B`、`bss=17,628B`、`__bss_end=0x9B15C`。因旧 `0x9A000` 已被现有基线越过，boot 第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`，`kernel.bin` 上限 114,688B；BSS 余 3,748B。
+- 构建口径：RT 队列测试 `kernel.bin=42,468B`；预算越界测试 `kernel.bin=42,692B`；普通构建 `kernel.bin=95,656B`、`bss=17,660B`、`__bss_end=0x9BABC`。因旧 `0x9A000` 已被现有基线越过，boot 第二段 80→96 扇区、总扇区 208→224，`AEVUM_KERNEL_END=0x9C000`，`kernel.bin` 上限 114,688B；BSS 余 1,348B。
 - QEMU：队列测试 `miss=0 overrun=0 qerr=0 low_ticks=1010`；预算越界 `miss=0 throttle=1000 qerr=0 low_ticks=1010`；普通主页面正常启动，无 panic。
 - 边界：只做 RT 就绪队列；fair 仍 16 槽线性扫描，没有 APIC/HPET one-shot、硬 CBS 截断、多核 per-CPU 队列、RT 组调度、deadline 继承或优先级天花板；本轮未单独构造同优先级 RT FIFO 任务级测试，也未实现 `pick_cycles` TSC 统计。

@@ -604,6 +604,88 @@ void arm_render_cpu_frame(void)
     vga_text(2, 24, "QUANTUM/EXP = slice; WQ one=directed, all=broadcast; CPU%=ticks/total", 0x18);
 }
 
+void arm_render_rtq_init(void)
+{
+    vga_clear(0x00);
+    vga_flush();
+}
+
+static void rtq_num(int x, int y, u32 value, u8 color)
+{
+    char buf[12];
+    int n = fmt_dec(buf, value);
+    buf[n] = 0;
+    vga_text(x, y, buf, color);
+}
+
+/*
+ * P13.1 Q 页：和 C/G/V 一样由主画面字母键进入，只读队列快照。
+ * FIFO A/B 由 app 层的两个 priority 1 动态 kthread 写入，页面只显示结果。
+ */
+void arm_render_rtq_frame(u32 fifo_a, u32 fifo_b, u32 fifo_ok)
+{
+    char buf[32];
+    int prio, p;
+    u32 qerr = task_rt_queue_audit();
+
+    vga_clear(0x00);
+    vga_text(16, 0, "AEVUM / RT QUEUE", 0x1F);
+    vga_text(8, 2, "P13.1 BITMAP + PER-PRIORITY DOUBLE LINK", 0x1B);
+
+    vga_text(2, 4, "QUEUE ERR", C_GRAY);
+    rtq_num(14, 4, qerr, qerr ? C_RED : C_GREEN);
+    vga_text(2, 5, "MASK", C_GRAY);
+    rtq_num(14, 5, task_rt_queue_mask(), C_YELLOW);
+    vga_text(24, 5, "QUEUED", C_GRAY);
+    rtq_num(32, 5, task_rt_queue_total(), C_WHITE);
+
+    vga_text(2, 7, "PRI  HEAD TAIL  N  HEAD TASK", 0x0F);
+    for (prio = 0; prio <= TASK_PRIORITY_MAX; prio++) {
+        int head = task_rt_queue_head(prio);
+        int tail = task_rt_queue_tail(prio);
+        struct task_info info;
+
+        vga_text(2, 8 + prio, "P", C_GRAY);
+        rtq_num(3, 8 + prio, (u32)prio, C_YELLOW);
+        if (head < 0) vga_text(7, 8 + prio, " -", C_DGRAY);
+        else rtq_num(7, 8 + prio, (u32)head, C_WHITE);
+        if (tail < 0) vga_text(11, 8 + prio, " -", C_DGRAY);
+        else rtq_num(11, 8 + prio, (u32)tail, C_WHITE);
+        rtq_num(16, 8 + prio, task_rt_queue_count(prio), C_WHITE);
+        if (head >= 0 && task_snapshot(head, &info)) {
+            int i;
+            for (i = 0; i < 12 && info.comm[i]; i++) buf[i] = info.comm[i];
+            buf[i] = 0;
+            vga_text(21, 8 + prio, buf, task_pid_color((u32)info.pid));
+        }
+    }
+
+    vga_text(2, 13, "FIFO A", C_GRAY);
+    rtq_num(10, 13, fifo_a, C_WHITE);
+    vga_text(14, 13, "B", C_GRAY);
+    rtq_num(16, 13, fifo_b, C_WHITE);
+    vga_text(20, 13, fifo_ok ? "OK" : "WAIT", fifo_ok ? C_GREEN : C_YELLOW);
+
+    vga_text(2, 15, "PICK MAX", C_GRAY);
+    rtq_num(14, 15, task_pick_cycles_max(), C_WHITE);
+    vga_text(24, 15, "AVG", C_GRAY);
+    rtq_num(28, 15, task_pick_cycles_avg(), C_WHITE);
+    vga_text(34, 15, "N", C_GRAY);
+    rtq_num(36, 15, task_pick_cycles_count(), C_WHITE);
+    vga_text(2, 16, "PICK SAMPLES ONLY IN RT BENCH; NORMAL BUILD = 0", 0x18);
+
+    p = 0;
+    p += fmt_dec(buf, task_switch_total());
+    buf[p] = 0;
+    vga_text(2, 18, "SWITCHES", C_GRAY);
+    vga_text(14, 18, buf, C_WHITE);
+
+    vga_text(2, 20, "Q = RETURN TO ARM", 0x1E);
+    vga_text(2, 22, "A/B = PRIORITY 1 RT KTHREADS; A RECORDS ORDER, THEN EXITS", 0x18);
+    vga_text(2, 23, "GREEN = QUEUE CONSISTENT; RED = HEAD/TAIL/BITMAP/LINK ERROR", 0x18);
+    vga_flush();
+}
+
 void arm_render_frame(const struct arm_status *s)
 {
     char buf[40];

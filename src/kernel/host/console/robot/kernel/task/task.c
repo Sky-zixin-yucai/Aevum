@@ -1972,10 +1972,9 @@ u32 task_rt_probe_wake_tsc(void)
     return rt_probe_wake_tsc;
 }
 
-#ifdef AEVUM_RT_BENCH
 /*
  * P13.1 验收探针：扫一遍 RT 队列，检查头尾/双向链/mask/state 是否自洽。
- * 只读，不参与调度。返回位图，0 表示一致。
+ * 只读，不参与调度。返回位图，0 表示一致。普通构建的 Q 页也用它。
  */
 u32 task_rt_queue_audit(void)
 {
@@ -2027,7 +2026,56 @@ u32 task_rt_queue_audit(void)
     if ((u8)queue_mask != rt_mask) err |= 512u;
     return err;
 }
-#endif
+
+u32 task_rt_queue_mask(void)
+{
+    return (u32)rt_mask;
+}
+
+int task_rt_queue_head(int prio)
+{
+    if (prio < 0 || prio >= TASK_RT_PRIO_COUNT) return -1;
+    return rt_head[prio] == TASK_RT_NONE ? -1 : (int)rt_head[prio];
+}
+
+int task_rt_queue_tail(int prio)
+{
+    if (prio < 0 || prio >= TASK_RT_PRIO_COUNT) return -1;
+    return rt_tail[prio] == TASK_RT_NONE ? -1 : (int)rt_tail[prio];
+}
+
+u32 task_rt_queue_count(int prio)
+{
+    u8 slot;
+    u32 n = 0;
+
+    if (prio < 0 || prio >= TASK_RT_PRIO_COUNT) return 0;
+    slot = rt_head[prio];
+    while (slot != TASK_RT_NONE && n < TASK_MAX) {
+        n++;
+        slot = tasks[slot].rt_next;
+    }
+    return n;
+}
+
+u32 task_rt_queue_total(void)
+{
+    u32 n = 0;
+    int prio;
+
+    for (prio = 0; prio < TASK_RT_PRIO_COUNT; prio++)
+        n += task_rt_queue_count(prio);
+    return n;
+}
+
+int task_set_rt_tid(int tid)
+{
+    struct task_struct *task = task_find_pid(tid);
+
+    if (!task || task->state == TASK_ZOMBIE) return -1;
+    task_set_rt(task);
+    return 0;
+}
 
 u32 task_pick_cycles_max(void)
 {

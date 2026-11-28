@@ -244,8 +244,16 @@ u32 task_rt_probe_wake_tsc(void);
 /* RT-1：最小 RT 类标记；RT 任务优先于 fair 任务，不参与权重竞争。 */
 void task_set_rt(struct task_struct *task);
 u32 task_wake_resched_total(void);
-/* P13.1：只在 RT bench 构建里做队列不变量审计；返回 0 表示结构一致。 */
+/* P13.1：只读队列不变量审计；Q 页和 RT bench 共用，0 表示结构一致。 */
 u32 task_rt_queue_audit(void);
+/* P13.1：Q 页只读队列快照；head/tail 返回任务槽，-1 表示空。 */
+u32 task_rt_queue_mask(void);
+int task_rt_queue_head(int prio);
+int task_rt_queue_tail(int prio);
+u32 task_rt_queue_count(int prio);
+u32 task_rt_queue_total(void);
+/* 按 TID 把动态 kthread 转成 RT 类，供 Q 页 FIFO 探针使用；失败 -1。 */
+int task_set_rt_tid(int tid);
 /* P13.1：RT bench 的 task_pick_next() TSC 周期统计；普通构建恒为 0。 */
 u32 task_pick_cycles_max(void);
 u32 task_pick_cycles_avg(void);
