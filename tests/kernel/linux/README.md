@@ -119,6 +119,35 @@ AEVUM_TEST_BENCH='bench_policy=fifo bench_tasks=4 bench_ms=5000' \
 
 `SCHED_FIFO` 是机器人控制任务在 Linux 上的真正对手；CFS 是后台任务对手。两组结果分开报，不能合成一个总分。
 
+## RT 周期唤醒延迟
+
+CFS/FIFO 的 CPU 份额不能回答“10ms 周期能不能准时醒”。`bench.c` 增加 `bench_policy=rtlat`：
+
+- 父进程 `SCHED_FIFO 99`，用 `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` 做绝对 10ms 周期；
+- 后台任务显式降到 `SCHED_OTHER`，对应 Aevum 的普通优先级 bg；
+- 父进程每周期忙等 `bench_rt_work_us`，统计 `lat_max_us`、`lat_p99_us`、`jitter_max_us`、`exec_max_us`、`miss`；
+- 参数：`bench_rt_period_us=10000 bench_rt_work_us=1500 bench_rt_periods=1000 bench_rt_deadline_us=10000`。
+
+```bash
+BZIMAGE=~/aevum-test/out/linux-i386-hz100/bzImage \
+AEVUM_TEST_ROOTFS=~/aevum-test/rootfs-i386-rtlat.cpio.gz \
+AEVUM_TEST_BENCH='bench_policy=rtlat bench_tasks=4 bench_rt_period_us=10000 bench_rt_work_us=1500 bench_rt_periods=1000 bench_rt_deadline_us=10000' \
+OUT=/tmp/linux-rtlat-bg4.log \
+./run-qemu.sh
+```
+
+`rtlat-matrix.sh` 跑 bg=2/4/8 各 3 次，结果写到 `tests/kernel/results/2026-11-28/`。
+
+2026-11-28 实测中位数：
+
+| bg | lat_max_us | lat_p99_us | jitter_max_us | exec_max_us | miss |
+|---|---|---|---|---|---|
+| 2 | 9946 | 9756 | 373 | 1693 | 1000 |
+| 4 | 9777 | 9396 | 321 | 1757 | 1000 |
+| 8 | 10686 | 9837 | 1205 | 1569 | 1000 |
+
+这是 `HZ=100 + 无 high-res + PREEMPT_NONE` 的普通 Linux，不是 PREEMPT_RT；`miss=1000` 来自 100Hz tick 量化，不是调度器选错任务。不要把这组数当成 Linux 硬实时上限。
+
 ## 已跑通
 
 2026-11-25 在 WSL2 Kali + `qemu-system-i386 11.1.2` 上实际编译并运行：

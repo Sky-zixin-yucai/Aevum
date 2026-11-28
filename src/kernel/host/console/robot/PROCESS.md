@@ -1100,3 +1100,45 @@ QEMU 统一带 `-icount shift=auto,align=off,sleep=off`，串口日志保存在 
 - 矩阵只覆盖单核、`-icount`、bg=2/4/8；没有 IOAPIC、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。
 - 默认 QEMU 无 `-icount` 时 LAPIC IRQ 投递仍受 TCG 主循环边界影响，`gap_us≈3ms`、`hard` 很低，不作为本矩阵验收。
 - 全量回归未重跑：P5.3、P11.x、P12.1 未在本轮重新执行；本轮覆盖 RT 矩阵、Q 页、普通主页面启动。
+
+## P13.4 可调度负载、2.1ms 边界与 Linux 对照
+
+P13.3 的矩阵只证明“过载时能截断”。P13.4 把工作降到预算内，目标变成“可调度时零截断、零 miss”：`work=1500µs < budget=2000µs`，仍用 10ms 周期、10ms deadline、LAPIC 1ms one-shot，bg=2/4/8 各 1000 周期。随后用 `work=2100µs` 验证截断只在超过 2ms 时发生。
+
+### 可调度基线
+
+| bg | servo | hard | cut_n | lat_max_us | lat_p99_us | jitter_max_us | exec_max_us | miss |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 1000 | 0 | 0 | 7 | 0 | 102 | 1500 | 0 |
+| 4 | 1000 | 0 | 0 | 7 | 0 | 184 | 1500 | 0 |
+| 8 | 1000 | 0 | 0 | 8 | 0 | 364 | 1500 | 0 |
+
+三级都保持 `exec_wall_over=0 budget_overrun=0 throttle=0 preempt=0 cut_us=0 post_*=0 after_*=0 early=0 ifoff=0 wake_miss=0 sleep_fail=0 qerr=0`。`p99=0` 是“低于 1µs 统计粒度”，不是绝对零；`exec_max=1500` 说明 1.5ms 工作完整跑完，没有被 2ms 截断。bg=8 的 `pick_avg` 从 634 升到 784 周期，`lat_max` 仍为 8µs。
+
+### 2.1ms 边界
+
+| bg | hard | cut_n | cut_us | post_avg_us | after_avg_us | after_max_us | exec_max_us | miss |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 1000 | 1000 | 2000 | 8203 | 99 | 100 | 15257 | 1000 |
+| 4 | 1000 | 1000 | 2000 | 8281 | 99 | 99 | 10282 | 1000 |
+| 8 | 1000 | 1000 | 2000 | 8460 | 99 | 99 | 10462 | 1000 |
+
+`cut_us=2000`、`after≈99µs` 证明 2.1ms 作业在 2ms 被摘链，恢复后只补跑剩余约 0.1ms。`post≈8.2~8.5ms` 是 throttle 到下一个 10ms tick 的等待；`miss=1000`、`exec_max≈10.3~10.5ms` 是“2ms 预算 + 10ms deadline”的墙钟结果。bg=2 的 `post_max=13256`、`exec_max=15257` 是单次 QEMU 宿主调度尾样本，不改变截断结论。
+
+### Linux 同口径对照
+
+Linux 侧复用 `tests/kernel/linux` 的 i386 v6.18 镜像（`CONFIG_HZ=100`、`CONFIG_HZ_PERIODIC=y`、`CONFIG_HIGH_RES_TIMERS=n`、`CONFIG_NO_HZ=n`、`CONFIG_PREEMPT_NONE=y`、`CONFIG_SMP=n`），在 `bench.c` 新增 `bench_policy=rtlat`：父进程 `SCHED_FIFO 99` 用 `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` 做 10ms 绝对周期，后台任务保持 `SCHED_OTHER`，每次忙等 1500µs，3 次取中位数。
+
+| bg | lat_max_us | lat_p99_us | jitter_max_us | exec_max_us | miss |
+|---|---|---|---|---|---|
+| 2 | 9946 | 9756 | 373 | 1693 | 1000 |
+| 4 | 9777 | 9396 | 321 | 1757 | 1000 |
+| 8 | 10686 | 9837 | 1205 | 1569 | 1000 |
+
+- 同口径 bg=4：Aevum `lat_p99=0µs`、`lat_max=7µs`、`jitter_max=184µs`、`miss=0`；Linux `lat_p99=9396µs`、`lat_max=9777µs`、`jitter_max=321µs`、`miss=1000`。
+- Linux 的延迟不是调度器选错任务，而是 100Hz tick 量化：1500µs 工作加约 9.4ms 唤醒延迟已经越过 10ms deadline，所以三级 `miss=1000`，`cut_n=0`（Linux 没有 Aevum 的 CBS 预算截断）。
+- CPU 份额旧数据仍接近：Aevum A1 4 任务 `52.80/26.40/13.60/7.20`，Linux CFS 4 任务 `53.34/26.64/13.25/6.74`，最大差约 0.9 个百分点。Aevum 的优势是单核周期任务的唤醒确定性，不是通用吞吐或功能覆盖。
+- 本轮 Linux 不是 PREEMPT_RT，也没有 high-res；要测 Linux 硬实时上限，需要另建 PREEMPT_RT + high-res 镜像，不能把这组数当成 Linux 的最优值。
+- 仍未覆盖：IOAPIC 路由、多核 per-CPU LAPIC、优先级继承/天花板、PIT fallback 回归、真实硬件。
+
+证据：`tests/kernel/results/2026-11-28/p134-matrix.md`、`p134-*.log`、`linux-rtlat-bg*-r*.log`；Linux 基准源码 `tests/kernel/linux/bench/bench.c`，矩阵脚本 `tests/kernel/linux/rtlat-matrix.sh`。

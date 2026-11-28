@@ -296,3 +296,32 @@ P13.3 把 P13.2 的“截断一次、看 `cut_us=2000`”扩展为分段统计�
 - bg=8 的 `lat_max_us` 从 7µs 升到 32µs、`pick_avg` 从 635 周期升到 1193 周期，是 8 个背景任务把 RT 作业挤出 CPU 后的路径量级上升；`after_avg` 仍为 998µs，补跑没有被背景负载破坏。
 - 普通 clean 构建 `kernel.bin=98,952B`、`text=98,677`、`data=232`、`bss=17,820`；`__bss_end=0x9C83C`，BSS 余 1,988B。RT bg=2 `text=44,280`、`data=228`、`bss=17,624`；bg=4/8 text 44,264/44,269。相对 P13.2 的 43,771 增加约 0.5KB。
 - 边界：只覆盖单核、`-icount`、bg=2/4/8；不覆盖 IOAPIC、多核 per-CPU LAPIC、RT 组调度、deadline 继承、优先级天花板；默认 QEMU 无 `-icount` 的 `gap_us≈3ms` 不作为验收。全量回归未重跑。
+
+## 25. P13.4 可调度负载与 Linux 对照
+
+P13.3 验证“超预算会截断”；P13.4 把 `work` 降到 `1500µs < budget=2000µs`，看可调度负载能否零 miss。Aevum 仍用 `-icount`、10ms 周期、10ms deadline、LAPIC 1ms one-shot，bg=2/4/8 各 1000 周期。
+
+| bg | hard | cut_n | lat_max_us | lat_p99_us | jitter_max_us | exec_max_us | miss |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 7 | 0 | 102 | 1500 | 0 |
+| 4 | 0 | 0 | 7 | 0 | 184 | 1500 | 0 |
+| 8 | 0 | 0 | 8 | 0 | 364 | 1500 | 0 |
+
+`p99=0` 表示低于 1µs 统计粒度；`exec_max=1500` 表示 1.5ms 工作完整跑完，没有被 2ms 预算截断。bg=8 的 `pick_avg` 升到 784 周期，`lat_max` 仍只有 8µs。
+
+`work=2100µs` 边界三级都是 `hard=1000 cut_n=1000 cut_us=2000 after_avg=99 after_max=99`：2ms 截断后只补跑约 0.1ms。默认 10ms deadline 下 `miss=1000`、`exec_max≈10.3~10.5ms` 是 throttle 到下一个 tick 的墙钟结果，不是截断失败；bg=2 的 `post_max/exec_max=13256/15257` 是单次宿主尾样本。
+
+Linux 侧用 i386 v6.18（HZ=100、无 high-res、无 NO_HZ、`PREEMPT_NONE`、SMP=n）新增 `bench_policy=rtlat`：父进程 `SCHED_FIFO 99` 绝对周期唤醒，后台 `SCHED_OTHER`，1500µs 工作，3 次中位数：
+
+| bg | lat_max_us | lat_p99_us | jitter_max_us | exec_max_us | miss |
+|---|---|---|---|---|---|
+| 2 | 9946 | 9756 | 373 | 1693 | 1000 |
+| 4 | 9777 | 9396 | 321 | 1757 | 1000 |
+| 8 | 10686 | 9837 | 1205 | 1569 | 1000 |
+
+- 同口径 bg=4：Aevum `p99=0µs / max=7µs / miss=0`，Linux `p99=9396µs / max=9777µs / miss=1000`；唤醒延迟差约 9.4ms（p99）到 1.4×10³ 倍（max）。
+- Linux 的 miss 来自 100Hz tick 量化，不是调度器选错任务；1500µs 工作加约 9.4ms 唤醒已经越过 10ms deadline。它不是 PREEMPT_RT，不能当 Linux 硬实时上限。
+- CPU 份额仍接近：Aevum A1 4 任务 `52.80/26.40/13.60/7.20` vs Linux CFS `53.34/26.64/13.25/6.74`，最大差约 0.9 个百分点。Aevum 胜在单核周期任务的唤醒确定性，不在通用吞吐。
+- 边界：单核、QEMU/TCG、Aevum `-icount`；未覆盖 IOAPIC、多核 per-CPU LAPIC、优先级继承/天花板、PIT fallback、真实硬件；Linux 侧未测 PREEMPT_RT。
+
+证据：`tests/kernel/results/2026-11-28/p134-matrix.md`、`p134-*.log`、`linux-rtlat-bg*-r*.log`。

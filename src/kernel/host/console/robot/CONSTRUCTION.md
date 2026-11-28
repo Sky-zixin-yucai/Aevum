@@ -585,3 +585,16 @@ P13.3 不换调度算法，把 P13.2 的硬截断路径补成可回归契约：�
 - 构建口径：普通 clean `kernel.bin=98,952B`、`text=98,677`、`data=232`、`bss=17,820`、`__bss_start=0x982A0`、`__bss_end=0x9C83C`、BSS 余 `0x7C4`（1,988B）。RT bg=2 `text=44,280`、`data=228`、`bss=17,624`；bg=4 `text=44,264`；bg=8 `text=44,269`。
 - QEMU 验收：`-icount shift=auto,align=off,sleep=off`，bg=2/4/8 各 1000 周期。三级都得到 `hard=1000 cut_n=1000 cut_us=2000 servo=2000 armn=1000 gap_us≈1000 fgap_us=1000 early=0 ifoff=0 qerr=0`；`after_avg_us` 为 999/999/998，`post_avg_us` 为 9099/9180/9360。日志在 `tests/kernel/results/2026-11-28/`。
 - 边界：`post_*` 是含 throttle 的墙钟，`after_*` 是恢复后实际执行时间；`miss/exec_wall_over/exec_max_us≈11ms` 是 3ms 工作对 10ms deadline 的预期结果，不能拿来否定 2ms 截断。矩阵只覆盖单核、`-icount`、bg=2/4/8；没有 IOAPIC、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。全量回归未重跑。
+
+## P13.4 可调度负载、2.1ms 边界与 Linux 对照
+
+P13.4 不改内核代码，只补测试口径：把 `RT_WORK_US` 从 3000 降到 1500，验证预算内零截断；再用 2100 验证截断边界；同时给 Linux 基准加 `rtlat` 模式做同口径周期唤醒。
+
+- Aevum 构建：`BUILD=build-p134-*`，`DEFS="-DAEVUM_RT_BENCH -DRT_BG_TASKS=N -DRT_BUDGET=1 -DRT_WORK_US=1500|2100 -DRT_BUDGET_ONESHOT=1"`；QEMU 仍带 `-icount shift=auto,align=off,sleep=off`。
+- 可调度基线：bg=2/4/8 都是 `hard=0 cut_n=0 miss=0 exec_wall_over=0 throttle=0`，`lat_max_us=7/7/8`、`lat_p99_us=0`、`jitter_max_us=102/184/364`、`exec_max_us=1500`。
+- 2.1ms 边界：bg=2/4/8 都是 `hard=1000 cut_n=1000 cut_us=2000 after_avg=99 after_max=99~100`，`post_avg=8203/8281/8460`；默认 10ms deadline 下 `miss=1000`、`exec_max≈10.3~10.5ms` 是 throttle 到下一 tick 的墙钟结果。
+- Linux 改动：`tests/kernel/linux/bench/bench.c` 新增 `bench_policy=rtlat`，解析 `bench_rt_period_us/work_us/periods/deadline_us`；父进程 `SCHED_FIFO 99` 做绝对 `clock_nanosleep`，后台任务显式降到 `SCHED_OTHER`，统计 lat/jitter/exec/miss。
+- Linux 镜像：i386 v6.18，`CONFIG_HZ=100`、`CONFIG_HZ_PERIODIC=y`、`CONFIG_HIGH_RES_TIMERS=n`、`CONFIG_NO_HZ=n`、`CONFIG_PREEMPT_NONE=y`、`CONFIG_SMP=n`；QEMU TCG，1 vCPU，3 次中位数。
+- Linux 结果：bg=2 `lat_max=9946 lat_p99=9756 jitter=373 exec=1693 miss=1000`；bg=4 `9777/9396/321/1757/1000`；bg=8 `10686/9837/1205/1569/1000`。
+- 结论：同口径 bg=4，Aevum `p99=0µs / max=7µs / miss=0`，Linux `p99=9396µs / max=9777µs / miss=1000`；Aevum 的优势是单核周期任务的唤醒确定性。Linux 不是 PREEMPT_RT；CPU 份额仍接近 Linux CFS（4 任务最大差约 0.9 个百分点），不能把这组数当 Linux 硬实时上限或通用性能结论。
+- 边界：单核、QEMU/TCG；未覆盖 IOAPIC、多核 per-CPU LAPIC、优先级继承/天花板、PIT fallback、真实硬件；Linux 侧未测 PREEMPT_RT。日志和 `p134-matrix.md` 在 `tests/kernel/results/2026-11-28/`。

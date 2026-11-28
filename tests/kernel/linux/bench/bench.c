@@ -3,12 +3,18 @@
 // 用 wait4 的 rusage 统计每个任务的 CPU 时间，然后关机。
 //
 // 命令行参数（写在 QEMU -append 里）：
-//   bench_policy=cfs|fifo
+//   bench_policy=cfs|fifo|rtlat
 //   bench_tasks=2|4|8|12
 //   bench_ms=5000
+//   bench_rt_period_us=10000
+//   bench_rt_work_us=1500
+//   bench_rt_periods=1000
+//   bench_rt_deadline_us=10000
 //
 // CFS 优先用 cgroup v2 的 cpu.weight 做 800/400/200/100（8:4:2:1）；
 // cgroup 不可用时退回 nice。
+// rtlat：父进程 SCHED_FIFO 99 做绝对时间周期唤醒，后台任务保持 SCHED_OTHER，
+// 统计唤醒延迟、抖动、执行时间和 deadline miss；用于和 Aevum RT 同口径对照。
 
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -31,8 +37,10 @@
 #include <unistd.h>
 
 #define MAX_TASKS 12
+#define MAX_SAMPLES 10000
 
 static volatile sig_atomic_t stop;
+static long long lat_samples[MAX_SAMPLES];
 
 static void on_stop(int sig) {
     (void)sig;
@@ -158,6 +166,12 @@ static void child_body(int index, int priority, const char *policy, int cgroup_o
         if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
             fprintf(stderr, "SCHED_FIFO failed for task %d: %s\n", index, strerror(errno));
         }
+    } else if (strcmp(policy, "rtlat") == 0) {
+        struct sched_param sp;
+        memset(&sp, 0, sizeof(sp));
+        if (sched_setscheduler(0, SCHED_OTHER, &sp) != 0) {
+            fprintf(stderr, "SCHED_OTHER failed for task %d: %s\n", index, strerror(errno));
+        }
     } else if (!cgroup_ok) {
         setpriority(PRIO_PROCESS, 0, -10 + priority * 5);
     }
@@ -186,26 +200,79 @@ static double now_ms(void) {
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
 }
 
+static long long now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000LL;
+}
+
+static void add_us(struct timespec *ts, long long us) {
+    ts->tv_nsec += (long) (us % 1000000LL) * 1000L;
+    ts->tv_sec += (time_t) (us / 1000000LL);
+    while (ts->tv_nsec >= 1000000000L) {
+        ts->tv_nsec -= 1000000000L;
+        ts->tv_sec++;
+    }
+    while (ts->tv_nsec < 0) {
+        ts->tv_nsec += 1000000000L;
+        ts->tv_sec--;
+    }
+}
+
+static int cmp_ll(const void *a, const void *b) {
+    long long x = *(const long long *)a;
+    long long y = *(const long long *)b;
+    return (x > y) - (x < y);
+}
+
+static long long busy_us(long long target_us) {
+    long long start = now_us();
+    long long now;
+    volatile unsigned long x = 1;
+    do {
+        for (int i = 0; i < 32; i++) {
+            x = x * 1103515245UL + 12345UL;
+            __asm__ __volatile__("" : "+r"(x));
+        }
+        now = now_us();
+    } while (now - start < target_us);
+    return now - start;
+}
+
 int main(void) {
     const char *policy = "cfs";
     int count = 4;
     int duration_ms = 5000;
+    int rt_period_us = 10000;
+    int rt_work_us = 1500;
+    int rt_periods = 1000;
+    int rt_deadline_us = 10000;
     char policy_arg[16];
 
     setup_console();
     int mounts_ok = setup_mounts() == 0;
     int cgroup_ok = mounts_ok;
     if (get_param("bench_policy", policy_arg, sizeof(policy_arg)) == 0) {
-        if (strcmp(policy_arg, "cfs") == 0 || strcmp(policy_arg, "fifo") == 0) {
-            policy = strcmp(policy_arg, "fifo") == 0 ? "fifo" : "cfs";
+        if (strcmp(policy_arg, "cfs") == 0 || strcmp(policy_arg, "fifo") == 0 ||
+            strcmp(policy_arg, "rtlat") == 0) {
+            policy = strcmp(policy_arg, "fifo") == 0 ? "fifo" :
+                     strcmp(policy_arg, "rtlat") == 0 ? "rtlat" : "cfs";
         }
     }
     count = get_param_int("bench_tasks", count);
     if (count < 2 || count > MAX_TASKS) count = 4;
     duration_ms = get_param_int("bench_ms", duration_ms);
     if (duration_ms < 1000) duration_ms = 1000;
+    rt_period_us = get_param_int("bench_rt_period_us", rt_period_us);
+    rt_work_us = get_param_int("bench_rt_work_us", rt_work_us);
+    rt_periods = get_param_int("bench_rt_periods", rt_periods);
+    rt_deadline_us = get_param_int("bench_rt_deadline_us", rt_deadline_us);
+    if (rt_period_us < 1000) rt_period_us = 1000;
+    if (rt_work_us < 0) rt_work_us = 0;
+    if (rt_periods < 1 || rt_periods > 10000) rt_periods = 1000;
+    if (rt_deadline_us < rt_work_us) rt_deadline_us = rt_work_us;
 
-    if (strcmp(policy, "fifo") == 0) {
+    if (strcmp(policy, "fifo") == 0 || strcmp(policy, "rtlat") == 0) {
         struct sched_param sp;
         memset(&sp, 0, sizeof(sp));
         sp.sched_priority = 99;
@@ -269,9 +336,51 @@ int main(void) {
     nanosleep(&settle, NULL);
 
     double wall_start = now_ms();
-    struct timespec req = { .tv_sec = duration_ms / 1000,
-                            .tv_nsec = (duration_ms % 1000) * 1000000L };
-    while (nanosleep(&req, &req) != 0 && errno == EINTR) {}
+    if (strcmp(policy, "rtlat") == 0) {
+        long long lat_max = 0;
+        long long jitter_max = 0;
+        long long exec_max = 0;
+        long long prev_lat = 0;
+        int miss = 0;
+        struct timespec next;
+        clock_gettime(CLOCK_MONOTONIC, &next);
+        add_us(&next, rt_period_us);
+
+        printf("RT_BEGIN bg=%d periods=%d period_us=%d work_us=%d deadline_us=%d\n",
+               count, rt_periods, rt_period_us, rt_work_us, rt_deadline_us);
+        fflush(stdout);
+
+        for (int i = 0; i < rt_periods; i++) {
+            while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) != 0 &&
+                   errno == EINTR) {}
+            long long target = (long long)next.tv_sec * 1000000LL + next.tv_nsec / 1000LL;
+            long long wake = now_us();
+            long long lat = wake - target;
+            if (lat < 0) lat = 0;
+            long long exec = busy_us(rt_work_us);
+            long long jitter = i == 0 ? 0 : (lat > prev_lat ? lat - prev_lat : prev_lat - lat);
+            if (lat > lat_max) lat_max = lat;
+            if (jitter > jitter_max) jitter_max = jitter;
+            if (exec > exec_max) exec_max = exec;
+            if (lat + exec > rt_deadline_us) miss++;
+            lat_samples[i] = lat;
+            prev_lat = lat;
+            add_us(&next, rt_period_us);
+        }
+
+        qsort(lat_samples, (size_t)rt_periods, sizeof(lat_samples[0]), cmp_ll);
+        int p99_index = (rt_periods * 99) / 100;
+        if (p99_index >= rt_periods) p99_index = rt_periods - 1;
+        printf("RT_STAT bg=%d periods=%d lat_n=%d lat_max_us=%lld lat_p99_us=%lld "
+               "jitter_max_us=%lld exec_max_us=%lld miss=%d deadline_us=%d cut_n=0 servo=0\n",
+               count, rt_periods, rt_periods, lat_max, lat_samples[p99_index],
+               jitter_max, exec_max, miss, rt_deadline_us);
+        fflush(stdout);
+    } else {
+        struct timespec req = { .tv_sec = duration_ms / 1000,
+                                .tv_nsec = (duration_ms % 1000) * 1000000L };
+        while (nanosleep(&req, &req) != 0 && errno == EINTR) {}
+    }
 
     for (int i = 0; i < count; i++) {
         kill(pids[i], SIGUSR1);
