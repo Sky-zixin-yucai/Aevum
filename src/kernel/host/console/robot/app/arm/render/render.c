@@ -618,71 +618,195 @@ static void rtq_num(int x, int y, u32 value, u8 color)
     vga_text(x, y, buf, color);
 }
 
+static u8 rtq_lane_color(int prio)
+{
+    if (prio == 0) return C_GREEN;
+    if (prio == 1) return C_CYAN;
+    if (prio == 2) return C_YELLOW;
+    return C_MAG;
+}
+
+static void rtq_box(int x, int y, int w, int h, u8 color)
+{
+    int c, r;
+
+    for (c = x; c < x + w; c++) {
+        vga_cell(c, y, (char)CH_H, color);
+        vga_cell(c, y + h - 1, (char)CH_H, color);
+    }
+    for (r = y; r < y + h; r++) {
+        vga_cell(x, r, (char)CH_V, color);
+        vga_cell(x + w - 1, r, (char)CH_V, color);
+    }
+    vga_cell(x, y, (char)CH_TL, color);
+    vga_cell(x + w - 1, y, (char)CH_TR, color);
+    vga_cell(x, y + h - 1, (char)CH_BL, color);
+    vga_cell(x + w - 1, y + h - 1, (char)CH_BR, color);
+}
+
+static void rtq_gauge(int x, int y, int w, u32 value, u32 max, u8 color)
+{
+    u32 n = max ? (value * (u32)w) / max : 0;
+    int i;
+
+    if (n > (u32)w) n = (u32)w;
+    for (i = 0; i < w; i++)
+        vga_cell(x + i, y, i < (int)n ? (char)CH_FULL : ' ',
+                 i < (int)n ? color : 0x00);
+}
+
 /*
- * P13.1 Q 页：和 C/G/V 一样由主画面字母键进入，只读队列快照。
+ * RT 队列全屏页：和 C/G/V 一样由主画面字母键进入，只读队列快照。
  * FIFO A/B 由 app 层的两个 priority 1 动态 kthread 写入，页面只显示结果。
  */
 void arm_render_rtq_frame(u32 fifo_a, u32 fifo_b, u32 fifo_ok)
 {
-    char buf[32];
-    int prio, p;
+    char name[10];
+    struct task_info info;
+    int prio, i, row;
     u32 qerr = task_rt_queue_audit();
+    u32 mask = task_rt_queue_mask();
+    u32 total = task_rt_queue_total();
 
     vga_clear(0x00);
-    vga_text(16, 0, "AEVUM / RT QUEUE", 0x1F);
-    vga_text(8, 2, "P13.1 BITMAP + PER-PRIORITY DOUBLE LINK", 0x1B);
+    vga_fill(0, 0, 79, 0, ' ', 0x1F);
+    vga_text(24, 0, "AEVUM  //  REAL-TIME READY QUEUE", 0x1F);
+    vga_text(61, 0, "RT DISPATCH", 0x1E);
+    vga_text(8, 1, "BITMAP + 4 PRIORITY LANES  /  SAME-LEVEL FIFO  /  PREEMPTION", 0x1B);
 
-    vga_text(2, 4, "QUEUE ERR", C_GRAY);
-    rtq_num(14, 4, qerr, qerr ? C_RED : C_GREEN);
-    vga_text(2, 5, "MASK", C_GRAY);
-    rtq_num(14, 5, task_rt_queue_mask(), C_YELLOW);
-    vga_text(24, 5, "QUEUED", C_GRAY);
-    rtq_num(32, 5, task_rt_queue_total(), C_WHITE);
+    rtq_box(1, 2, 52, 8, C_CYAN);
+    rtq_box(54, 2, 25, 8, C_MAG);
 
-    vga_text(2, 7, "PRI  HEAD TAIL  N  HEAD TASK", 0x0F);
+    vga_text(3, 3, "LANE", C_GRAY);
+    vga_text(9, 3, "BIT", C_GRAY);
+    vga_text(14, 3, "READY", C_GRAY);
+    vga_text(22, 3, "HEAD", C_GRAY);
+    vga_text(33, 3, "TAIL", C_GRAY);
+    vga_text(43, 3, "LOAD", C_GRAY);
+
     for (prio = 0; prio <= TASK_PRIORITY_MAX; prio++) {
         int head = task_rt_queue_head(prio);
         int tail = task_rt_queue_tail(prio);
-        struct task_info info;
+        u32 count = task_rt_queue_count(prio);
+        u8 lane = rtq_lane_color(prio);
 
-        vga_text(2, 8 + prio, "P", C_GRAY);
-        rtq_num(3, 8 + prio, (u32)prio, C_YELLOW);
-        if (head < 0) vga_text(7, 8 + prio, " -", C_DGRAY);
-        else rtq_num(7, 8 + prio, (u32)head, C_WHITE);
-        if (tail < 0) vga_text(11, 8 + prio, " -", C_DGRAY);
-        else rtq_num(11, 8 + prio, (u32)tail, C_WHITE);
-        rtq_num(16, 8 + prio, task_rt_queue_count(prio), C_WHITE);
+        row = 4 + prio;
+        vga_text(3, row, "P", lane);
+        rtq_num(4, row, (u32)prio, lane);
+        vga_cell(10, row, (mask & (1u << prio)) ? '1' : '0',
+                 (mask & (1u << prio)) ? C_GREEN : C_DGRAY);
+        rtq_num(16, row, count, count ? C_WHITE : C_DGRAY);
+
         if (head >= 0 && task_snapshot(head, &info)) {
-            int i;
-            for (i = 0; i < 12 && info.comm[i]; i++) buf[i] = info.comm[i];
-            buf[i] = 0;
-            vga_text(21, 8 + prio, buf, task_pid_color((u32)info.pid));
+            for (i = 0; i < 8 && info.comm[i]; i++) name[i] = info.comm[i];
+            if (info.comm[i]) name[i++] = '>';
+            name[i] = 0;
+            vga_text(22, row, name, task_pid_color((u32)info.pid));
+        } else {
+            vga_text(22, row, "-", C_DGRAY);
         }
+
+        if (tail >= 0 && task_snapshot(tail, &info)) {
+            for (i = 0; i < 8 && info.comm[i]; i++) name[i] = info.comm[i];
+            if (info.comm[i]) name[i++] = '>';
+            name[i] = 0;
+            vga_text(33, row, name, task_pid_color((u32)info.pid));
+        } else {
+            vga_text(33, row, "-", C_DGRAY);
+        }
+
+        rtq_gauge(43, row, 8, count, 4, lane);
     }
 
-    vga_text(2, 13, "FIFO A", C_GRAY);
-    rtq_num(10, 13, fifo_a, C_WHITE);
-    vga_text(14, 13, "B", C_GRAY);
+    vga_text(3, 8, "QUEUED", C_GRAY);
+    rtq_num(11, 8, total, C_WHITE);
+    vga_text(18, 8, "MASK", C_GRAY);
+    rtq_num(24, 8, mask, C_YELLOW);
+    vga_text(31, 8, "AUDIT", C_GRAY);
+    rtq_num(38, 8, qerr, qerr ? C_RED : C_GREEN);
+
+    vga_text(56, 3, "FIFO BURST", C_WHITE);
+    rtq_box(56, 4, 9, 4, C_CYAN);
+    rtq_box(66, 4, 9, 4, C_MAG);
+    vga_text(57, 5, "qrtA", C_CYAN);
+    rtq_num(60, 6, fifo_a, C_WHITE);
+    vga_text(67, 5, "qrtB", C_MAG);
+    rtq_num(70, 6, fifo_b, C_WHITE);
+    vga_text(76, 5, fifo_ok ? "OK" : "NO", fifo_ok ? C_GREEN : C_YELLOW);
+    vga_text(56, 8, "A<B PRIO 1", fifo_ok ? C_GREEN : C_YELLOW);
+    vga_text(68, 8, "DRAINED", C_GRAY);
+
+    rtq_box(1, 10, 78, 5, C_CYAN);
+    vga_text(3, 11, "DISPATCH TRACE", C_WHITE);
+    vga_text(58, 11, "FIFO RAIL", C_GRAY);
+
+    vga_text(3, 12, "[P1 A #", C_CYAN);
+    rtq_num(10, 12, fifo_a, C_WHITE);
+    vga_text(12, 12, "]", C_CYAN);
+    vga_text(15, 12, "==>", C_YELLOW);
+    vga_text(19, 12, "[P1 B #", C_MAG);
+    rtq_num(26, 12, fifo_b, C_WHITE);
+    vga_text(28, 12, "]", C_MAG);
+    vga_text(31, 12, "==>", C_YELLOW);
+    vga_text(35, 12, "[HEAD]", C_GREEN);
+    vga_text(42, 12, "==>", C_YELLOW);
+    vga_text(46, 12, "[RUN ]", C_GREEN);
+    vga_text(53, 12, "==>", C_YELLOW);
+    vga_text(57, 12, "[EXIT]", C_YELLOW);
+    vga_text(65, 12, "QUEUE EMPTY", C_DGRAY);
+
+    vga_text(3, 13, "ORDER", C_GRAY);
+    vga_text(9, 13, "A", C_CYAN);
+    rtq_num(11, 13, fifo_a, C_WHITE);
+    vga_text(14, 13, "B", C_MAG);
     rtq_num(16, 13, fifo_b, C_WHITE);
-    vga_text(20, 13, fifo_ok ? "OK" : "WAIT", fifo_ok ? C_GREEN : C_YELLOW);
+    vga_text(20, 13, "FIFO", C_GRAY);
+    vga_text(25, 13, fifo_ok ? "OK" : "WAIT", fifo_ok ? C_GREEN : C_YELLOW);
+    vga_text(31, 13, "TAIL ENQUEUE -> HEAD DISPATCH -> EXIT", 0x18);
 
-    vga_text(2, 15, "PICK MAX", C_GRAY);
-    rtq_num(14, 15, task_pick_cycles_max(), C_WHITE);
-    vga_text(24, 15, "AVG", C_GRAY);
-    rtq_num(28, 15, task_pick_cycles_avg(), C_WHITE);
-    vga_text(34, 15, "N", C_GRAY);
-    rtq_num(36, 15, task_pick_cycles_count(), C_WHITE);
-    vga_text(2, 16, "PICK SAMPLES ONLY IN RT BENCH; NORMAL BUILD = 0", 0x18);
+    rtq_box(1, 15, 78, 5, C_CYAN);
+    vga_text(3, 16, "BITMAP", C_GRAY);
+    for (prio = 3; prio >= 0; prio--) {
+        int x = 12 + (3 - prio) * 9;
+        u8 on = (mask & (1u << prio)) ? 1u : 0u;
+        char pbuf[7];
 
-    p = 0;
-    p += fmt_dec(buf, task_switch_total());
-    buf[p] = 0;
-    vga_text(2, 18, "SWITCHES", C_GRAY);
-    vga_text(14, 18, buf, C_WHITE);
+        pbuf[0] = '[';
+        pbuf[1] = 'P';
+        pbuf[2] = (char)('0' + prio);
+        pbuf[3] = ' ';
+        pbuf[4] = on ? '1' : '0';
+        pbuf[5] = ']';
+        pbuf[6] = 0;
+        vga_text(x, 16, pbuf, on ? rtq_lane_color(prio) : C_DGRAY);
+    }
+    vga_text(48, 16, "QUEUED", C_GRAY);
+    rtq_num(56, 16, total, C_WHITE);
+    vga_text(59, 16, "/16", C_GRAY);
+    vga_text(64, 16, "ERR", C_GRAY);
+    rtq_num(68, 16, qerr, qerr ? C_RED : C_GREEN);
 
-    vga_text(2, 20, "Q = RETURN TO ARM", 0x1E);
-    vga_text(2, 22, "A/B = PRIORITY 1 RT KTHREADS; A RECORDS ORDER, THEN EXITS", 0x18);
-    vga_text(2, 23, "GREEN = QUEUE CONSISTENT; RED = HEAD/TAIL/BITMAP/LINK ERROR", 0x18);
+    vga_text(3, 17, "SWITCHES", C_GRAY);
+    rtq_gauge(13, 17, 45, task_switch_total(), 32768, C_CYAN);
+    rtq_num(61, 17, task_switch_total(), C_WHITE);
+
+    vga_text(3, 18, "FIFO SLOTS", C_GRAY);
+    vga_text(14, 18, "[A 1]", C_CYAN);
+    vga_text(20, 18, "==>", C_YELLOW);
+    vga_text(24, 18, "[B 2]", C_MAG);
+    vga_text(30, 18, "==>", C_YELLOW);
+    vga_text(34, 18, "[END]", C_DGRAY);
+    vga_text(41, 18, "A BEFORE B", fifo_ok ? C_GREEN : C_YELLOW);
+
+    vga_text(2, 20, "P0..P3: 0 HIGHEST / 3 LOWEST; BIT SET = LANE NON-EMPTY", C_GRAY);
+    vga_text(2, 21, "SAME PRIORITY: TAIL ENQUEUE, HEAD DISPATCH; HIGHER PRIO WINS", C_GRAY);
+
+    vga_fill(0, 22, 79, 22, ' ', 0x1E);
+    vga_text(2, 22, "[ Q ]  RETURN TO ARM", 0x1E);
+    vga_text(56, 22, "FIFO A<B", fifo_ok ? 0x1A : 0x1E);
+
+    vga_text(2, 23, "BURST = TWO PRIORITY 1 KTHREADS; EACH RECORDS ORDER THEN EXITS", C_GRAY);
+    vga_text(2, 24, "PICK / MAX / AVG ARE RT-BENCH ONLY; NORMAL BUILD SHOWS SWITCH PULSE", C_GRAY);
     vga_flush();
 }
 

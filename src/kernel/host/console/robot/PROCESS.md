@@ -946,16 +946,16 @@ P13.1 只改 RT 类任务的就绪队列，fair 类继续走 CFS-lite 的 `vrunt
 - 队列测试：`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=139 lat_p99_us=70 jitter_max_us=7081 exec_max_us=1866 miss=0 overrun=0 budget_overrun=0 throttle=0 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=105855 pick_avg=5437 pick_n=3000 cyc_us=3431 calib=1`。priority 0 控制任务在 priority 1 RT 存在时仍零 deadline miss，低优先级 RT 实际运行 1,010 tick，队列审计无结构错误；同优先级 `rtfifoA/rtfifoB` 按创建顺序先 A 后 B 运行。
 - 预算越界测试：`RT_BUDGET=1 RT_WORK_US=3000`，`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=152 lat_p99_us=60 jitter_max_us=3988 exec_max_us=3146 miss=0 overrun=1000 budget_overrun=1000 throttle=1000 wake_miss=0 sleep_fail=0 late=0 wresched=2011 switches=3024 qerr=0 low_ticks=1010 fifo=1 fifo_a=1 fifo_b=2 pick_max=158136 pick_avg=5899 pick_n=3000 cyc_us=3430 calib=1`。每个周期预算耗尽都被摘链并 throttle，下一周期补满后重新入队；`qerr=0`、`miss=0`，说明摘链/补队没有破坏头尾或位图，FIFO 探针也没有被预算路径打乱。
 - 选任务 TSC 统计在正式周期前重置，排除启动页和校准；队列测试 `pick_avg=5,437` 周期（约 1.5 µs），`pick_max=105,855` 周期（约 31 µs）。QEMU TCG 下 max 受宿主调度抖动影响，只作路径量级证据。
-- 演示页遵守主画面字母键规则：按 `Q`（扫描码 `0x10`）进入 `AEVUM / RT QUEUE`，再按 `Q` 返回。页面只读显示 `QUEUE ERR`、`MASK/QUEUED`、4 级 `HEAD/TAIL/N/HEAD TASK`、`FIFO A/B`、`PICK MAX/AVG/N`、`SWITCHES`；进入时创建两个 priority 1 动态 kthread，各自记录序号后退出，`FIFO A 1 / B 2 / OK`。普通构建截图 `p13-q.png`，返回主画面截图 `p13-q-return.png`。`rtbench.c` 不再自建独立 VGA 页，只保留串口 `RT_STAT`。
+- 演示页遵守主画面字母键规则：按 `Q`（扫描码 `0x10`）进入 `AEVUM // REAL-TIME READY QUEUE`，再按 `Q` 返回。页面是双线框仪表盘：左上 4 级队列表 `LANE / BIT / READY / HEAD / TAIL / LOAD`，右上 `FIFO BURST` 两张任务卡 `qrtA #1`、`qrtB #2`，中部 `DISPATCH TRACE` 画出 `[P1 A #1] ==> [P1 B #2] ==> [HEAD] ==> [RUN] ==> [EXIT]`，底部 4 级位图、`QUEUED/16`、`ERR`、`SWITCHES` 脉冲条和 `FIFO SLOTS`。进入时创建两个 priority 1 动态 kthread，各自记录序号后退出，`FIFO A 1 / B 2 / OK`；普通构建截图时活队列已排空，A/B 证据保留在突发卡、轨迹和槽位行。普通构建截图 `p13-q.png`，返回主画面截图 `p13-q-return.png`。`rtbench.c` 不再自建独立 VGA 页，只保留串口 `RT_STAT`。
 - 首轮 RT（`RT_BG_TASKS=4`，无队列测试）`miss=0 overrun=1`；该次 `overrun` 是单个工作周期超出 2ms 预算，不是 deadline miss，`budget_overrun=0`。
 
 ### 构建与体积
 
 - RT 队列测试 `kernel.bin=42,468B`；预算越界测试 `kernel.bin=42,692B`；首轮 RT `kernel.bin=41,828B`。RT 构建不含完整机械臂页面和独立 RT 页，仍远低于镜像上限。
-- 普通构建 `kernel.bin=95,656B`、`text=95,397`、`data=232`、`bss=17,660`；`__bss_start=0x975C0`、`__bss_end=0x9BABC`。Q 页和两个探针 kthread 在普通构建真实参与，`kernel.bin` 比 Q 页前 +2,368B，BSS 只 +32B。
-- 现有普通构建的 BSS 已越过旧 `AEVUM_KERNEL_END=0x9A000` 6,844B；这不是 P13.1 单独造成，越界主要来自此前未完成的内核通用动作控制改动。P13.1 把 boot 第二段从 80 扇区扩到 96、总扇区 208→224，`AEVUM_KERNEL_END` 改为 `0x9C000`，`kernel.bin` 上限改为 114,688B；BSS 余 `0x544`（1,348B），镜像余 19,032B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处口径一致。
-- clean 普通构建 SHA-256：kernel `996be595ebd07be9fc5cc9f104ba829890bf5864517ee059983b181f8191ec9d`、boot `6ee8f9577f92d088bcb2b3ed31c8b6b5f64a3e9861ef73bdd7b83854e6c67808`、disk `bfb8be2a1b83982138109eadcbaae153b8316f20bc78b24d2dbb66fc04d9cdcd`。
-- 普通 QEMU 启动到原机械臂页面：`N-DOF Planar Arm`、`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。普通构建没有常驻 RT 任务，`rt_mask` 平时为 0；按 `Q` 时两个 priority 1 kthread 会短暂进入 RT 队列，记录 A=1/B=2 后退出，页面保留序号。
+- 普通构建 `kernel.bin=97,448B`、`text=97,182`、`data=232`、`bss=17,660`；`__bss_start=0x97CC0`、`__bss_end=0x9C1BC`。Q 页和两个探针 kthread 在普通构建真实参与；新版双框仪表盘比上一版 Q 页 `95,656B` 增加 1,792B，BSS 总量不变。
+- 上一版 Q 页已把 BSS 推到 `0x9C1DC`，越过 `AEVUM_KERNEL_END=0x9C000` 476B；本轮把 boot 第二段从 96 扇区扩到 104、总扇区 224→232，`AEVUM_KERNEL_END` 改为 `0x9D000`，`kernel.bin` 上限改为 118,784B；BSS 余 `0xE44`（3,652B），镜像余 21,336B。`boot.asm`、`kernel.ld`、`config/memory.h`、`Makefile` 四处口径一致。
+- clean 普通构建 SHA-256：kernel `a432f519d6a302dfb4d72d309356de56d3fd4a1af310e6541e467219a20e5e9c`、boot `c262d6b94b2df8e95d70de305f4ee790510ac6ebff6a8bc8af69b8baa8939134`、disk `8fed0d10414a56aa2701d008c006295abcb38e0f4603c320e387a641014e1577`。
+- 普通 QEMU 启动到原机械臂页面：`N-DOF Planar Arm`、`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。普通构建没有常驻 RT 任务，`rt_mask` 平时为 0；按 `Q` 时两个 priority 1 kthread 会短暂进入 RT 队列，记录 A=1/B=2 后退出，页面保留突发卡、轨迹和槽位证据。
 
 ### 边界
 
