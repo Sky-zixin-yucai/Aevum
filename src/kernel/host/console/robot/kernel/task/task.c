@@ -4,6 +4,7 @@
 #include "kernel/kthread.h"
 #include "kernel/proc.h"
 #include "arch/x86/interrupt.h"
+#include "arch/x86/lapic.h"
 #include "arch/x86/frame.h"
 #include "arch/x86/tss.h"
 #include "arch/x86/tsc.h"
@@ -1285,7 +1286,32 @@ u32 task_schedule_irq(struct irq_frame *frame)
         for (;;) __asm__ __volatile__("cli; hlt");
     }
 
-    if (frame->vector == 0x20) {
+    if (frame->vector == 0x30) {
+        int last;
+
+        /*
+         * P13.2：LAPIC one-shot 1ms 伺服。不推进 10ms tick，不做
+         * vruntime/slice 记账；只在最后事件做强制的 RT 预算摘链。
+         */
+        lapic_timer_eoi();
+        reason = SCHED_TICK;
+        last = interrupt_lapic_event();
+        if (prev->state == TASK_RUNNING && prev->rt &&
+            prev->rt_budget_cycles) {
+            if (last) {
+                (void)task_rt_budget_force_expire();
+                need_resched = 1;
+            } else if (task_rt_budget_expire()) {
+                interrupt_lapic_note_early();
+                interrupt_disarm_rt_budget();
+                need_resched = 1;
+            }
+            tick_defer = need_resched ? 0 : 1;
+        } else {
+            interrupt_disarm_rt_budget();
+            tick_defer = 1;
+        }
+    } else if (frame->vector == 0x20) {
         interrupt_eoi();
         reason = SCHED_TICK;
         /*
@@ -2136,6 +2162,7 @@ void task_rt_budget_end(void)
      * 控制工作已经结束；预算定时器若在本周期剩余部分触发，不应把
      * 打印/截止检查等尾部代码算成控制超预算。
      */
+    interrupt_disarm_rt_budget();
     current_task->rt_budget_last_tsc = 0;
 }
 
@@ -2144,6 +2171,24 @@ int task_rt_budget_expire(void)
     if (!current_task || current_task->state != TASK_RUNNING)
         return 0;
     return task_rt_budget_charge(current_task, tsc_read32());
+}
+
+int task_rt_budget_force_expire(void)
+{
+    if (!current_task || current_task->state != TASK_RUNNING ||
+        !current_task->rt || !current_task->rt_budget_cycles)
+        return 0;
+    (void)task_rt_budget_charge(current_task, tsc_read32());
+    if (!current_task->rt_throttled) {
+        current_task->rt_budget_left = 0;
+        current_task->rt_throttled = 1;
+        current_task->rt_throttle_until = tick_total +
+            (current_task->rt_period_ticks ? current_task->rt_period_ticks : 1u);
+        rt_dequeue(current_task);
+        rt_budget_overrun_total++;
+        rt_budget_throttle_total++;
+    }
+    return 1;
 }
 
 void task_rt_budget_tick(u32 now_tick)

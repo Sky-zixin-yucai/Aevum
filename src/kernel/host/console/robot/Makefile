@@ -32,6 +32,7 @@ SRCS = \
 	kernel/ipc/pipe/pipe.c \
 	kernel/mm/address_space/address_space.c \
 	arch/x86/cpu/interrupt/interrupt.c \
+	arch/x86/cpu/lapic/lapic.c \
 	arch/x86/cpu/tss/tss.c \
 	arch/x86/cpu/syscall/syscall.c \
 	arch/x86/cpu/fault/page_fault.c \

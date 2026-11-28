@@ -2,6 +2,7 @@
 
 #include "app/rtbench/rtbench.h"
 #include "arch/x86/interrupt.h"
+#include "arch/x86/lapic.h"
 #include "arch/x86/tsc.h"
 #include "config/memory.h"
 #include "drivers/serial/uart.h"
@@ -26,7 +27,7 @@ extern u8 user_program_end[];
 #endif
 
 #ifndef RT_BUDGET_ONESHOT
-#define RT_BUDGET_ONESHOT 0
+#define RT_BUDGET_ONESHOT 1
 #endif
 
 #ifndef RT_QUEUE_TEST
@@ -171,18 +172,6 @@ static void rt_calibrate(void)
     }
 }
 
-static void rt_sleep_until(u32 target)
-{
-    u32 now = task_tick_total();
-    int diff = (int)(target - now);
-
-    if (diff > 0) {
-        if (task_sleep_ticks((u32)diff)) sleep_fail++;
-    } else {
-        late_count++;
-    }
-}
-
 static void rt_work(u32 start, u32 work_cycles)
 {
     u32 now;
@@ -247,6 +236,24 @@ static void rt_report(void)
     out_u32(task_rt_budget_overrun_total());
     out(" throttle=");
     out_u32(task_rt_budget_throttle_total());
+    out(" servo=");
+    out_u32(interrupt_rt_servo_total());
+    out(" hard=");
+    out_u32(interrupt_rt_hard_total());
+    out(" armn=");
+    out_u32(interrupt_rt_arm_total());
+    out(" gap_us=");
+    out_u32(interrupt_rt_gap_max_cycles() / (cycles_per_us ? cycles_per_us : 1u));
+    out(" fgap_us=");
+    out_u32(interrupt_rt_first_gap_cycles() / (cycles_per_us ? cycles_per_us : 1u));
+    out(" cut_us=");
+    out_u32(interrupt_rt_cut_cycles() / (cycles_per_us ? cycles_per_us : 1u));
+    out(" early=");
+    out_u32(interrupt_rt_early_total());
+    out(" ifoff=");
+    out_u32(interrupt_rt_if_off_total());
+    out(" lapic=");
+    out_u32(interrupt_rt_timer_is_lapic());
     out(" wake_miss=");
     out_u32(wake_miss);
     out(" sleep_fail=");
@@ -297,7 +304,6 @@ static void rt_control(void)
     u32 budget_cycles;
     u32 work_cycles;
     u32 deadline_cycles;
-    u32 next_tick;
     u32 prev_start = 0;
     u32 prev_valid = 0;
     u32 i;
@@ -321,6 +327,7 @@ static void rt_control(void)
 #endif
 
     rt_calibrate();
+    if (calib_ok) (void)lapic_timer_recalibrate(cycles_per_us);
     period_cycles = cycles_per_us * RT_PERIOD_US;
     budget_cycles = cycles_per_us * RT_BUDGET_US;
     work_cycles = cycles_per_us * RT_WORK_US;
@@ -344,6 +351,10 @@ static void rt_control(void)
     out_u32(RT_BUDGET);
     out(" oneshot=");
     out_u32(RT_BUDGET_ONESHOT);
+    out(" lapic=");
+    out_u32(interrupt_rt_timer_is_lapic());
+    out(" tmr_ticks_ms=");
+    out_u32(interrupt_rt_ticks_per_ms());
     out(" budget_us=");
     out_u32(RT_BUDGET_US);
     out(" work_us=");
@@ -356,16 +367,15 @@ static void rt_control(void)
     out_u32(calib_ok);
     out(" cyc_us=");
     out_u32(cycles_per_us);
+    out(" one_ms_us=");
+    out_u32(lapic_timer_test_1ms_cycles() / (cycles_per_us ? cycles_per_us : 1u));
     out("\n");
-
-    next_tick = task_tick_total() + period_ticks;
 
     for (i = 0; i < RT_PERIODS; i++) {
         u32 wake, start, end, latency, exec;
-        u32 now;
 
         task_rt_probe_clear();
-        rt_sleep_until(next_tick);
+        if (task_sleep_ticks(period_ticks)) sleep_fail++;
 
         wake = task_rt_probe_wake_tsc();
         start = tsc_read32();
@@ -429,14 +439,6 @@ static void rt_control(void)
             deadline_miss++;
         }
         if (exec > budget_cycles) overrun++;
-
-        now = task_tick_total();
-        next_tick += period_ticks;
-        if ((int)(next_tick - now) < 0) {
-            /* 已经错过下一周期：从当前 tick 重新建立相位，避免补发突发。 */
-            next_tick = now + period_ticks;
-            late_count++;
-        }
     }
 
     rt_report();

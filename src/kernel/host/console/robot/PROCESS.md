@@ -960,8 +960,85 @@ P13.1 只改 RT 类任务的就绪队列，fair 类继续走 CFS-lite 的 `vrunt
 ### 边界
 
 - 只做 RT 就绪队列，没有改 fair 的入队/出队、权重、`min_vruntime` 或 4 tick 片；fair 仍是 16 槽线性扫描。
-- 没有 APIC/HPET one-shot、硬 CBS 截断、多核 per-CPU 队列、RT 组调度、deadline 继承或优先级天花板。
-- 同优先级 RT FIFO 已用 `rtfifoA/rtfifoB` 两个 priority 1 任务做任务级顺序验收，结果为 A=1、B=2；更高优先级的抢占和 throttle 路径仍由 `qerr`、`miss` 与预算测试覆盖。
-- `pick_cycles` 的 TSC 最大/平均已在 RT bench 实现；普通构建不采样、统计恒为 0。QEMU 下的 max 只作量级参考，不是硬实时上界。
-- 全量回归未在本轮重跑：P5.3 100 轮 fork/wait、P11.5 duel、P11.10/11 RT 统计、P12.1 ramfs 都未重新执行；本轮只覆盖 RT bench、演示页和普通主页面启动。
-- 本轮收尾改动已在本地提交；构建产物按 `docs/contributing/guidelines.md` 不提交。
+- P13.1 本身没有 APIC/HPET one-shot、硬 CBS 截断、多核 per-CPU 队列、RT 组调度、deadline 继承或优先级天花板；这些由后续 P13.2 单独接入。
+
+## P13.2 LAPIC one-shot 与 2ms 硬截断
+
+P13.2 在 P13.1 的 RT 队列上补“真正在 2ms 处抢占并摘链”的定时源。选择 LAPIC timer 做 one-shot 执行器，HPET 作为参考设备；PIT 100Hz 仍只负责逻辑 tick、`task_rt_budget_tick()` 和 fair 的 4 tick 片，不参与 2ms 截断。
+
+### 硬件路径与页表
+
+- 新增 `include/arch/x86/lapic.h`、`arch/x86/cpu/lapic/lapic.c`，`Makefile` 加入编译。
+- 内核原先只恒等映射 `0..4MB`；新增 `0x15000` 页表，PDE index `0x3FB`，恒等映射 `0xFEC00000..0xFF000000`，覆盖 IOAPIC、HPET、LAPIC。`address_space_create_user` 和 clone 都把同一个 PDE 复制进用户页目录，切到用户 CR3 后内核仍能访问 LAPIC/HPET。
+- IDT 新增 `0x30` 门，`loader.asm` 新增 `lapic_timer_stub`（`SAVE_CTX 0,0x30`）。LAPIC EOI 只写 `0xFEE000B0`，不走 PIC。
+- `lapic_timer_init()` 在 `interrupt_init()` 末尾调用：CPUID APIC 检查、IA32_APIC_BASE MSR `0x1B`、SVR/TPR、LVT timer、EOI；失败则 RT 预算回退 PIT one-shot。当前 QEMU 快照：`LVTT=0x30 one-shot Fixed vec48`、`DCR=0x3 divide-by-16`、`SPIV=0x1ff APIC enabled`。
+
+### 校准
+
+- 首版用 HPET capability period 直接算 `ticks_per_ms`，QEMU 下读出约 62,800 tick/ms，但 1ms 计数实际约 2ms；改用 HPET 主计数器做 10ms 窗口后仍有约 2.5× 偏差。根因是 QEMU 的 HPET 声明周期/主计数器频率与 PIT 实际节拍不一致，不能直接当权威时基。
+- 现版本改为两级校准：开机用 PIT 通道 0 的 10ms one-shot 数 LAPIC 倒计数；RT bench 在 TSC 已用 PIT tick 校准后，再调用 `lapic_timer_recalibrate(cycles_per_us)`，用 10ms TSC 窗口重测 `ticks_per_ms`。
+- 校准后立刻做一次“屏蔽 LVT、只让 TCCR 倒计数到 0”的 1ms 验证；RT bench `RT_STAT start` 输出 `one_ms_us=1000`。HPET 仍被启用并作为参考设备，但不再单独决定 LAPIC 计数。
+- 计数写入修正：`lapic_timer_arm_us()` 的 count 必须是 `(us * ticks_per_ms) / 1000`；首版误写成 `us * ticks_per_ms`，1ms 被装成约 1 秒，`servo/hard` 全 0。
+
+### 预算状态机
+
+- `interrupt_arm_rt_budget(budget_us, rest_us)`：LAPIC 可用时不再改 PIT 相位；`remaining_us=budget_us`，先装 1ms。`rest_us` 保留给 PIT fallback。
+- `interrupt_lapic_event()`：每次 1ms 事件递减 `remaining_us` 并重装；最后一次停止 LAPIC 并返回 1。2ms 预算对应两次事件：1ms 伺服、2ms 硬截断。
+- `task_schedule_irq()` 的 vector `0x30` 分支：LAPIC EOI，不推进 `tick_total`、不做 vruntime/slice 记账；非最后事件调用 `task_rt_budget_expire()`，最后事件调用 `task_rt_budget_force_expire()`，强制置 `rt_throttled`、`rt_dequeue()`、`need_resched=1`。
+- `task_rt_budget_end()` 末尾调用 `interrupt_disarm_rt_budget()`，避免工作完成后的打印/截止检查被预算定时器算入。
+- 统计：`servo`、`hard`、`armn`、`gap_us`、`fgap_us`、`cut_us`、`early`、`ifoff`；`gap_us` 是相邻 LAPIC 事件最大间隔，`cut_us` 是从 arm 到强制摘链的墙钟时间。
+
+### RT bench 验收
+
+构建：
+
+```sh
+make clean BUILD=build-rt
+make all BUILD=build-rt DEFS="-DAEVUM_RT_BENCH -DRT_BG_TASKS=4 -DRT_PERIODS=1000 -DRT_BUDGET=1 -DRT_WORK_US=3000 -DRT_BUDGET_ONESHOT=1"
+```
+
+QEMU：
+
+```sh
+qemu-system-i386.exe -m 32 -drive format=raw,file=disk.img \
+  -display none -serial file:p132-rt.log -monitor none \
+  -icount shift=auto,align=off,sleep=off
+```
+
+`-icount` 是验收条件的一部分：默认 QEMU TCG 用宿主主循环投递 LAPIC timer，IRQ 会被拖到 TB/主循环边界，实测 `gap_us` 仍在 3ms 级、`hard` 只有 0~192；这是 QEMU 默认时钟模型，不是 LAPIC 计数错误。`-icount` 下虚拟时钟推进和中断边界确定，才能把 1ms/2ms 事件稳定投递。
+
+最终一次 1000 周期、`bg=4` 的 `RT_STAT`：
+
+`RT_STAT start bg=4 hz=100 period_us=10000 enforce=1 oneshot=1 lapic=1 tmr_ticks_ms=61375 budget_us=2000 work_us=3000 deadline_us=10000 periods=1000 calib=1 cyc_us=982 one_ms_us=1000`
+
+`RT_STAT bg=4 periods=1000 lat_n=1000 lat_max_us=7 lat_p99_us=0 jitter_max_us=10368 exec_max_us=10183 miss=1000 overrun=1000 budget_overrun=1000 throttle=1000 servo=2000 hard=1000 armn=1000 gap_us=1000 fgap_us=1000 cut_us=2000 early=0 ifoff=0 lapic=1 wake_miss=0 sleep_fail=0 late=0 wresched=1001 switches=4005 qerr=0 pick_max=3912 pick_avg=725 pick_n=4000 cyc_us=982 calib=1`
+
+判读：
+
+- `armn=1000`、`servo=2000`、`hard=1000`：每个 10ms 周期 arm 一次，1ms 伺服两次，2ms 硬截断一次。
+- `gap_us=1000`、`fgap_us=1000`、`cut_us=2000`：相邻事件 1ms，arm 到强制摘链 2ms，不再是 tick 记账的 3ms。
+- `early=0`、`ifoff=0`：1ms 事件没有提前判定预算耗尽，arm 时 IF 已开。
+- `qerr=0`：强制摘链后 4 级头尾/位图/双向链仍自洽。
+- `miss=1000`、`overrun=1000`、`exec_max_us=10183` 是**墙钟**口径：3ms 工作在 2ms 被摘链，直到下一个 10ms tick 才解 throttle；函数返回时 TSC 已越过 3ms，所以墙钟 exec 记 10ms 级，deadline 也记 miss。它们不是“2ms 内停止执行”的证据，P13.2 的截断证据是 `cut_us=2000` + `hard=1000` + `servo=2000`。
+- `pick_avg=725` 周期（约 0.74µs，按 `cyc_us=982`）、`pick_max=3912` 周期（约 4µs）只是 `-icount` 下的路径量级，不作硬实时上界。
+
+### 构建与体积
+
+- 普通 clean 构建：`kernel.bin=98,760B`（193/232 扇区），`text=98,494`、`data=232`、`bss=17,724`；`__bss_start=0x981E0`、`__bss_end=0x9C71C`，`AEVUM_KERNEL_END=0x9D000`，BSS 余 `0x8E4`（2,276B），镜像余 20,024B。
+- RT bench 构建：`kernel.bin=44,036B`、`text=43,771`、`data=228`、`bss=17,528`。
+- 新增代码/页表主要增加 text 约 1,312B 和 LAPIC 的静态状态；普通 BSS 仍留有 2KB 余量。
+
+### Q 页
+
+- Q 页仍由 `app/arm/render/render.c` 绘制，不新建独立 VGA 页。底部框从 `rtq_box(1,15,78,5)` 改为 `rtq_box(1,15,78,6)`，给 row19 的 `TIMER/SERVO/HARD` 留出行内空间，row20 保留下边框，避免上一版“底框开口”。
+- row19 显示 `TIMER LAPIC 1MS / HPET REF`、`SERVO`、`HARD`；普通构建没有常驻 RT 任务，这两个数字通常为 0，能力行仍显示 LAPIC 已就绪。
+- 截图：`p132-normal.png`、`p132-q.png`、`p132-q-bottom.png`。
+
+### 边界与风险
+
+- 默认 QEMU（无 `-icount`）的 LAPIC IRQ 投递仍受宿主/TB 边界影响，`hard` 远低于 1000；验收必须带 `-icount`，或在真实硬件上复测。不能把默认 QEMU 的 `gap_us≈3ms` 当作 LAPIC 硬件精度。
+- 只做单核；没有 IOAPIC 路由、HPET comparator 硬定时、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。
+- LAPIC 不可用时回退 PIT one-shot，但本轮未在禁用 LAPIC 的构建里重跑 PIT fallback；该路径仍是旧实现。
+- `miss/overrun/exec_max` 是墙钟口径，会包含 throttle 到下一 tick 的时间；不能单独作为 2ms 截断证据。
+- 全量回归未重跑：P5.3 100 轮 fork/wait、P11.5 duel、P11.10/11 RT、P12.1 ramfs 都未在本轮重新执行；本轮覆盖 RT bench、Q 页和普通主页面启动。
+- P13.2 已提交；`p132-*.png/.ppm` 截图仍未跟踪，构建产物按仓库惯例随提交更新。

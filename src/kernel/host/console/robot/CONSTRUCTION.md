@@ -329,6 +329,7 @@ P9 的内核自测仍由 control 启动时执行一次：
 | `0x10000 / 0x11000` | 内核页目录 / 页表（0–4MB 恒等映射） |
 | `0x13000..0x13FFF` | `K` 探针恢复用的 PDE 1 页表 |
 | `0x14000..0x14FFF` | `K` 探针恢复用的诊断页（承接 `0x00400000` 写） |
+| `0x15000..0x15FFF` | LAPIC/HPET/IOAPIC 的 MMIO 恒等映射页表，PDE `0x3FB` 覆盖 `0xFEC00000..0xFF000000` |
 | `0x12000..0x127FF` | 256 项 IDT（0x20 IRQ0、0x40 软件调度门、0x80 ring3 系统调用门） |
 | `0x8FC80..0x8FCBF` | 内核 GDT（6 项） |
 | `0x93020..0x93088` | TSS（`esp0/ss0`） |
@@ -342,7 +343,7 @@ P9 的内核自测仍由 control 启动时执行一次：
 | `0xB8000` | VGA 文本显存 |
 
 `boot.asm` 先读 128 个扇区，再读 104 个扇区到 `0x80000`，合计 232 个扇区，因此 `kernel.bin` 上限为 118,784 字节。
-当前 P13.1 clean 构建 97,448 字节，BSS 从 `0x97CC0` 到 `0x9C1BC`；镜像余量 21,336 字节，BSS 距 `AEVUM_KERNEL_END=0x9D000` 余 0xE44（3,652B）。`kernel.bin` 结束于 `0x97CA8`，BSS 起点按 16B 对齐到 `0x97CC0`，BSS 尾部仍在第二段读取窗口 `0x90000..0x9D000` 内，loader 按 `__bss_end` 清零。BSS 与 `render` 栈 `0x9000`、VGA `0xB8000`、VGA BIOS 影子 ROM `0xC0000` 均不重叠。P13.1 的 `rt_prev/rt_next/rt_prio/rt_queued` 把 `sizeof(struct task_struct)` 从 144B 增至 148B，`tasks[]` 为 16×148B（`0x940`）；另加 `rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 10B。上一版 Q 页把 BSS 推到 `0x9C1DC`，越过 `0x9C000` 476B；因此本轮把第二段 96→104 扇区、总扇区 224→232，`AEVUM_KERNEL_END=0x9D000`。
+当前 P13.2 clean 构建 98,760 字节，BSS 从 `0x981E0` 到 `0x9C71C`；镜像余量 20,024 字节，BSS 距 `AEVUM_KERNEL_END=0x9D000` 余 `0x8E4`（2,276B）。`kernel.bin` 结束于 `0x981C8`，BSS 起点按 16B 对齐到 `0x981E0`，BSS 尾部仍在第二段读取窗口 `0x90000..0x9D000` 内，loader 按 `__bss_end` 清零。BSS 与 `render` 栈 `0x9000`、VGA `0xB8000`、VGA BIOS 影子 ROM `0xC0000` 均不重叠。P13.1 的 `rt_prev/rt_next/rt_prio/rt_queued` 把 `sizeof(struct task_struct)` 从 144B 增至 148B，`tasks[]` 为 16×148B（`0x940`）；另加 `rt_head[4]`/`rt_tail[4]`/`rt_mask` 约 10B。上一版 Q 页把 BSS 推到 `0x9C1DC`，越过 `0x9C000` 476B；因此本轮把第二段 96→104 扇区、总扇区 224→232，`AEVUM_KERNEL_END=0x9D000`。
 `kernel.bin` 由 `kernel.elf` 经 `objcopy -O binary` 生成，保证 loader 与 C 看到的 `__bss_start`/`__bss_end` 一致。
 若继续增长，先加 `boot.asm` 扇区数，同时同步 `kernel.ld` 与 `config/memory.h` 的 `AEVUM_KERNEL_END`，并确认 BSS 不越过内核主线程栈底 `0xC000`。`AEVUM_TASK_STACK_MIN=0x8000`，
 `AEVUM_TASK_STACK_MAX=0x20C000`，`AEVUM_KSTACK_COUNT=12`，`AEVUM_TASK_STACK_SIZE=0x1000`，`AEVUM_AS_MAX=12`，`PROC_MAX=12`，`TASK_MAX=16`，`AEVUM_PHYS_POOL_BASE=0x100000`，`AEVUM_PHYS_POOL_END=0x1FF000`。
@@ -351,7 +352,7 @@ P9 的内核自测仍由 control 启动时执行一次：
 
 ```sh
 make clean && make all
-wc -c kernel.bin          # 必须 <= 114688
+wc -c kernel.bin          # 必须 <= 118784
 timeout 10 qemu-system-i386 -accel tcg -drive format=raw,file=disk.img \
   -display none -serial file:/tmp/robot-serial.bin -no-reboot
 xxd -l 4 /tmp/robot-serial.bin   # 期望 a5 5a 01
@@ -554,3 +555,20 @@ P13.1 把 RT 任务的就绪队列从 fair 的 `vruntime` 扫描中拆出，fair
 - 构建口径：RT 队列测试 `kernel.bin=42,468B`；预算越界测试 `kernel.bin=42,692B`；普通构建 `kernel.bin=97,448B`、`bss=17,660B`、`__bss_end=0x9C1BC`。上一版 Q 页越过 `0x9C000` 476B，因此本轮 boot 第二段 96→104 扇区、总扇区 224→232，`AEVUM_KERNEL_END=0x9D000`，`kernel.bin` 上限 118,784B；BSS 余 3,652B。
 - QEMU：队列测试 `miss=0 overrun=0 qerr=0 low_ticks=1010`；预算越界 `miss=0 throttle=1000 qerr=0 low_ticks=1010`；普通主页面正常启动，无 panic。
 - 边界：只做 RT 就绪队列；fair 仍 16 槽线性扫描，没有 APIC/HPET one-shot、硬 CBS 截断、多核 per-CPU 队列、RT 组调度、deadline 继承或优先级天花板；本轮未单独构造同优先级 RT FIFO 任务级测试，也未实现 `pick_cycles` TSC 统计。
+
+## P13.2 LAPIC one-shot 与 RT 预算硬截断
+
+P13.2 在 P13.1 的 RT 队列上把预算执行器从“PIT tick 记账 + 事后 throttle”换成 LAPIC timer one-shot：1ms 伺服一次，2ms 强制摘链并重调度。PIT 100Hz 仍负责逻辑 tick 和 fair 4 tick 片。
+
+- `include/arch/x86/lapic.h`、`arch/x86/cpu/lapic/lapic.c`：新增 LAPIC/HPET 探测、启用、PIT/TSC 校准、one-shot arm、EOI、1ms 验证；`Makefile` 加入 `arch/x86/cpu/lapic/lapic.c`。
+- `config/memory.h`：新增 `AEVUM_KERNEL_MMIO_PT=0x15000`、`AEVUM_KERNEL_MMIO_BASE=0xFEC00000`、`AEVUM_KERNEL_MMIO_PDE=0x3FB`；`kernel/mm/address_space/address_space.c` 的 create/clone 复制同一 PDE 到用户页目录。
+- `loader.asm`：新增 `lapic_timer_stub`，`SAVE_CTX 0,0x30`；`arch/x86/cpu/interrupt/interrupt.c` 在 IDT 装 `0x30` 门，`interrupt_init()` 末尾调用 `lapic_timer_init()`。
+- `include/arch/x86/interrupt.h`：新增 `interrupt_arm_rt_budget()`、`interrupt_disarm_rt_budget()`、`interrupt_lapic_event()`、`interrupt_rt_cut_cycles()`、`lapic_timer_test_1ms_cycles()`、`lapic_timer_recalibrate()` 和 `servo/hard/armn/gap/fgap/cut/early/ifoff` 统计接口。
+- `interrupt.c` 状态机：`lapic_available`、`lapic_ticks_ms`、`lapic_remaining_us`、`lapic_last_tsc_arm`、`lapic_cut_cycles`；`interrupt_arm_rt_budget()` 装 1ms；`interrupt_lapic_event()` 递减并重装，最后一次停计数返回 1；`task_rt_budget_end()` 调用 `interrupt_disarm_rt_budget()`。
+- `kernel/task/task.c`：`task_schedule_irq()` 新增 vector `0x30` 分支，LAPIC EOI，不推进 `tick_total`、不做 vruntime/slice 记账；非最后事件 `task_rt_budget_expire()`，最后事件 `task_rt_budget_force_expire()` 置 `rt_throttled`、`rt_dequeue()`、`need_resched=1`。`include/kernel/task.h` 声明 force API。
+- 校准：`lapic_timer_init()` 用 PIT 通道 0 mode 0、divisor 11932（10ms）数 LAPIC 倒计数；RT bench 在 `rt_calibrate()` 后用 TSC 10ms 窗口调用 `lapic_timer_recalibrate()`，再装 `ticks_ms` 做 1ms 验证。HPET 只 `hpet_init()` 启用并检查 `cap_hi`，不作为主校准源（QEMU HPET capability/实际计数不一致）。
+- `app/rtbench/rtbench.c`：`RT_BUDGET_ONESHOT` 默认 1；输出 `lapic/tmr_ticks_ms/one_ms_us/servo/hard/armn/gap_us/fgap_us/cut_us/early/ifoff`；循环改为相对 `task_sleep_ticks(period_ticks)`，删除绝对 `rt_sleep_until()`，避免 tick 相位把唤醒统计拖坏。
+- `app/arm/render/render.c`：Q 页底部框 `rtq_box(1,15,78,6)`，row19 加 `TIMER LAPIC 1MS / HPET REF`、`SERVO`、`HARD`，row20 保留下边框；row21 合并说明，row23/24 保留 FIFO/BURST 说明。
+- 构建口径：普通 clean `kernel.bin=98,760B`、`text=98,494`、`data=232`、`bss=17,724`、`__bss_end=0x9C71C`、BSS 余 `0x8E4`；RT bench `kernel.bin=44,036B`、`text=43,771`、`data=228`、`bss=17,528`。
+- QEMU 验收：必须带 `-icount shift=auto,align=off,sleep=off`；1000 周期得到 `servo=2000 hard=1000 armn=1000 gap_us=1000 fgap_us=1000 cut_us=2000 early=0 ifoff=0 qerr=0`，`tmr_ticks_ms=61,375`、`one_ms_us=1000`。默认 QEMU 无 `-icount` 时 IRQ 投递延迟，`gap_us≈3ms`、`hard=0~192`，不作为 P13.2 验收。
+- 边界：单核；没有 IOAPIC 路由、HPET comparator 硬定时、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板；PIT one-shot fallback 未在禁用 LAPIC 的构建里回归；`miss/overrun/exec_max` 是墙钟口径，不能单独证明 2ms 截断。全量回归未重跑。

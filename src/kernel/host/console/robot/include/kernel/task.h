@@ -272,6 +272,8 @@ void task_rt_budget_begin(void);
 void task_rt_budget_end(void);
 /* 预算到期中断调用：只对当前 RUNNING 的 RT 任务记账并返回 1 表示超预算。 */
 int task_rt_budget_expire(void);
+/* P13.2：定时器硬截断点。即使 TSC 账本还剩一点，也立即 throttle 并摘链。 */
+int task_rt_budget_force_expire(void);
 /* 每个 PIT tick 调用：到期后补满被 throttle 的 RT 任务。 */
 void task_rt_budget_tick(u32 now_tick);
 u32 task_rt_budget_overrun_total(void);

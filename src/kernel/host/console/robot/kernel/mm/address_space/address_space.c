@@ -335,6 +335,8 @@ struct address_space *address_space_create_user(const u8 *code, u32 code_size)
     pd = (u32 *)space->pd;
     pd[0] = AEVUM_KERNEL_PT | PAGE_PRESENT | PAGE_RW;
     pd[1] = space->pt | USER_RW;
+    /* P13.2：共享 0xFEC00000..0xFF000000 的 MMIO 页表，内核态可访问。 */
+    pd[AEVUM_KERNEL_MMIO_PDE] = AEVUM_KERNEL_MMIO_PT | PAGE_PRESENT | PAGE_RW;
 
     map_pte(space, AEVUM_USER_CODE_VA, pages[2], USER_RO);
     map_pte(space, AEVUM_USER_DATA_VA, pages[3], USER_RW);
@@ -411,6 +413,8 @@ struct address_space *address_space_clone(const struct address_space *src)
     pd = (u32 *)space->pd;
     pd[0] = AEVUM_KERNEL_PT | PAGE_PRESENT | PAGE_RW;
     pd[1] = space->pt | USER_RW;
+    /* P13.2：共享 0xFEC00000..0xFF000000 的 MMIO 页表，内核态可访问。 */
+    pd[AEVUM_KERNEL_MMIO_PDE] = AEVUM_KERNEL_MMIO_PT | PAGE_PRESENT | PAGE_RW;
 
     for (i = 0; i < (int)PT_ENTRIES; i++) {
         u32 pte = ((const u32 *)src->pt)[i];

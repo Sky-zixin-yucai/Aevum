@@ -1,5 +1,6 @@
 #include "app/arm/render.h"
 #include "app/arm/app.h"
+#include "arch/x86/interrupt.h"
 #include "drivers/video/vga.h"
 #include "kernel/task.h"
 #include "config/memory.h"
@@ -764,7 +765,7 @@ void arm_render_rtq_frame(u32 fifo_a, u32 fifo_b, u32 fifo_ok)
     vga_text(25, 13, fifo_ok ? "OK" : "WAIT", fifo_ok ? C_GREEN : C_YELLOW);
     vga_text(31, 13, "TAIL ENQUEUE -> HEAD DISPATCH -> EXIT", 0x18);
 
-    rtq_box(1, 15, 78, 5, C_CYAN);
+    rtq_box(1, 15, 78, 6, C_CYAN);
     vga_text(3, 16, "BITMAP", C_GRAY);
     for (prio = 3; prio >= 0; prio--) {
         int x = 12 + (3 - prio) * 9;
@@ -798,15 +799,21 @@ void arm_render_rtq_frame(u32 fifo_a, u32 fifo_b, u32 fifo_ok)
     vga_text(34, 18, "[END]", C_DGRAY);
     vga_text(41, 18, "A BEFORE B", fifo_ok ? C_GREEN : C_YELLOW);
 
-    vga_text(2, 20, "P0..P3: 0 HIGHEST / 3 LOWEST; BIT SET = LANE NON-EMPTY", C_GRAY);
-    vga_text(2, 21, "SAME PRIORITY: TAIL ENQUEUE, HEAD DISPATCH; HIGHER PRIO WINS", C_GRAY);
+    vga_text(2, 19, "TIMER", C_GRAY);
+    vga_text(9, 19, interrupt_rt_timer_is_lapic() ? "LAPIC 1MS / HPET REF" : "PIT 100HZ / NO LAPIC", interrupt_rt_timer_is_lapic() ? C_GREEN : C_YELLOW);
+    vga_text(33, 19, "SERVO", C_GRAY);
+    rtq_num(39, 19, interrupt_rt_servo_total(), C_CYAN);
+    vga_text(47, 19, "HARD", C_GRAY);
+    rtq_num(52, 19, interrupt_rt_hard_total(), C_RED);
+
+    vga_text(2, 21, "P0..P3: 0 HIGHEST / 3 LOWEST; HIGHER PRIO WINS", C_GRAY);
 
     vga_fill(0, 22, 79, 22, ' ', 0x1E);
     vga_text(2, 22, "[ Q ]  RETURN TO ARM", 0x1E);
     vga_text(56, 22, "FIFO A<B", fifo_ok ? 0x1A : 0x1E);
 
-    vga_text(2, 23, "BURST = TWO PRIORITY 1 KTHREADS; EACH RECORDS ORDER THEN EXITS", C_GRAY);
-    vga_text(2, 24, "PICK / MAX / AVG ARE RT-BENCH ONLY; NORMAL BUILD SHOWS SWITCH PULSE", C_GRAY);
+    vga_text(2, 23, "SAME PRIO: TAIL ENQUEUE, HEAD DISPATCH; BURST = TWO P1 KTHREADS", C_GRAY);
+    vga_text(2, 24, "PICK / MAX / AVG RT-BENCH ONLY; NORMAL BUILD SHOWS SWITCH PULSE", C_GRAY);
     vga_flush();
 }
 

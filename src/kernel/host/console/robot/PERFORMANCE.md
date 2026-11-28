@@ -263,3 +263,18 @@ P13.1 clean 普通构建 `kernel.bin=97,448B`，`__bss_start=0x97CC0`、`__bss_e
 - 普通构建没有常驻 RT 任务，`rt_mask` 平时为 0；主页面正常启动，`PIT 100Hz`、`TASK SCHED 3/31`、`mode AUTO`，无 panic。按 `Q` 时两个 priority 1 探针 kthread 短暂入队、记录 A=1/B=2 后退出，页面保留 `FIFO BURST` 卡、`DISPATCH TRACE` 和 `FIFO SLOTS`；返回主画面后机械臂继续更新。
 - 边界：这是 QEMU TCG 的功能与结构口径，不是周期级基准；`pick_max/pick_avg` 是 TSC 采样，QEMU 下的 max 会受宿主调度抖动影响。普通主页面只做启动 smoke，没有重跑 P5.3、P11.5、P11.10/11、P12.1 全量回归；其它演示页按用户要求留到以后再修。
 - 演示页：按主画面字母键 `Q`（扫描码 `0x10`）进入 `AEVUM // REAL-TIME READY QUEUE`，再按 `Q` 返回。双线框仪表盘含 4 级 `LANE/BIT/READY/HEAD/TAIL/LOAD`、右上两张 `FIFO BURST` 任务卡 `qrtA #1` / `qrtB #2`、中部 `DISPATCH TRACE`、底部位图 / `QUEUED/16` / `ERR` / `SWITCHES` 脉冲条 / `FIFO SLOTS`；普通构建截图见 `p13-q.png`，返回主画面见 `p13-q-return.png`。`rtbench.c` 不再自建独立 VGA 页，只保留串口 `RT_STAT`。
+
+## 23. P13.2 LAPIC one-shot 的代码、页表与验收开销
+
+P13.2 clean 普通构建 `kernel.bin=98,760B`，`text=98,494`、`data=232`、`bss=17,724`：
+
+- `__bss_start=0x981E0`、`__bss_end=0x9C71C`，`AEVUM_KERNEL_END=0x9D000`；BSS 余 `0x8E4`（2,276B），镜像上限 118,784B，余 20,024B；镜像占 193/232 扇区。
+- RT bench 构建 `kernel.bin=44,036B`、`text=43,771`、`data=228`、`bss=17,528`。
+- 新增 `0x15000` 一张 MMIO 页表，映射 4MB 窗口 `0xFEC00000..0xFF000000`；页表本身 4KB，位于原预留诊断区之外。PDE `0x3FB` 同时复制进用户页目录，避免切换 CR3 后 LAPIC/HPET 访问缺页。
+- IDT `0x30` 门和 `lapic_timer_stub` 只增加一个 `SAVE_CTX` 入口；1ms/2ms 状态机是常数级分支，不扫描任务表。
+- 开机校准成本：PIT 10ms one-shot + LAPIC 10ms 计数；RT bench 再跑一次 10ms TSC 重校准和一次 1ms TCCR 验证。普通构建只在 boot 做前一次校准，Q 页显示能力，不运行 RT 预算。
+- `-icount` 下 RT bench 1000 周期：`servo=2000 hard=1000 armn=1000 gap_us=1000 fgap_us=1000 cut_us=2000 early=0 ifoff=0 qerr=0`；`lat_n=1000`、`wake_miss=0`、`sleep_fail=0`、`switches=4005`。
+- `tmr_ticks_ms=61,375`、`one_ms_us=1000`：1ms 倒计数与 TSC 墙钟对齐；`cut_us=2000` 是 arm 到强制 `rt_dequeue()` 的实测墙钟，不是用 10ms tick 反推。
+- `miss=1000`、`overrun=1000`、`exec_max_us=10,183` 是墙钟口径：2ms 截断后任务被 throttle 到下一个 10ms tick，函数返回时 TSC 已越过 3ms 工作；它们不能当作截断时延。`pick_avg=725` 周期（约 0.74µs）、`pick_max=3,912` 周期（约 4µs）只作路径量级。
+- 默认 QEMU（无 `-icount`）：LAPIC timer 计数正确（`one_ms_us≈1000`），但 IRQ 投递被拖到 TB/主循环边界，`gap_us≈3ms`、`hard=0~192`；这不是 LAPIC 硬件精度，验收命令必须带 `-icount`。
+- 边界：单核；没有 IOAPIC 路由、HPET comparator 硬定时、多核 per-CPU LAPIC、RT 组调度、deadline 继承或优先级天花板。PIT one-shot fallback 未做禁用 LAPIC 的回归。全量回归未重跑。

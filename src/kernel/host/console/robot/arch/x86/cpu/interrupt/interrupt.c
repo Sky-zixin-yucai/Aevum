@@ -1,4 +1,6 @@
 #include "arch/x86/interrupt.h"
+#include "arch/x86/lapic.h"
+#include "arch/x86/tsc.h"
 #include "kernel/types.h"
 
 #define IDT_BASE       0x12000u
@@ -19,6 +21,21 @@
 static volatile u32 pit_mode;
 static u32 pit_rt_rest_us;
 
+static volatile u32 lapic_active;
+static u32 lapic_remaining_us;
+static u32 lapic_armed_us;
+static u32 lapic_servo_count;
+static u32 lapic_hard_count;
+static u32 lapic_arm_count;
+static u32 lapic_last_tsc;
+static u32 lapic_gap_max;
+static u32 lapic_first_gap;
+static u32 lapic_first_pending;
+static u32 lapic_last_tsc_arm;
+static u32 lapic_cut_cycles;
+static u32 lapic_early_count;
+static u32 lapic_arm_if_off;
+
 struct idt_entry {
     u16 off_low;
     u16 selector;
@@ -33,6 +50,7 @@ struct idt_ptr {
 } __attribute__((packed));
 
 extern void irq0_stub(void);
+extern void lapic_timer_stub(void);
 extern void int40_stub(void);
 
 static struct idt_entry *const idt = (struct idt_entry *)IDT_BASE;
@@ -118,6 +136,7 @@ void interrupt_init(void)
     }
 
     idt_set_gate_flags(0x20, irq0_stub, 0x8E);
+    idt_set_gate_flags(0x30, lapic_timer_stub, 0x8E);
     idt_set_gate_flags(0x40, int40_stub, 0x8E);
 
     idtr.limit = (u16)(sizeof(struct idt_entry) * IDT_ENTRIES - 1);
@@ -126,6 +145,8 @@ void interrupt_init(void)
 
     pic_remap();
     pit_init();
+    /* P13.2：LAPIC + HPET 校准；失败时 RT 预算回退到 PIT one-shot。 */
+    (void)lapic_timer_init();
 }
 
 void interrupt_set_user_gate(int vector, void (*handler)(void))
@@ -149,20 +170,123 @@ u32 interrupt_tick_hz(void)
 }
 
 /*
- * RT-2：预算子事件。arm 时把周期方波换成 2ms one-shot；预算 IRQ 处理完
- * 再装 rest_us 到下一个 10ms tick，tick IRQ 到达时恢复 100Hz 周期模式。
- * 只由 RT bench 的 ring0 控制任务调用，普通内核不进入该路径。
+ * P13.2：LAPIC 可用时预算不再改 PIT 相位。每次 arm 至少装 1ms；
+ * 1ms 到点时把剩余预算继续装成 one-shot，最后一次事件停止计数并
+ * 由调度器做强制 throttle。
  */
 void interrupt_arm_rt_budget(u32 budget_us, u32 rest_us)
 {
     u32 flags;
+    u32 first;
 
     if (!budget_us || !rest_us) return;
     __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    if (!(flags & 0x200u)) lapic_arm_if_off++;
+
+    if (lapic_timer_available()) {
+        lapic_remaining_us = budget_us;
+        lapic_active = 1;
+        lapic_arm_count++;
+        lapic_last_tsc = tsc_read32();
+        lapic_last_tsc_arm = lapic_last_tsc;
+        first = budget_us > 1000u ? 1000u : budget_us;
+        lapic_armed_us = first;
+        lapic_first_pending = 1;
+        lapic_timer_arm_us(first);
+        __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+        return;
+    }
+
+    /* 回退路径：原有 PIT one-shot 预算事件。 */
     pit_rt_rest_us = rest_us;
     pit_mode = PIT_MODE_RT_BUDGET;
     pit_one_shot(budget_us);
     __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
+void interrupt_disarm_rt_budget(void)
+{
+    u32 flags;
+
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    lapic_active = 0;
+    lapic_remaining_us = 0;
+    lapic_armed_us = 0;
+    if (lapic_timer_available()) {
+        lapic_timer_stop();
+    } else if (pit_mode != PIT_MODE_PERIODIC) {
+        pit_periodic();
+    }
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
+int interrupt_lapic_event(void)
+{
+    u32 armed;
+    u32 now;
+    u32 gap;
+
+    if (!lapic_active) return 0;
+    now = tsc_read32();
+    if (lapic_last_tsc) {
+        gap = now - lapic_last_tsc;
+        if (gap > lapic_gap_max) lapic_gap_max = gap;
+        if (lapic_first_pending) {
+            lapic_first_gap = gap;
+            lapic_first_pending = 0;
+        }
+    }
+    lapic_last_tsc = now;
+    lapic_servo_count++;
+    armed = lapic_armed_us;
+    if (armed >= lapic_remaining_us) {
+        lapic_remaining_us = 0;
+        lapic_active = 0;
+        lapic_cut_cycles = now - lapic_last_tsc_arm;
+        lapic_hard_count++;
+        lapic_timer_stop();
+        return 1;
+    }
+    lapic_remaining_us -= armed;
+    armed = lapic_remaining_us > 1000u ? 1000u : lapic_remaining_us;
+    lapic_armed_us = armed;
+    lapic_timer_arm_us(armed);
+    return 0;
+}
+
+void interrupt_lapic_note_early(void)
+{
+    lapic_early_count++;
+}
+
+u32 interrupt_rt_arm_total(void)
+{
+    return lapic_arm_count;
+}
+
+u32 interrupt_rt_gap_max_cycles(void)
+{
+    return lapic_gap_max;
+}
+
+u32 interrupt_rt_first_gap_cycles(void)
+{
+    return lapic_first_gap;
+}
+
+u32 interrupt_rt_cut_cycles(void)
+{
+    return lapic_cut_cycles;
+}
+
+u32 interrupt_rt_early_total(void)
+{
+    return lapic_early_count;
+}
+
+u32 interrupt_rt_if_off_total(void)
+{
+    return lapic_arm_if_off;
 }
 
 int interrupt_timer_event(void)
@@ -179,4 +303,24 @@ int interrupt_timer_event(void)
         return 0;
     }
     return 0;
+}
+
+int interrupt_rt_timer_is_lapic(void)
+{
+    return lapic_timer_available();
+}
+
+u32 interrupt_rt_servo_total(void)
+{
+    return lapic_servo_count;
+}
+
+u32 interrupt_rt_hard_total(void)
+{
+    return lapic_hard_count;
+}
+
+u32 interrupt_rt_ticks_per_ms(void)
+{
+    return lapic_ticks_per_ms();
 }

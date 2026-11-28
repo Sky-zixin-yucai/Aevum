@@ -2,6 +2,7 @@
 [bits 32]
 global start
 global irq0_stub
+global lapic_timer_stub
 global int40_stub
 global int80_stub
 global page_fault_stub
@@ -89,6 +90,11 @@ hang_loop:
 
 irq0_stub:
     SAVE_CTX 0, 0x20
+    jmp task_common
+
+; P13.2：LAPIC timer one-shot，1ms 伺服 / 2ms 预算硬截断。
+lapic_timer_stub:
+    SAVE_CTX 0, 0x30
     jmp task_common
 
 ; 软件调度门：task_yield/task_block/task_exit/task_start 共用。
